@@ -1,15 +1,93 @@
-"""ASGI entry point.
+"""App factory: settings, lifespan, middleware and routers.
 
-Placeholder app so the Docker `api` command has something to serve; GZ-003 replaces it
-with the settings-driven app factory. Docs and schema stay off until GZ-003 decides
-per environment.
+Run with `uvicorn --factory gize_api.main:create_app`. There is deliberately no module-level
+app: building one needs the environment, and importing this module must not.
 """
 
-from fastapi import FastAPI
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
-app = FastAPI(
-    title="Gize Admin API",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
+from fastapi import FastAPI
+from redis.asyncio import Redis
+from starlette.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp
+
+from gize_api.core.config import Settings, load_settings
+from gize_api.core.middleware import (
+    BodySizeLimitMiddleware,
+    CORSDenialMiddleware,
+    SecurityHeadersMiddleware,
 )
+
+MAX_BODY_BYTES = 1024 * 1024
+
+REDIS_TIMEOUT_SECONDS = 1.0
+REDIS_MAX_CONNECTIONS = 50
+REDIS_CLIENT_NAME = "gize-api"
+
+CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+CORS_ALLOWED_HEADERS = ["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"]
+CORS_EXPOSED_HEADERS = ["X-Request-ID", "Retry-After"]
+CORS_MAX_AGE_SECONDS = 600
+
+
+class GizeAPI(FastAPI):
+    """FastAPI with security headers wrapped around the whole stack.
+
+    Middleware added with `add_middleware` runs inside Starlette's ServerErrorMiddleware, so
+    it never sees the 500 response for an unhandled error. Wrapping the built stack does.
+    """
+
+    def build_middleware_stack(self) -> ASGIApp:
+        return SecurityHeadersMiddleware(super().build_middleware_stack())
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Build the API. Without `settings`, read them from the environment (fails fast)."""
+    if settings is None:
+        settings = load_settings()
+    app = GizeAPI(
+        title="Gize Admin API",
+        lifespan=_lifespan(settings),
+        docs_url="/docs" if settings.docs_enabled else None,
+        redoc_url="/redoc" if settings.docs_enabled else None,
+        openapi_url="/openapi.json" if settings.docs_enabled else None,
+    )
+    app.state.settings = settings
+
+    # add_middleware wraps: the last one added runs first. Order from the outside in:
+    # CORS denial cleanup -> CORS -> body limit -> routes.
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_methods=CORS_ALLOWED_METHODS,
+        allow_headers=CORS_ALLOWED_HEADERS,
+        expose_headers=CORS_EXPOSED_HEADERS,
+        allow_credentials=False,
+        max_age=CORS_MAX_AGE_SECONDS,
+    )
+    app.add_middleware(CORSDenialMiddleware, allowed_origins=settings.cors_allowed_origins)
+    return app
+
+
+def _lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # No connection is made here: the API starts while Redis is down, and readiness
+        # (GZ-007) reports it.
+        redis = Redis.from_url(
+            settings.redis_url.get_secret_value(),
+            socket_timeout=REDIS_TIMEOUT_SECONDS,
+            socket_connect_timeout=REDIS_TIMEOUT_SECONDS,
+            max_connections=REDIS_MAX_CONNECTIONS,
+            client_name=REDIS_CLIENT_NAME,
+        )
+        app.state.redis = redis
+        try:
+            yield
+        finally:
+            del app.state.redis
+            await redis.aclose()
+
+    return lifespan

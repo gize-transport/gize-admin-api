@@ -14,7 +14,7 @@ Start with [`CLAUDE.md`](CLAUDE.md) and the documents in [`docs/`](docs/). [`doc
 
 ```bash
 git config core.hooksPath .githooks   # pre-commit checks + blocks direct pushes to main
-cp .env.example .env                  # optional: override local ports/password
+cp .env.example .env                  # local settings (placeholders only)
 uv sync                               # create .venv from uv.lock
 docker compose up -d --wait           # Postgres 17 + Redis 7.4 on 127.0.0.1
 uv run pytest                         # tests + coverage gate
@@ -26,7 +26,7 @@ uv run pytest                         # tests + coverage gate
 | --- | --- |
 | Install / update the environment | `uv sync` |
 | Start / stop local services | `docker compose up -d --wait` / `docker compose down` |
-| Run the API locally | `uv run fastapi dev src/gize_api/main.py` |
+| Run the API locally | `uv run --env-file .env uvicorn --factory gize_api.main:create_app --reload` |
 | Tests with coverage (85% overall) | `uv run pytest` |
 | Services coverage gate (90%), after tests | `uv run python -m scripts.check_service_coverage` |
 | Lint, format check, types | `uv run ruff check . && uv run ruff format --check . && uv run mypy` |
@@ -36,13 +36,27 @@ uv run pytest                         # tests + coverage gate
 
 Commands for migrations, the background worker and the OpenAPI export are added by the tickets that introduce them (GZ-006, GZ-008, GZ-015).
 
+## Configuration
+
+All configuration comes from environment variables (`src/gize_api/core/config.py`); the API refuses to start when a required one is missing or invalid, and the error names the variable, never its value. `.env.example` lists every variable with a placeholder.
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
+| `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL. |
+| `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
+| `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
+| `TEST_REDIS_URL` | tests only | Redis the test suite uses (CI sets it; locally read from `.env`). Tests fail, never skip, without it. |
+
 ## Docker image
 
 One image serves both processes:
 
 ```bash
 docker build -t gize-admin-api .
-docker run --rm -p 8000:8000 gize-admin-api          # api (default)
+docker run --rm -p 8000:8000 -e APP_ENV=local \
+  -e REDIS_URL=redis://host.docker.internal:6379/0 gize-admin-api   # api (default)
+# On Linux, also pass --add-host=host.docker.internal:host-gateway
 docker run --rm gize-admin-api worker                # Arq worker (from GZ-008)
 ```
 
