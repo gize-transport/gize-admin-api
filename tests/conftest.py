@@ -1,5 +1,7 @@
 """Shared fixtures."""
 
+import socket
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,8 @@ def make_settings() -> SettingsFactory:
             "redis_url": UNREACHABLE_REDIS_URL,
             "cors_allowed_origins": ("https://admin.example.com",),
             "log_level": "INFO",
+            # Production refuses to start without Sentry/OTLP; tests opt in explicitly.
+            "observability_required": False,
         }
         values.update(overrides)
         return Settings(**values)
@@ -51,3 +55,15 @@ def test_redis_url() -> str:
     if not url:
         pytest.fail("TEST_REDIS_URL is not set: add it to .env (see .env.example) or export it")
     return url
+
+
+@pytest.fixture
+def blackhole_url() -> Iterator[str]:
+    """An http URL whose server accepts connections and never answers (a hung dependency)."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)  # connections queue in the backlog; nothing ever reads them
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        listener.close()

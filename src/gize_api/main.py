@@ -9,6 +9,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
+from fastapi.telemetry import TelemetryConfig
 from redis.asyncio import Redis
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
@@ -70,11 +71,23 @@ class GizeAPI(FastAPI):
         return app
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+# FastAPI's own OpenTelemetry layer (on by default once any global provider exists) would
+# record raw URLs and exception text; ours is configured in core/telemetry.py instead.
+_FASTAPI_NATIVE_TELEMETRY_OFF: TelemetryConfig = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
+
+
+def create_app(settings: Settings | None = None) -> GizeAPI:
     """Build the API. Without `settings`, read them from the environment (fails fast)."""
     if settings is None:
         settings = load_settings()
     configure_logging(settings.log_level)
+    # Production without them refuses to start (config.py) unless explicitly opted out.
     if settings.app_env in {Environment.STAGING, Environment.PRODUCTION}:
         for name in settings.missing_observability():
             structlog.get_logger("gize_api.startup").warning("observability_disabled", setting=name)
@@ -84,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         docs_url="/docs" if settings.docs_enabled else None,
         redoc_url="/redoc" if settings.docs_enabled else None,
         openapi_url="/openapi.json" if settings.docs_enabled else None,
+        telemetry=_FASTAPI_NATIVE_TELEMETRY_OFF,
     )
     app.state.settings = settings
     app.telemetry = configure_telemetry(settings)
@@ -94,9 +108,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-def _lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(app: GizeAPI) -> AsyncIterator[None]:
         # No connection is made here: the API starts while Redis is down, and readiness
         # (GZ-007) reports it.
         redis = Redis.from_url(
@@ -107,13 +121,23 @@ def _lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextMan
             client_name=REDIS_CLIENT_NAME,
         )
         app.state.redis = redis
+        telemetry = app.telemetry
+        if telemetry is not None:
+            telemetry.instrument_redis(redis)
         try:
             yield
         finally:
+            # Each step runs even if an earlier one fails.
             del app.state.redis
-            await redis.aclose()
-            telemetry = getattr(app, "telemetry", None)
+            try:
+                if telemetry is not None:
+                    telemetry.uninstrument_redis(redis)
+                await redis.aclose()
+            except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
+                structlog.get_logger("gize_api.startup").warning(
+                    "redis_close_failed", exc_info=True
+                )
             if telemetry is not None:
-                telemetry.shutdown()
+                await telemetry.shutdown()
 
     return lifespan

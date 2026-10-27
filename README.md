@@ -46,9 +46,11 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
-| `SENTRY_DSN` | no, secret | Sentry error reporting; off when unset. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | OTLP/HTTP base URL for traces and metrics (`https` in staging/production); off when unset. |
-| `OTEL_EXPORTER_OTLP_HEADERS` | no, secret | `name=value` pairs, comma-separated (e.g. Grafana Cloud auth). |
+| `SENTRY_DSN` | production, secret | Sentry errors and security events; off when unset. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | production | OTLP/HTTP base URL for traces and metrics (`https` in staging/production); off when unset. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | no, secret | `name=value` pairs, comma-separated, percent-encoded as in Grafana's snippet (`Authorization=Basic%20…`). |
+| `OTEL_TRACES_SAMPLER_RATIO` | no | Share of new traces recorded, `0`–`1` (default `1`). Client-sent trace context is ignored. |
+| `OBSERVABILITY_REQUIRED` | no | `true` by default: production refuses to start without `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT`. `false` opts out (startup still warns). |
 | `OTEL_SERVICE_NAME` | no | `gize-admin-api` by default. |
 | `RELEASE` | no | Build identifier (e.g. git SHA) for Sentry and traces. |
 | `TEST_REDIS_URL` | tests only | Redis the test suite uses (CI sets it; locally read from `.env`). Tests fail, never skip, without it. |
@@ -57,7 +59,9 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 
 The API writes one JSON object per line to stderr: `timestamp`, `level`, `logger`, `event`, `request_id` and (once authenticated) `staff_id`, plus one `request` line per request with the route template, status and duration. Secrets and personal data are scrubbed before anything is written: tokens, passwords, OTPs and names become `[REDACTED]`, phone numbers become `+2519••••1234`. Use `structlog.get_logger(__name__)` and pass data as fields, never formatted into the message.
 
-With `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT` set, unhandled errors go to Sentry (tagged with the request ID) and traces and metrics go to the OTLP endpoint. Staging and production log `observability_disabled` at startup for each one that is unset.
+With `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT` set, unhandled errors and security events go to Sentry (tagged with the request ID), and traces and metrics go to the OTLP endpoint. Production refuses to start without both unless `OBSERVABILITY_REQUIRED=false`; staging logs `observability_disabled` for each one that is unset. Log lines inside a request carry `trace_id`, and spans carry `gize.request_id`, so logs, traces and Sentry events can be matched.
+
+Call `set_staff_id()` from the (async) auth dependency to put the staff ID on that request's log lines; call `log_security_event()` for failed auth, permission denials, rate-limit hits and OTP abuse.
 
 ## Docker image
 

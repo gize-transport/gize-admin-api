@@ -8,7 +8,7 @@ a malformed URL can carry a password.
 import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, unquote, urlsplit
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -37,11 +37,15 @@ class Settings(BaseSettings):
     redis_url: SecretStr
     cors_allowed_origins: Annotated[tuple[str, ...], NoDecode] = Field(default=(), max_length=20)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
-    # Observability: each is off when unset. staging/production log a warning at startup.
+    # Observability: each is off when unset. Production refuses to start without both unless
+    # OBSERVABILITY_REQUIRED=false; staging (and an opted-out production) warns at startup.
+    observability_required: bool = True
     sentry_dsn: SecretStr | None = None
     otel_exporter_otlp_endpoint: str | None = None
     otel_exporter_otlp_headers: SecretStr | None = None
     otel_service_name: str = Field(default="gize-admin-api", pattern=r"^[a-z0-9-]{1,63}$")
+    # Share of new traces recorded (0..1). Inbound client trace context is ignored.
+    otel_traces_sampler_ratio: float = Field(default=1.0, ge=0.0, le=1.0, allow_inf_nan=False)
     release: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,64}$")
 
     @field_validator("cors_allowed_origins", mode="before")
@@ -118,6 +122,19 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
+    def _observability_in_production(self) -> Self:
+        if (
+            self.app_env is Environment.PRODUCTION
+            and self.observability_required
+            and self.missing_observability()
+        ):
+            missing = ", ".join(self.missing_observability())
+            raise ValueError(
+                f"production requires {missing} (set OBSERVABILITY_REQUIRED=false to opt out)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _https_otlp_outside_local(self) -> Self:
         endpoint = self.otel_exporter_otlp_endpoint
         if (
@@ -187,12 +204,14 @@ def _is_bare_origin(origin: str) -> bool:
 
 
 def _parse_headers(text: str) -> dict[str, str] | None:
+    """Parse `name=value,…`, percent-decoded as the OTel spec (and Grafana's snippet) writes it."""
     headers: dict[str, str] = {}
     for pair in text.split(","):
         name, sep, value = pair.partition("=")
-        if not sep or not name.strip() or not value.strip():
+        name, value = unquote(name.strip()), unquote(value.strip())
+        if not sep or not name or not value:
             return None
-        headers[name.strip()] = value.strip()
+        headers[name] = value
     return headers
 
 

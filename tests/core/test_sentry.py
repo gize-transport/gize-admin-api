@@ -1,15 +1,18 @@
-"""GZ-005: Sentry receives errors with the request ID and nothing personal."""
+"""GZ-005: Sentry receives errors and security events with the request ID, nothing personal."""
 
 import json
 from collections.abc import Iterator
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import httpx
 import pytest
 import sentry_sdk
+from fastapi import FastAPI
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.transport import Transport
+from sentry_sdk.types import Event
 
+from gize_api.core.logging import log_security_event
 from gize_api.core.request_id import REQUEST_ID_HEADER
 from gize_api.core.sentry import configure_sentry, scrub_event
 from gize_api.main import create_app
@@ -27,16 +30,21 @@ class CapturingTransport(Transport):
         CapturingTransport.envelopes.append(envelope)
 
 
+class FailingTransport(Transport):
+    def capture_envelope(self, envelope: Envelope) -> None:
+        raise ConnectionError("sentry unreachable")
+
+
 @pytest.fixture
-def sentry_events(make_settings: SettingsFactory) -> Iterator[list[dict[str, Any]]]:
+def sentry_enabled() -> Iterator[None]:
     CapturingTransport.envelopes = []
-    events: list[dict[str, Any]] = []
-    yield events
+    yield
     sentry_sdk.get_client().close()
     sentry_sdk.init()  # back to a disabled client
 
 
 def _events() -> list[dict[str, Any]]:
+    sentry_sdk.flush()
     return [
         item.payload.json
         for envelope in CapturingTransport.envelopes
@@ -45,41 +53,98 @@ def _events() -> list[dict[str, Any]]:
     ]
 
 
-def test_disabled_without_dsn(make_settings: SettingsFactory) -> None:
-    assert configure_sentry(make_settings()) is False
-
-
-async def test_unhandled_error_reaches_sentry_scrubbed_with_request_id(
-    make_settings: SettingsFactory, sentry_events: list[dict[str, Any]]
-) -> None:
-    settings = make_settings(sentry_dsn=DSN, release="2026.10.27-abc123")
-    assert configure_sentry(settings, transport=CapturingTransport) is True
-    app = create_app(settings)
+def _crashing_app(make_settings: SettingsFactory) -> FastAPI:
+    app = create_app(make_settings(sentry_dsn=DSN, release="2026.10.27-abc123"))
 
     @app.get("/_test/crash")
     async def crash() -> None:
         raise RuntimeError(f"failed for {PHONE} using {TOKEN}")
 
+    return app
+
+
+def test_disabled_without_dsn(make_settings: SettingsFactory) -> None:
+    assert configure_sentry(make_settings()) is False
+
+
+@pytest.mark.usefixtures("sentry_enabled")
+async def test_unhandled_error_reaches_sentry_scrubbed_with_request_id(
+    make_settings: SettingsFactory,
+) -> None:
+    settings = make_settings(sentry_dsn=DSN, release="2026.10.27-abc123")
+    assert configure_sentry(settings, transport=CapturingTransport) is True
+    app = _crashing_app(make_settings)
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
             "/_test/crash?phone=0911223344",
             headers={"Authorization": f"Bearer {TOKEN}", "Cookie": f"s={TOKEN}"},
         )
-    sentry_sdk.flush()
     (event,) = _events()
     serialized = json.dumps(event)
     assert event["tags"]["request_id"] == response.headers[REQUEST_ID_HEADER]
+    assert event["tags"]["route"] == "/_test/crash"
     assert event["environment"] == "test"
     assert event["release"] == "2026.10.27-abc123"
+    assert event["sdk"]["name"].startswith("sentry.python")  # metadata left intact
     for secret in (PHONE, "0911223344", TOKEN, "911223344"):
         assert secret not in serialized
 
 
-def test_scrub_event_masks_and_redacts_everywhere() -> None:
+@pytest.mark.usefixtures("sentry_enabled")
+def test_security_events_reach_sentry_as_scrubbed_warnings(make_settings: SettingsFactory) -> None:
+    configure_sentry(make_settings(sentry_dsn=DSN), transport=CapturingTransport)
+    log_security_event("token_rejected", reason="expired", token=TOKEN, phone=PHONE)
+    (event,) = _events()
+    assert event["level"] == "warning"
+    assert event["message"] == "token_rejected"
+    assert event["tags"]["category"] == "security"
+    serialized = json.dumps(event)
+    assert TOKEN not in serialized
+    assert PHONE not in serialized
+    assert "expired" in serialized
+
+
+@pytest.mark.usefixtures("sentry_enabled")
+def test_no_trace_headers_to_other_hosts_and_no_breadcrumbs(make_settings: SettingsFactory) -> None:
+    configure_sentry(make_settings(sentry_dsn=DSN), transport=CapturingTransport)
+    options = sentry_sdk.get_client().options
+    assert options["trace_propagation_targets"] == []
+    assert options["max_breadcrumbs"] == 0
+    assert options["auto_enabling_integrations"] is False
+
+
+@pytest.mark.usefixtures("sentry_enabled")
+async def test_sentry_failure_does_not_affect_the_response(make_settings: SettingsFactory) -> None:
+    configure_sentry(make_settings(sentry_dsn=DSN), transport=FailingTransport)
+    app = _crashing_app(make_settings)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/_test/crash")
+    sentry_sdk.flush()
+    assert response.status_code == 500
+    assert response.json()["code"] == "INTERNAL_ERROR"
+
+
+def test_scrub_event_scrubs_content_and_keeps_metadata() -> None:
     event: dict[str, Any] = {
+        "event_id": "0911223344aa4bbb8ccc0911223344aa",
+        "sdk": {"name": "sentry.python.fastapi", "version": "2.73.0"},
+        "contexts": {
+            "runtime": {"name": "CPython", "version": "3.12.16"},
+            "trace": {
+                "trace_id": "0911223344aa4bbb8ccc0911223344aa",
+                "span_id": "0911223344aa4bbb",
+            },
+        },
         "message": f"call {PHONE}",
-        "exception": {"values": [{"type": "ValueError", "value": f"bad {PHONE} {TOKEN}"}]},
+        "logentry": {"message": f"call {PHONE}", "params": [TOKEN]},
+        "exception": {
+            "values": [
+                {"type": "ValueError", "value": f"bad {PHONE} {TOKEN}"},
+                {"type": "SystemExit", "value": None},
+            ]
+        },
         "request": {
             "url": "http://test/x?phone=0911223344",
             "query_string": "phone=0911223344",
@@ -88,12 +153,21 @@ def test_scrub_event_masks_and_redacts_everywhere() -> None:
             "data": {"full_name": "Abebe Kebede"},
         },
         "extra": {"access_token": TOKEN, "note": f"phone {PHONE}"},
+        "tags": {"request_id": "abc", "note": f"phone {PHONE}"},
         "breadcrumbs": {"values": [{"message": f"sms to {PHONE}"}]},
         "user": {"ip_address": "10.0.0.1", "email": "a@b.c"},
     }
-    scrubbed = scrub_event(event, {})
-    assert scrubbed is not None
-    serialized = json.dumps(scrubbed)
+    result = scrub_event(cast(Event, event), {})
+    assert result is not None
+    scrubbed = cast(dict[str, Any], result)
+    assert "user" not in scrubbed
+    content = json.dumps(
+        {k: v for k, v in scrubbed.items() if k not in ("event_id", "sdk", "contexts")}
+    )
     for secret in (PHONE, "0911223344", TOKEN, "Abebe", "10.0.0.1", "a@b.c"):
-        assert secret not in serialized
+        assert secret not in content
     assert scrubbed["request"]["headers"]["Accept"] == "*/*"
+    assert scrubbed["event_id"] == event["event_id"]
+    assert scrubbed["sdk"]["name"] == "sentry.python.fastapi"
+    assert scrubbed["contexts"]["runtime"]["name"] == "CPython"
+    assert scrubbed["contexts"]["trace"]["trace_id"] == "0911223344aa4bbb8ccc0911223344aa"

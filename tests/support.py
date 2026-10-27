@@ -20,6 +20,8 @@ SETTINGS_ENV_VARS = (
     "OTEL_EXPORTER_OTLP_HEADERS",
     "OTEL_SERVICE_NAME",
     "RELEASE",
+    "OBSERVABILITY_REQUIRED",
+    "OTEL_TRACES_SAMPLER_RATIO",
 )
 
 SettingsFactory = Callable[..., Settings]

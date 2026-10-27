@@ -1,24 +1,29 @@
 """Sentry error reporting: off unless SENTRY_DSN is set; never sends personal data.
 
-The unhandled-error handler (core/errors.py) reports explicitly, tagged with the request ID
-and route. Sentry's automatic Starlette/FastAPI/logging integrations are disabled: our
-handled-error guard stops the re-raise they would see, and error logs would double-report.
-Every event and breadcrumb passes through the same scrubber as the logs.
+- The unhandled-error handler (core/errors.py) reports explicitly, tagged with the request
+  ID and route; security events (core/logging.py) arrive as warning events.
+- Sentry's own Starlette/FastAPI/logging integrations and auto-enabled integrations are
+  off: our handled-error guard stops the re-raise they would see, error logs would
+  double-report, and outbound-HTTP integrations would leak URLs into breadcrumbs.
+- No breadcrumbs, no trace headers to other hosts, minimal data collection.
+- Content sections of every event pass through the same scrubber as the logs; metadata
+  (event_id, sdk, contexts) is left intact so Sentry accepts the event.
 """
 
-from typing import Any
+from typing import Any, cast
 
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from sentry_sdk.transport import Transport
+from sentry_sdk.types import Event, Hint
 
 from gize_api.core.config import Settings
-from gize_api.core.logging import scrub_value
+from gize_api.core.logging import scrub_text, scrub_value
 
-# Event sections that only ever hold personal data.
-_DROPPED_SECTIONS = ("user",)
+# Sections that carry request or application content; everything else is SDK metadata.
+_CONTENT_SECTIONS = ("message", "logentry", "extra", "tags", "request", "breadcrumbs")
 
 
 def configure_sentry(settings: Settings, *, transport: type[Transport] | None = None) -> bool:
@@ -29,7 +34,8 @@ def configure_sentry(settings: Settings, *, transport: type[Transport] | None = 
     """
     if settings.sentry_dsn is None:
         return False
-    if sentry_sdk.is_initialized():
+    client = sentry_sdk.get_client()
+    if client.is_active() and client.options.get("dsn"):  # a DSN-less client is "active" too
         return True
     sentry_sdk.init(
         dsn=settings.sentry_dsn.get_secret_value(),
@@ -48,9 +54,11 @@ def configure_sentry(settings: Settings, *, transport: type[Transport] | None = 
             "stack_frame_variables": False,
         },
         traces_sample_rate=None,  # traces go to OpenTelemetry
-        before_send=scrub_event,
-        before_breadcrumb=scrub_breadcrumb,
+        trace_propagation_targets=[],  # never add sentry-trace/baggage to outbound requests
+        auto_enabling_integrations=False,
         disabled_integrations=[StarletteIntegration, FastApiIntegration, LoggingIntegration],
+        max_breadcrumbs=0,
+        before_send=scrub_event,
         transport=transport,
     )
     return True
@@ -61,11 +69,13 @@ def report_exception(exc: BaseException, *, request_id: str | None, route: str) 
     sentry_sdk.capture_exception(exc, tags={"request_id": request_id or "none", "route": route})
 
 
-def scrub_event(event: Any, hint: Any) -> Any:  # noqa: ANN401 - Sentry's event dict
-    for section in _DROPPED_SECTIONS:
-        event.pop(section, None)
-    return {key: scrub_value(key, value) for key, value in event.items()}
-
-
-def scrub_breadcrumb(crumb: Any, hint: Any) -> Any:  # noqa: ANN401 - Sentry's breadcrumb
-    return {key: scrub_value(key, value) for key, value in crumb.items()}
+def scrub_event(event: Event, hint: Hint) -> Event | None:
+    data = cast(dict[str, Any], event)
+    data.pop("user", None)
+    for section in _CONTENT_SECTIONS:
+        if section in data:
+            data[section] = scrub_value(section, data[section])
+    for value in data.get("exception", {}).get("values", []):
+        if isinstance(value.get("value"), str):
+            value["value"] = scrub_text(value["value"])
+    return event

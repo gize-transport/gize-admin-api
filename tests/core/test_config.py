@@ -12,7 +12,8 @@ REQUIRED = {
 
 
 def _set(env: pytest.MonkeyPatch, **values: str) -> None:
-    for name, value in {**REQUIRED, **values}.items():
+    # Production refuses to start without Sentry/OTLP; tests about other settings opt out.
+    for name, value in {**REQUIRED, "OBSERVABILITY_REQUIRED": "false", **values}.items():
         env.setenv(name, value)
 
 
@@ -251,4 +252,56 @@ def test_plain_http_otlp_rejected_outside_local_and_test(
 ) -> None:
     _set(clean_env, APP_ENV=app_env, OTEL_EXPORTER_OTLP_ENDPOINT="http://otlp.example.com")
     with pytest.raises(ConfigError, match="otel_exporter_otlp_endpoint"):
+        load_settings()
+
+
+def test_production_refuses_to_start_without_observability(clean_env: pytest.MonkeyPatch) -> None:
+    _set(clean_env, APP_ENV="production")
+    clean_env.delenv("OBSERVABILITY_REQUIRED")
+    with pytest.raises(ConfigError) as exc_info:
+        load_settings()
+    message = str(exc_info.value)
+    assert "sentry_dsn" in message
+    assert "otel_exporter_otlp_endpoint" in message
+    assert "OBSERVABILITY_REQUIRED" in message
+
+
+def test_production_starts_with_observability_configured(clean_env: pytest.MonkeyPatch) -> None:
+    _set(
+        clean_env,
+        APP_ENV="production",
+        SENTRY_DSN="https://dsnkey987@o1.ingest.sentry.io/42",
+        OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp.example.com/otlp",
+    )
+    clean_env.delenv("OBSERVABILITY_REQUIRED")
+    assert load_settings().observability_required is True
+
+
+@pytest.mark.parametrize("app_env", ["local", "test", "staging"])
+def test_observability_only_required_in_production(
+    clean_env: pytest.MonkeyPatch, app_env: str
+) -> None:
+    _set(clean_env, APP_ENV=app_env)
+    clean_env.delenv("OBSERVABILITY_REQUIRED")
+    assert load_settings().missing_observability() == ["sentry_dsn", "otel_exporter_otlp_endpoint"]
+
+
+def test_otlp_headers_are_percent_decoded(clean_env: pytest.MonkeyPatch) -> None:
+    # Grafana Cloud's snippet: OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20<b64>"
+    _set(clean_env, OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20c2VjcmV0,X%2DScope=a%3Db")
+    assert load_settings().otlp_headers() == {"Authorization": "Basic c2VjcmV0", "X-Scope": "a=b"}
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, 1.0), ("0", 0.0), ("0.25", 0.25)])
+def test_trace_sampler_ratio(
+    clean_env: pytest.MonkeyPatch, value: str | None, expected: float
+) -> None:
+    _set(clean_env, **({} if value is None else {"OTEL_TRACES_SAMPLER_RATIO": value}))
+    assert load_settings().otel_traces_sampler_ratio == expected
+
+
+@pytest.mark.parametrize("value", ["-0.1", "1.5", "abc", "nan"])
+def test_trace_sampler_ratio_rejected(clean_env: pytest.MonkeyPatch, value: str) -> None:
+    _set(clean_env, OTEL_TRACES_SAMPLER_RATIO=value)
+    with pytest.raises(ConfigError, match="otel_traces_sampler_ratio"):
         load_settings()
