@@ -9,7 +9,7 @@ Every ticket's acceptance criteria implicitly include `docs/engineering-standard
 ## M0 – Foundation
 
 ### GZ-001 · Repository scaffold and tooling
-Status: todo · Depends on: –
+Status: in review · Depends on: –
 - `pyproject.toml` with uv, ruff, mypy `--strict`, pytest, pytest-asyncio, coverage (gate 85% / services 90%), src layout `src/gize_api`.
 - pre-commit: ruff, ruff-format, mypy, gitleaks. `.env.example`, `.gitignore`, `README.md` (setup, commands).
 - `docker-compose.yml` with Postgres (same major version as Supabase) and Redis.

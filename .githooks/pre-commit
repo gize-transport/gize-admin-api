@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the pre-commit framework (hygiene, gitleaks, ruff, mypy) on staged files.
+# `pre-commit install` refuses to work while core.hooksPath is set, so the hook lives here
+# next to pre-push. Enable once per clone: git config core.hooksPath .githooks
+exec uv run --frozen pre-commit run --hook-stage pre-commit
