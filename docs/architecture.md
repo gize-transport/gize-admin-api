@@ -1,0 +1,126 @@
+# Architecture
+
+## Components
+
+```
+ Admin portal (Next.js, own repo) ─┐
+ Rider registration app ───────────┼──HTTPS──▶  Cloudflare (proxy, WAF) ──▶  Gize Admin API (FastAPI, this repo)
+ (later: rider/driver apps)       ─┘                                              │        │          │
+                                                                                  ▼        ▼          ▼
+                                                                   Supabase Postgres   Redis      External (allowlisted)
+                                                                   (schema "gize")    (limits,    SMS gateway, Supabase
+                                                                   Supabase Auth JWKS  Arq jobs)  Storage, Sentry, OTel
+                                                                                          │
+                                                                                   Arq worker (same image)
+```
+
+- **This API is the only writer.** No client talks to the `gize` schema directly. Supabase's auto-generated Data API must not expose `gize`.
+- **Supabase Auth** issues login tokens (staff in the admin portal). The API verifies them; it never issues its own passwords.
+- **Arq worker** runs from the same Docker image with a different command (SMS sending, notifications, cleanup jobs).
+
+## Repositories
+
+- `gize-admin-api` (this repo) – FastAPI, worker, migrations, tests.
+- `gize-admin-web` – Next.js admin portal. Consumes this API through a TypeScript client generated from our OpenAPI schema. Never shares code by copy-paste.
+
+## Layers (strict, one direction)
+
+```
+api (routers)  →  services (business rules)  →  repositories (data access)  →  models (SQLAlchemy)
+      │                    │
+   schemas (Pydantic in/out)   core (settings, security, errors, logging, telemetry, rate limits)
+```
+
+- **Routers**: HTTP only – parse input (schemas), call one service function, return a schema. No business logic, no queries.
+- **Services**: all business rules and authorization decisions (role + object ownership). Own transactions (`async with session.begin()`).
+- **Repositories**: SQLAlchemy queries only. Every list method takes a bounded page size and a cursor.
+- **Models**: SQLAlchemy 2.0 typed mappings in schema `gize`.
+- **Schemas**: Pydantic v2 with `model_config = ConfigDict(extra="forbid")` and explicit length/size constraints. Separate `Create`, `Update` and `Read` schemas; never return ORM objects or internal fields.
+- Domain modules are vertical slices: `routes/`, `riders/`, `waitlists/`, `drivers/`, `staff/`, each with `router.py`, `schemas.py`, `service.py`, `repository.py`, `models.py`.
+
+## Folder layout
+
+```
+src/gize_api/
+  main.py                 # app factory, middleware, routers, lifespan (startup/shutdown)
+  worker.py               # Arq WorkerSettings
+  core/
+    config.py             # pydantic-settings; all env vars; fails fast on missing secrets
+    db.py                 # async engine, session dependency, timeouts
+    security.py           # JWT verification (Supabase JWKS), current_staff dependency, role guards
+    errors.py             # exception types → RFC 9457 problem+json responses
+    logging.py            # structlog JSON, request context, PII masking
+    telemetry.py          # OpenTelemetry setup, Sentry init
+    ratelimit.py          # slowapi + Redis, key functions, fail-open/closed policy
+    idempotency.py        # Idempotency-Key handling (Postgres table)
+    http.py               # outbound HTTP client with timeouts + host allowlist (SSRF guard)
+    pagination.py         # cursor encode/decode, Page[T] schema
+    audit.py              # audit log writer used by services
+  health/router.py        # /health/live, /health/ready
+  staff/  routes/  riders/  waitlists/  drivers/  verification/   # domain slices
+  integrations/sms.py     # SmsSender protocol + FakeSmsSender + real gateway adapter later
+migrations/               # Alembic (env.py runs as gize_migrator)
+tests/
+  conftest.py             # real Postgres (docker), per-test transaction rollback, factories, auth helpers
+  <domain>/test_*.py
+docker-compose.yml        # postgres, redis (local + CI)
+Dockerfile                # multi-stage, non-root user, healthcheck
+```
+
+## Authentication and authorization
+
+1. Staff log in to Supabase Auth from the admin portal; the portal sends `Authorization: Bearer <access token>`.
+2. `core/security.py` verifies signature (via the project's JWKS / signing key), `exp`, `aud`, `iss`. Cache the JWKS with a timeout and refresh on unknown `kid`. Verify against the method the Supabase project actually uses (check in GZ-010).
+3. The token's `sub` is looked up in `gize.staff`; the account must exist and be active. Role (`admin` | `staff`) comes **from our table, never from the token**.
+4. Services check the role for the action **and** that the target object exists, is not soft-deleted and may be acted on. Missing or forbidden objects return the same 404 to avoid leaking existence where appropriate.
+5. Public endpoints (registration, waitlist sign-up, phone verification) are unauthenticated, rate-limited per IP and per phone, and require a verified phone token from the OTP flow.
+
+Login rate limits for Supabase Auth are configured in the Supabase dashboard (Auth → Rate limits), not in this API.
+
+## Data model (MVP – refine in the plan for each ticket)
+
+All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC, timestamptz) on every table. Soft delete via `deleted_at` on business tables; default queries exclude deleted rows. Money as integer whole birr. Phones stored E.164 (`+2519…` / `+2517…`).
+
+| Table | Key columns |
+| --- | --- |
+| `staff` | id (= Supabase user id), full_name, email, role (`admin`/`staff`), is_active |
+| `audit_log` | id, actor_staff_id, action, entity_type, entity_id, before (jsonb), after (jsonb), request_id, created_at – append-only |
+| `idempotency_keys` | key, actor, request_hash, response_status, response_body, created_at (purged after 24 h) |
+| `corridors` | id, name, origin_area, destination_area, waitlist_threshold |
+| `routes` | id, code, corridor_id, route_type, morning_time, return_time, seats, price_round_trip, price_one_way, price_saturday, status (`draft`/`active`/`paused`), driver_id (nullable) |
+| `pickup_points` | id, route_id, name, stop_order, pickup_time, lat, lng |
+| `guardians` | id, full_name, phone |
+| `riders` | id, rider_type (`adult`/`student`/`corporate`), full_name, phone (adults), guardian_id (students), school_name, grade_level, home_area, destination_area, status |
+| `route_assignments` | id, rider_id, route_id, pickup_point_id, plan, saturday_addon, start_month, status – seat count enforced with a row lock on `routes` |
+| `waitlist_entries` | id, corridor_id, rider_id, status (`waiting`/`assigned`/`withdrawn`), created_at |
+| `phone_verifications` | id, phone, code_hash, attempts, expires_at, verified_at |
+| `drivers` | id, full_name, phone, is_owner, status (`applied`/`approved`/`rejected`/`inactive`) |
+| `vehicles` | id, driver_id, plate, vehicle_type, seats, inspection_status, inspected_at, inspection_notes |
+| `driver_documents` | id, driver_id, doc_type, storage_path, content_type, size_bytes, uploaded_at |
+
+## API conventions
+
+- All routes under `/v1/`. Plural nouns: `/v1/routes`, `/v1/routes/{id}/pickup-points`.
+- JSON, snake_case. Times in responses ISO 8601 UTC; the client converts to Africa/Addis_Ababa.
+- Errors: RFC 9457 `application/problem+json` with `type`, `title`, `status`, `code` (stable machine code, e.g. `ROUTE_FULL`), `request_id`. Validation errors list field names and reasons only.
+- Lists: cursor pagination – `?limit=25&cursor=…` (max 100); response `{ "items": [...], "next_cursor": "…" | null }`. Stable ordering (`created_at, id`).
+- `Idempotency-Key` header **required** on POSTs that create or trigger side effects (registration, open-route-from-waitlist, approve driver, send SMS). Same key + same body → same stored response; same key + different body → 422.
+- `ETag`/`If-Match` optional later; for now use `updated_at` checks in services where concurrent edits matter.
+- Every response carries `X-Request-ID`.
+- OpenAPI is the contract; every endpoint has a summary, documented error codes and response schemas.
+
+## Configuration and environments
+
+| Environment | Database | Redis | Notes |
+| --- | --- | --- | --- |
+| Local | Postgres in Docker | Redis in Docker | Fake SMS sender, Sentry/OTel off |
+| Staging | Second free Supabase project | Managed or container Redis | Real integrations in test mode |
+| Production | Main Supabase project | Managed Redis | Host TBD |
+
+All configuration via environment variables loaded by `core/config.py`; app refuses to start if a required secret is missing. `.env.example` lists every variable with a dummy value. Connect through Supabase's connection pooler (the direct database host is IPv6-only).
+
+## Deployment
+
+- One Docker image; commands: `api` (uvicorn with graceful timeout 30 s) and `worker` (arq).
+- Migrations run as a separate release step with the `gize_migrator` credentials, before the new app version starts.
+- Host-agnostic: no host-specific SDKs or files in application code.
