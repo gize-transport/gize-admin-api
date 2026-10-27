@@ -5,9 +5,10 @@ refuses to start without them. Errors name the setting and the problem, never it
 a malformed URL can carry a password.
 """
 
+import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -34,21 +35,24 @@ class Settings(BaseSettings):
 
     app_env: Environment
     redis_url: SecretStr
-    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
-        default_factory=list, max_length=20
-    )
+    cors_allowed_origins: Annotated[tuple[str, ...], NoDecode] = Field(default=(), max_length=20)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
     def _split_comma_separated(cls, value: object) -> object:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return tuple(origin.strip() for origin in value.split(",") if origin.strip())
         return value
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _upper_case_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
 
     @field_validator("cors_allowed_origins")
     @classmethod
-    def _origins_are_bare(cls, origins: list[str]) -> list[str]:
+    def _origins_are_bare(cls, origins: tuple[str, ...]) -> tuple[str, ...]:
         for origin in origins:
             if not _is_bare_origin(origin):
                 raise ValueError(
@@ -59,10 +63,18 @@ class Settings(BaseSettings):
 
     @field_validator("redis_url")
     @classmethod
-    def _redis_scheme(cls, value: SecretStr) -> SecretStr:
-        parts = urlsplit(value.get_secret_value())
-        if parts.scheme not in {"redis", "rediss"} or not parts.hostname:
-            raise ValueError("must be a redis:// or rediss:// URL with a host")
+    def _redis_url_shape(cls, value: SecretStr) -> SecretStr:
+        # Options in a query string would override the client's timeouts, so none allowed.
+        parts = _safe_split(value.get_secret_value())
+        if (
+            parts is None
+            or parts.scheme not in {"redis", "rediss"}
+            or not parts.hostname
+            or parts.query
+            or parts.fragment
+            or not _REDIS_DB_PATH.fullmatch(parts.path)
+        ):
+            raise ValueError("must be redis://[user:password@]host[:port][/db] (or rediss://)")
         return value
 
     @model_validator(mode="after")
@@ -79,14 +91,28 @@ class Settings(BaseSettings):
         return self.app_env in {Environment.LOCAL, Environment.STAGING}
 
 
-def _is_bare_origin(origin: str) -> bool:
-    parts = urlsplit(origin)
+_REDIS_DB_PATH = re.compile(r"(/\d{0,2})?")
+
+
+def _safe_split(url: str) -> SplitResult | None:
+    """Parse a URL, or None if it is malformed.
+
+    urllib's own error messages quote the URL, password included, so they must never reach
+    a validation error.
+    """
     try:
+        parts = urlsplit(url)
         parts.port  # noqa: B018 - raises ValueError for an invalid port
     except ValueError:
-        return False
+        return None
+    return parts
+
+
+def _is_bare_origin(origin: str) -> bool:
+    parts = _safe_split(origin)
     return (
-        parts.scheme in {"http", "https"}
+        parts is not None
+        and parts.scheme in {"http", "https"}
         and bool(parts.hostname)
         and parts.username is None
         and origin == f"{parts.scheme}://{parts.netloc}"

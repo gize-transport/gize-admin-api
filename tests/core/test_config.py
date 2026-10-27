@@ -11,13 +11,6 @@ REQUIRED = {
 }
 
 
-@pytest.fixture
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    for name in (*REQUIRED, "CORS_ALLOWED_ORIGINS", "LOG_LEVEL"):
-        monkeypatch.delenv(name, raising=False)
-    return monkeypatch
-
-
 def _set(env: pytest.MonkeyPatch, **values: str) -> None:
     for name, value in {**REQUIRED, **values}.items():
         env.setenv(name, value)
@@ -28,7 +21,7 @@ def test_loads_from_environment(clean_env: pytest.MonkeyPatch) -> None:
     settings = load_settings()
     assert settings.app_env is Environment.TEST
     assert settings.redis_url.get_secret_value() == REQUIRED["REDIS_URL"]
-    assert settings.cors_allowed_origins == ["http://localhost:3000", "https://admin.example.com"]
+    assert settings.cors_allowed_origins == ("http://localhost:3000", "https://admin.example.com")
     assert settings.log_level == "INFO"
 
 
@@ -90,10 +83,60 @@ def test_redis_url_schemes_accepted(
     assert load_settings().redis_url.get_secret_value() == value
 
 
-@pytest.mark.parametrize("value", ["http://h:6379", "h:6379", "unix:///tmp/redis.sock", ""])
-def test_redis_url_bad_scheme_rejected(clean_env: pytest.MonkeyPatch, value: str) -> None:
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://h:6379",
+        "h:6379",
+        "unix:///tmp/redis.sock",
+        "",
+        "redis://h:99999/0",  # port out of range
+        "redis://h:6379/0?socket_timeout=99",  # would override the 1 s timeouts
+        "redis://h:6379/0#frag",
+        "redis://h:6379/not-a-db",
+        "redis://h:6379/0/extra",
+    ],
+)
+def test_redis_url_rejected(clean_env: pytest.MonkeyPatch, value: str) -> None:
     _set(clean_env, REDIS_URL=value)
     with pytest.raises(ConfigError, match="redis_url"):
+        load_settings()
+
+
+@pytest.mark.parametrize("value", ["redis://h:6379", "redis://h:6379/", "redis://h/15"])
+def test_redis_url_db_path_optional(clean_env: pytest.MonkeyPatch, value: str) -> None:
+    _set(clean_env, REDIS_URL=value)
+    assert load_settings().redis_url.get_secret_value() == value
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "secret"),
+    [
+        # urlsplit's own error message quotes the netloc, password included.
+        ("REDIS_URL", "redis://:pa\uff03ssLEAK@h:6379/0", "ssLEAK"),
+        ("REDIS_URL", "redis://:hunter2LEAK@h:notaport/0", "hunter2LEAK"),
+        ("CORS_ALLOWED_ORIGINS", "https://user:pa\uff03ssLEAK@admin.example.com", "ssLEAK"),
+    ],
+)
+def test_parser_errors_never_echo_secrets(
+    clean_env: pytest.MonkeyPatch, name: str, value: str, secret: str
+) -> None:
+    _set(clean_env, **{name: value})
+    with pytest.raises(ConfigError) as exc_info:
+        load_settings()
+    assert secret not in str(exc_info.value)
+    assert name.lower() in str(exc_info.value)
+
+
+@pytest.mark.parametrize("value", ["info", "Info", "DEBUG"])
+def test_log_level_any_case(clean_env: pytest.MonkeyPatch, value: str) -> None:
+    _set(clean_env, LOG_LEVEL=value)
+    assert load_settings().log_level == value.upper()
+
+
+def test_log_level_unknown_rejected(clean_env: pytest.MonkeyPatch) -> None:
+    _set(clean_env, LOG_LEVEL="verbose")
+    with pytest.raises(ConfigError, match="log_level"):
         load_settings()
 
 

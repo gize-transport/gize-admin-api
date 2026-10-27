@@ -1,6 +1,8 @@
-"""Pure ASGI middleware: request body size limit and security headers."""
+"""Pure ASGI middleware: request body size limit, CORS denial cleanup, security headers."""
 
-from starlette.datastructures import MutableHeaders
+from collections.abc import Iterable
+
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from gize_api.core.errors import ErrorCode, problem_response
@@ -52,16 +54,51 @@ class BodySizeLimitMiddleware:
 
         await self.app(scope, replay, send)
 
-    @staticmethod
-    def _declared_length(scope: Scope) -> int:
+    def _declared_length(self, scope: Scope) -> int:
+        """The largest declared Content-Length; 0 if none is usable (the stream is counted)."""
+        declared = 0
         for name, value in scope["headers"]:
             if name == b"content-length" and value.isdigit():
-                return int(value)
-        return 0
+                # A 20+ digit length is over any limit, and int() refuses very long strings.
+                length = self.max_bytes + 1 if len(value) > 19 else int(value)
+                declared = max(declared, length)
+        return declared
+
+
+class CORSDenialMiddleware:
+    """Strip every CORS header from responses to origins that are not allowed.
+
+    Starlette's CORSMiddleware never grants a disallowed origin, but it still adds
+    Expose-Headers (and, on a refused preflight, Allow-Methods/Headers and Max-Age). A
+    disallowed origin gets no CORS headers at all. Wraps CORSMiddleware.
+    """
+
+    def __init__(self, app: ASGIApp, allowed_origins: Iterable[str]) -> None:
+        self.app = app
+        self.allowed_origins = frozenset(allowed_origins)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        origin = Headers(scope=scope).get("origin") if scope["type"] == "http" else None
+        if origin is None or origin in self.allowed_origins:
+            await self.app(scope, receive, send)
+            return
+
+        async def send_without_cors(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name in [n for n in headers if n.startswith("access-control-")]:
+                    del headers[name]
+            await send(message)
+
+        await self.app(scope, receive, send_without_cors)
 
 
 class SecurityHeadersMiddleware:
-    """Add headers every response must carry, including errors raised by other middleware."""
+    """Add headers every response must carry.
+
+    Installed outside Starlette's ServerErrorMiddleware (see main.GizeAPI), so unhandled
+    errors (500) and responses from other middleware carry them too.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app

@@ -8,14 +8,22 @@ from fastapi import FastAPI, Request
 from redis.asyncio import Redis
 
 from gize_api.core.config import ConfigError
-from gize_api.main import MAX_BODY_BYTES, create_app
-from tests.conftest import SettingsFactory
+from gize_api.main import (
+    MAX_BODY_BYTES,
+    REDIS_CLIENT_NAME,
+    REDIS_MAX_CONNECTIONS,
+    REDIS_TIMEOUT_SECONDS,
+    create_app,
+)
+from tests.support import SettingsFactory
 
 ALLOWED_ORIGIN = "https://admin.example.com"
 
 
 def _client(app: FastAPI) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    # Unhandled exceptions become 500 responses, as they would behind a real server.
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
 @pytest.fixture
@@ -26,35 +34,53 @@ def app(make_settings: SettingsFactory) -> FastAPI:
     async def echo(request: Request) -> dict[str, int]:
         return {"size": len(await request.body())}
 
+    @app.get("/_test/crash")
+    async def crash() -> None:
+        raise RuntimeError("boom: internal detail")
+
     return app
 
 
 # --- factory and lifespan ---------------------------------------------------------------
 
 
-def test_create_app_refuses_to_start_without_required_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for name in ("APP_ENV", "REDIS_URL"):
-        monkeypatch.delenv(name, raising=False)
+def test_create_app_refuses_to_start_without_required_env(clean_env: pytest.MonkeyPatch) -> None:
     with pytest.raises(ConfigError):
         create_app()
 
 
-def test_create_app_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APP_ENV", "test")
-    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")
+def test_create_app_reads_environment(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("APP_ENV", "test")
+    clean_env.setenv("REDIS_URL", "redis://127.0.0.1:1/0")
     assert isinstance(create_app(), FastAPI)
 
 
-async def test_lifespan_opens_redis_with_timeouts_and_closes_it(app: FastAPI) -> None:
+async def test_lifespan_redis_client_settings(app: FastAPI) -> None:
     async with app.router.lifespan_context(app):
         redis = app.state.redis
         assert isinstance(redis, Redis)
-        kwargs = redis.connection_pool.connection_kwargs
-        assert kwargs["socket_timeout"] == 1.0
-        assert kwargs["socket_connect_timeout"] == 1.0
+        pool = redis.connection_pool
+        assert pool.connection_kwargs["socket_timeout"] == REDIS_TIMEOUT_SECONDS
+        assert pool.connection_kwargs["socket_connect_timeout"] == REDIS_TIMEOUT_SECONDS
+        assert pool.connection_kwargs["client_name"] == REDIS_CLIENT_NAME
+        assert pool.max_connections == REDIS_MAX_CONNECTIONS
     assert not hasattr(app.state, "redis")
+
+
+async def test_lifespan_opens_and_closes_real_redis_connections(
+    make_settings: SettingsFactory, test_redis_url: str
+) -> None:
+    app = create_app(make_settings(redis_url=test_redis_url))
+    async with Redis.from_url(test_redis_url, socket_timeout=1.0) as observer:
+
+        async def ours() -> list[str]:
+            clients = await observer.client_list()
+            return [c["name"] for c in clients if c["name"] == REDIS_CLIENT_NAME]
+
+        async with app.router.lifespan_context(app):
+            assert await app.state.redis.ping() is True
+            assert await ours() == [REDIS_CLIENT_NAME]
+        assert await ours() == []
 
 
 async def test_starts_and_serves_with_redis_unreachable(app: FastAPI) -> None:
@@ -117,6 +143,7 @@ async def test_streamed_body_under_limit_reaches_handler(app: FastAPI) -> None:
         ("POST", "/_test/echo", b"{}", 200),
         ("GET", "/no-such-route", b"", 404),
         ("POST", "/_test/echo", b"x" * (MAX_BODY_BYTES + 1), 413),
+        ("GET", "/_test/crash", b"", 500),
     ],
 )
 async def test_nosniff_on_every_response(
@@ -147,10 +174,7 @@ async def test_disallowed_origin_gets_no_cors_headers(app: FastAPI) -> None:
             "/_test/echo", content=b"{}", headers={"Origin": "https://evil.example.com"}
         )
     assert response.status_code == 200
-    # Starlette still lists exposed header names; without Allow-Origin the browser ignores
-    # them and the response stays unreadable cross-origin.
-    granting = {"access-control-allow-origin", "access-control-allow-credentials"}
-    assert not granting & set(response.headers)
+    assert not [h for h in response.headers if h.startswith("access-control-")]
     assert "origin" in response.headers["vary"].lower()
 
 
@@ -181,7 +205,15 @@ async def test_preflight_from_disallowed_origin_rejected(app: FastAPI) -> None:
             },
         )
     assert response.status_code == 400
-    assert "access-control-allow-origin" not in response.headers
+    assert not [h for h in response.headers if h.startswith("access-control-")]
+
+
+async def test_unhandled_error_does_not_leak_detail(app: FastAPI) -> None:
+    async with _client(app) as client:
+        response = await client.get("/_test/crash", headers={"Origin": ALLOWED_ORIGIN})
+    assert response.status_code == 500
+    assert "boom" not in response.text
+    assert "RuntimeError" not in response.text
 
 
 async def test_preflight_with_unlisted_header_rejected(app: FastAPI) -> None:

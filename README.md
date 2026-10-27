@@ -45,7 +45,8 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
-| `LOG_LEVEL` | no | `INFO` by default. |
+| `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
+| `TEST_REDIS_URL` | tests only | Redis the test suite uses (CI sets it; locally read from `.env`). Tests fail, never skip, without it. |
 
 ## Docker image
 
@@ -55,6 +56,7 @@ One image serves both processes:
 docker build -t gize-admin-api .
 docker run --rm -p 8000:8000 -e APP_ENV=local \
   -e REDIS_URL=redis://host.docker.internal:6379/0 gize-admin-api   # api (default)
+# On Linux, also pass --add-host=host.docker.internal:host-gateway
 docker run --rm gize-admin-api worker                # Arq worker (from GZ-008)
 ```
 
