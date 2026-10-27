@@ -7,7 +7,7 @@ per environment.
 
 from fastapi import FastAPI
 
-app = FastAPI(
+app: int = FastAPI(
     title="Gize Admin API",
     docs_url=None,
     redoc_url=None,
