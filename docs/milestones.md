@@ -17,13 +17,13 @@ Status: done · Depends on: –
 - Acceptance: fresh clone → `uv sync`, `docker compose up -d`, `uv run pytest` passes with a placeholder test.
 
 ### GZ-002 · CI pipeline
-Status: in review · Depends on: GZ-001
+Status: done · Depends on: GZ-001
 - GitHub Actions on PRs and `main`: ruff, ruff format check, mypy, pytest with Postgres + Redis services, coverage gate, `pip-audit`, gitleaks, Docker build.
 - Migration check job: `alembic upgrade head → downgrade -1 → upgrade head` – moved to GZ-006 (M0 plan decision: no placeholder job that passes without checking anything).
 - Acceptance: a PR with a lint error, type error, failing test or committed fake secret fails CI.
 
 ### GZ-003 · Settings, app factory and lifecycle
-Status: todo · Depends on: GZ-001
+Status: in review · Depends on: GZ-001
 - `core/config.py` (pydantic-settings), fails fast on missing required settings; no secrets in defaults.
 - App factory, lifespan (open/close pools), graceful shutdown (30 s), CORS allowlist per environment, 1 MB body limit, `nosniff` header.
 - Acceptance: app refuses to start without required env; oversized body → 413 problem+json; disallowed origin gets no CORS headers.

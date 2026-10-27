@@ -46,7 +46,7 @@ Ask before adding any dependency not listed here.
 - `uv sync` – install
 - `docker compose up -d` – local Postgres + Redis
 - `uv run alembic upgrade head` – apply migrations
-- `uv run fastapi dev src/gize_api/main.py` – run locally
+- `uv run --env-file .env uvicorn --factory gize_api.main:create_app --reload` – run locally
 - `uv run pytest` – tests (must pass, coverage gate in `pyproject.toml`)
 - `uv run ruff check . && uv run ruff format --check . && uv run mypy src` – must pass
 - `uv run arq gize_api.worker.WorkerSettings` – background worker
