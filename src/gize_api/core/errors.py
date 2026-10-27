@@ -1,34 +1,39 @@
 """RFC 9457 problem details (`application/problem+json`) for every error response.
 
-Clients get `type`, `title`, `status`, a stable machine `code` and the `request_id`;
-validation errors add `errors` (field and reason only). Never exception text, SQL, stack
-traces, input values or internal IDs: those go to the logs with the same request ID.
+Clients get `type`, `title`, `status`, a stable machine `code` and the `request_id`.
+Validation errors add `errors` (location, field, reason) and `errors_truncated`. Never
+exception text, SQL, stack traces, input values or internal IDs: those go to the logs with
+the same request ID. Codes and reasons are part of the API contract: only ever add.
 """
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from http import HTTPStatus
-from typing import Any
+from typing import Literal
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from gize_api.core.request_id import current_request_id
 
 PROBLEM_JSON = "application/problem+json"
 MAX_VALIDATION_ERRORS = 50
+MAX_FIELD_PART_LENGTH = 64
+MAX_FIELD_PARTS = 8
+
+_LOGGED_FLAG = "gize_unhandled_error_logged"
 
 logger = logging.getLogger("gize_api.errors")
 
-ExceptionHandler = Callable[[Request, Exception], Awaitable[Response]]
-
 
 class ErrorCode(StrEnum):
-    """Stable error codes (part of the API contract): never rename or reuse; only add."""
+    """Stable error codes: never rename or reuse one; only add."""
 
     BAD_REQUEST = "BAD_REQUEST"
     CORS_PREFLIGHT_REJECTED = "CORS_PREFLIGHT_REJECTED"
@@ -41,6 +46,21 @@ class ErrorCode(StrEnum):
     RATE_LIMITED = "RATE_LIMITED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
+
+
+class ValidationReason(StrEnum):
+    """Why a field failed validation: our vocabulary, not the validation library's."""
+
+    MISSING = "missing"
+    UNKNOWN_FIELD = "unknown_field"
+    TOO_LONG = "too_long"
+    TOO_SHORT = "too_short"
+    OUT_OF_RANGE = "out_of_range"
+    INVALID_TYPE = "invalid_type"
+    INVALID_FORMAT = "invalid_format"
+    NOT_ALLOWED = "not_allowed"
+    INVALID_JSON = "invalid_json"
+    INVALID = "invalid"
 
 
 @dataclass(frozen=True)
@@ -63,7 +83,7 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }
 
-# Framework HTTP errors (routing, method, our own HTTPException) mapped onto codes.
+# Framework HTTP errors (routing, method, an HTTPException raised by code) mapped onto codes.
 _CODE_FOR_STATUS: dict[int, ErrorCode] = {
     400: ErrorCode.BAD_REQUEST,
     401: ErrorCode.UNAUTHENTICATED,
@@ -74,6 +94,35 @@ _CODE_FOR_STATUS: dict[int, ErrorCode] = {
     429: ErrorCode.RATE_LIMITED,
     503: ErrorCode.SERVICE_UNAVAILABLE,
 }
+
+Location = Literal["body", "query", "path", "header", "cookie"]
+_LOCATIONS: dict[str, Location] = {
+    "body": "body",
+    "query": "query",
+    "path": "path",
+    "header": "header",
+    "cookie": "cookie",
+}
+
+
+class FieldError(BaseModel):
+    location: Location
+    # JSON Pointer (RFC 6901) within `location`; "" means the whole body or parameter set.
+    field: str
+    reason: ValidationReason
+
+
+class Problem(BaseModel):
+    type: str = "about:blank"
+    title: str
+    status: int
+    code: ErrorCode
+    request_id: str | None
+
+
+class ValidationProblem(Problem):
+    errors: list[FieldError]
+    errors_truncated: bool
 
 
 class AppError(Exception):
@@ -89,25 +138,65 @@ def problem_response(
     code: ErrorCode,
     *,
     status: int | None = None,
-    errors: list[dict[str, str]] | None = None,
     headers: Mapping[str, str] | None = None,
+    errors: Sequence[FieldError] | None = None,
+    errors_truncated: bool = False,
 ) -> JSONResponse:
-    """Build the problem body. `status` overrides the registered one (framework errors)."""
+    """The problem response for `code`. `status` overrides the registered one (framework)."""
     spec = ERROR_SPECS[code]
     if status is None or status == spec.status:
         status, title = spec.status, spec.title
     else:
-        title = HTTPStatus(status).phrase
-    body: dict[str, Any] = {
-        "type": "about:blank",
-        "title": title,
-        "status": status,
-        "code": code.value,
-        "request_id": current_request_id(),
+        title = _phrase(status, fallback=spec.title)
+    problem: Problem
+    if errors is None:
+        problem = Problem(title=title, status=status, code=code, request_id=current_request_id())
+    else:
+        problem = ValidationProblem(
+            title=title,
+            status=status,
+            code=code,
+            request_id=current_request_id(),
+            errors=list(errors),
+            errors_truncated=errors_truncated,
+        )
+    return JSONResponse(
+        problem.model_dump(mode="json"),
+        status_code=status,
+        media_type=PROBLEM_JSON,
+        headers=headers,
+    )
+
+
+def reason_for(pydantic_type: str) -> ValidationReason:
+    """Map a pydantic error type onto our stable reason vocabulary."""
+    exact = {
+        "missing": ValidationReason.MISSING,
+        "extra_forbidden": ValidationReason.UNKNOWN_FIELD,
+        "json_invalid": ValidationReason.INVALID_JSON,
+        "literal_error": ValidationReason.NOT_ALLOWED,
+        "enum": ValidationReason.NOT_ALLOWED,
+        "greater_than": ValidationReason.OUT_OF_RANGE,
+        "greater_than_equal": ValidationReason.OUT_OF_RANGE,
+        "less_than": ValidationReason.OUT_OF_RANGE,
+        "less_than_equal": ValidationReason.OUT_OF_RANGE,
+        "multiple_of": ValidationReason.OUT_OF_RANGE,
+        "finite_number": ValidationReason.OUT_OF_RANGE,
     }
-    if errors is not None:
-        body["errors"] = errors
-    return JSONResponse(body, status_code=status, media_type=PROBLEM_JSON, headers=headers)
+    if pydantic_type in exact:
+        return exact[pydantic_type]
+    if pydantic_type.endswith("too_long"):
+        return ValidationReason.TOO_LONG
+    if pydantic_type.endswith("too_short"):
+        return ValidationReason.TOO_SHORT
+    if pydantic_type.startswith(_FORMAT_PREFIXES):
+        return ValidationReason.INVALID_FORMAT
+    if pydantic_type.endswith(("_type", "_parsing")):
+        return ValidationReason.INVALID_TYPE
+    return ValidationReason.INVALID
+
+
+_FORMAT_PREFIXES = ("string_pattern", "uuid", "url", "date", "time", "ip_", "email", "decimal")
 
 
 def install_exception_handlers(app: FastAPI) -> None:
@@ -115,6 +204,32 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(Exception, _unhandled_error)
+
+
+class HandledErrorGuard:
+    """Stop an error our handler already logged from reaching the server.
+
+    Starlette's ServerErrorMiddleware calls the handler (which logs with the request ID and,
+    unless the response already started, sends the 500) and then re-raises, so the server
+    would log it a second time: without a request ID and with the raw exception text. An
+    error the handler did not see is re-raised, never lost. If the response had started,
+    returning leaves it incomplete and the server aborts the connection, so a client never
+    mistakes a truncated body for success. Installed directly around ServerErrorMiddleware
+    (see main.GizeAPI).
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        except Exception:
+            if not scope.get("state", {}).get(_LOGGED_FLAG):
+                raise
 
 
 # Starlette types every handler as (Request, Exception); each re-raises anything it was not
@@ -130,16 +245,27 @@ async def _app_error(request: Request, exc: Exception) -> Response:
 async def _validation_error(request: Request, exc: Exception) -> Response:
     if not isinstance(exc, RequestValidationError):
         raise exc
-    errors = [
-        {"field": ".".join(str(part) for part in error["loc"]), "reason": str(error["type"])}
-        for error in exc.errors()[:MAX_VALIDATION_ERRORS]
-    ]
-    return problem_response(ErrorCode.VALIDATION_FAILED, errors=errors)
+    all_errors = exc.errors()
+    errors = [_field_error(error["loc"], str(error["type"])) for error in all_errors]
+    return problem_response(
+        ErrorCode.VALIDATION_FAILED,
+        errors=errors[:MAX_VALIDATION_ERRORS],
+        errors_truncated=len(all_errors) > MAX_VALIDATION_ERRORS,
+    )
 
 
 async def _http_error(request: Request, exc: Exception) -> Response:
     if not isinstance(exc, StarletteHTTPException):
         raise exc
+    if exc.status_code < 400:
+        return Response(status_code=exc.status_code, headers=exc.headers)
+    if exc.status_code >= 500:
+        logger.error(
+            "http_error status=%s request_id=%s route=%s",
+            exc.status_code,
+            current_request_id(),
+            _route(request.scope),
+        )
     code = _CODE_FOR_STATUS.get(exc.status_code)
     if code is None:
         code = ErrorCode.INTERNAL_ERROR if exc.status_code >= 500 else ErrorCode.BAD_REQUEST
@@ -147,13 +273,34 @@ async def _http_error(request: Request, exc: Exception) -> Response:
 
 
 async def _unhandled_error(request: Request, exc: Exception) -> Response:
-    route = request.scope.get("route")
     logger.error(
-        "unhandled_error",
+        "unhandled_error request_id=%s route=%s",
+        current_request_id(),
+        _route(request.scope),
         exc_info=exc,
-        extra={
-            "request_id": current_request_id(),
-            "route": getattr(route, "path", "unmatched"),
-        },
     )
+    request.scope.setdefault("state", {})[_LOGGED_FLAG] = True
     return problem_response(ErrorCode.INTERNAL_ERROR)
+
+
+def _route(scope: Scope) -> str:
+    """The route template (never the raw path, which can carry IDs or phone numbers)."""
+    route = scope.get("route")
+    return str(getattr(route, "path", "unmatched"))
+
+
+def _field_error(loc: Sequence[int | str], pydantic_type: str) -> FieldError:
+    location = _LOCATIONS.get(str(loc[0]), "body") if loc else "body"
+    parts = [] if pydantic_type == "json_invalid" else list(loc[1:])
+    pointer = "".join(
+        "/" + str(part)[:MAX_FIELD_PART_LENGTH].replace("~", "~0").replace("/", "~1")
+        for part in parts[:MAX_FIELD_PARTS]
+    )
+    return FieldError(location=location, field=pointer, reason=reason_for(pydantic_type))
+
+
+def _phrase(status: int, *, fallback: str) -> str:
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return fallback

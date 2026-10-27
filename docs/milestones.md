@@ -104,6 +104,7 @@ Status: todo · Depends on: GZ-011
 - CI: regenerate and fail if `openapi.json` differs (API changed without updating the contract); `oasdiff breaking` against `main`'s `openapi.json` fails the PR on breaking changes unless the PR has the `breaking-change-approved` label.
 - On merge to `main` when `openapi.json` changed: a workflow tags `api-vX.Y.Z` (minor for additive changes, patch otherwise) and attaches `openapi.json` to a GitHub release.
 - Every operation has a stable `operationId` (`<domain>_<action>`, e.g. `routes_list`), summary, response schemas and documented error codes; error codes appear as an enum in the schema.
+- Replace FastAPI's default 422 (`HTTPValidationError`, `application/json`) with the real `ValidationProblem` (`application/problem+json`) from `core/errors.py`, and document `Problem` for the other error responses (handed over from GZ-004).
 - Acceptance: removing a response field in a test PR fails CI; an additive change produces a new minor tag after merge.
 
 ---

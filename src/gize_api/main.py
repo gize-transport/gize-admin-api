@@ -4,7 +4,7 @@ Run with `uvicorn --factory gize_api.main:create_app`. There is deliberately no 
 app: building one needs the environment, and importing this module must not.
 """
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,7 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
 from gize_api.core.config import Settings, load_settings
-from gize_api.core.errors import install_exception_handlers
+from gize_api.core.errors import HandledErrorGuard, install_exception_handlers
 from gize_api.core.middleware import (
     BodySizeLimitMiddleware,
     CORSGuardMiddleware,
@@ -34,15 +34,30 @@ CORS_MAX_AGE_SECONDS = 600
 
 
 class GizeAPI(FastAPI):
-    """FastAPI with request IDs and security headers wrapped around the whole stack.
+    """FastAPI with the cross-cutting layers wrapped around the whole stack.
 
     Middleware added with `add_middleware` runs inside Starlette's ServerErrorMiddleware, so
-    it never sees the 500 response for an unhandled error. Wrapping the built stack does:
-    the request ID is set before anything else runs, and every response carries both.
+    it never sees the 500 for an unhandled error. Wrapping the built stack does. From the
+    outside in: security headers -> request ID -> CORS guard -> CORS -> handled-error guard
+    -> ServerErrorMiddleware -> `add_middleware` layers -> routes. So every response,
+    including a 500, has the request ID and nosniff, and is readable by allowed origins.
     """
 
+    cors_allowed_origins: Sequence[str] = ()
+
     def build_middleware_stack(self) -> ASGIApp:
-        return SecurityHeadersMiddleware(RequestIdMiddleware(super().build_middleware_stack()))
+        app: ASGIApp = HandledErrorGuard(super().build_middleware_stack())
+        app = CORSMiddleware(
+            app,
+            allow_origins=self.cors_allowed_origins,
+            allow_methods=CORS_ALLOWED_METHODS,
+            allow_headers=CORS_ALLOWED_HEADERS,
+            expose_headers=CORS_EXPOSED_HEADERS,
+            allow_credentials=False,
+            max_age=CORS_MAX_AGE_SECONDS,
+        )
+        app = CORSGuardMiddleware(app, allowed_origins=self.cors_allowed_origins)
+        return SecurityHeadersMiddleware(RequestIdMiddleware(app))
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -57,21 +72,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if settings.docs_enabled else None,
     )
     app.state.settings = settings
+    app.cors_allowed_origins = settings.cors_allowed_origins
     install_exception_handlers(app)
-
-    # add_middleware wraps: the last one added runs first. Order from the outside in:
-    # CORS guard -> CORS -> body limit -> routes.
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_allowed_origins,
-        allow_methods=CORS_ALLOWED_METHODS,
-        allow_headers=CORS_ALLOWED_HEADERS,
-        expose_headers=CORS_EXPOSED_HEADERS,
-        allow_credentials=False,
-        max_age=CORS_MAX_AGE_SECONDS,
-    )
-    app.add_middleware(CORSGuardMiddleware, allowed_origins=settings.cors_allowed_origins)
     return app
 
 
