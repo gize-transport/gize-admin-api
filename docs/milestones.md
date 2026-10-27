@@ -9,7 +9,7 @@ Every ticket's acceptance criteria implicitly include `docs/engineering-standard
 ## M0 – Foundation
 
 ### GZ-001 · Repository scaffold and tooling
-Status: todo · Depends on: –
+Status: in review · Depends on: –
 - `pyproject.toml` with uv, ruff, mypy `--strict`, pytest, pytest-asyncio, coverage (gate 85% / services 90%), src layout `src/gize_api`.
 - pre-commit: ruff, ruff-format, mypy, gitleaks. `.env.example`, `.gitignore`, `README.md` (setup, commands).
 - `docker-compose.yml` with Postgres (same major version as Supabase) and Redis.
@@ -210,6 +210,12 @@ Status: todo · Depends on: GZ-061
 ### GZ-064 · Overview summary endpoint
 Status: todo · Depends on: GZ-041, GZ-052
 - `GET /v1/overview` (staff): counts of active routes, riders, waitlists ready to open, driver applications awaiting review; one bounded query each, no N+1.
+
+### GZ-065 · Automated dependency and image updates
+Status: todo · Depends on: GZ-002
+- Found in GZ-001 review: base images, Compose services, the Dockerfile frontend and pre-commit hooks are pinned by digest/SHA, and `uv.lock` pins Python packages, but nothing proposes updates, so security patches go stale silently.
+- Dependabot (or Renovate) for `uv.lock`, Docker digests (`Dockerfile`, `docker-compose.yml`), GitHub Actions and pre-commit hooks; weekly, grouped, each update a normal PR through CI.
+- Acceptance: a stale pin produces an update PR that passes CI; nothing auto-merges.
 
 ### GZ-063 · Load and failure drill
 Status: todo · Depends on: GZ-062

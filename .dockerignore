@@ -1,0 +1,8 @@
+# Build context holds only what the image needs.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!docker/
+**/__pycache__
