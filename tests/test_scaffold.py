@@ -23,3 +23,7 @@ async def test_app_exposes_no_routes_or_docs_yet(path: str) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(path)
     assert response.status_code == 404
+
+
+def test_demo_failure_must_fail_ci() -> None:
+    assert app.title == "not the real title"
