@@ -63,7 +63,7 @@ migrations/               # Alembic (env.py runs as gize_migrator)
 tests/
   conftest.py             # real Postgres (docker), per-test transaction rollback, factories, auth helpers
   <domain>/test_*.py
-docker-compose.yml        # postgres, redis (local + CI)
+docker-compose.yml        # postgres, redis (local; CI runs the same images as job services)
 Dockerfile                # multi-stage, non-root user, healthcheck
 ```
 

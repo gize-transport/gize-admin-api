@@ -9,7 +9,7 @@ Every ticket's acceptance criteria implicitly include `docs/engineering-standard
 ## M0 – Foundation
 
 ### GZ-001 · Repository scaffold and tooling
-Status: in review · Depends on: –
+Status: done · Depends on: –
 - `pyproject.toml` with uv, ruff, mypy `--strict`, pytest, pytest-asyncio, coverage (gate 85% / services 90%), src layout `src/gize_api`.
 - pre-commit: ruff, ruff-format, mypy, gitleaks. `.env.example`, `.gitignore`, `README.md` (setup, commands).
 - `docker-compose.yml` with Postgres (same major version as Supabase) and Redis.
@@ -17,9 +17,9 @@ Status: in review · Depends on: –
 - Acceptance: fresh clone → `uv sync`, `docker compose up -d`, `uv run pytest` passes with a placeholder test.
 
 ### GZ-002 · CI pipeline
-Status: todo · Depends on: GZ-001
+Status: in review · Depends on: GZ-001
 - GitHub Actions on PRs and `main`: ruff, ruff format check, mypy, pytest with Postgres + Redis services, coverage gate, `pip-audit`, gitleaks, Docker build.
-- Migration check job: `alembic upgrade head → downgrade -1 → upgrade head` (activates once GZ-006 lands).
+- Migration check job: `alembic upgrade head → downgrade -1 → upgrade head` – moved to GZ-006 (M0 plan decision: no placeholder job that passes without checking anything).
 - Acceptance: a PR with a lint error, type error, failing test or committed fake secret fails CI.
 
 ### GZ-003 · Settings, app factory and lifecycle
@@ -46,6 +46,7 @@ Status: todo · Depends on: GZ-003
 - SQL bootstrap script (run once by a human, documented in README): schema `gize`, roles `gize_app` (DML only) and `gize_migrator` (owner), grants, revoke from `anon`/`authenticated`.
 - Alembic configured to run as `gize_migrator`; base model mixins (UUID PK, timestamps, `deleted_at`); helper that enables deny-all RLS on every new table.
 - Test fixtures: real Postgres, migrations applied once, transaction rollback per test, factories.
+- CI migration check job (moved from GZ-002): `alembic upgrade head → downgrade -1 → upgrade head`.
 - Acceptance: `gize_app` cannot create or drop tables (test); `anon` cannot read `gize` tables (test).
 
 ### GZ-007 · Health endpoints
