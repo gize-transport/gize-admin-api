@@ -1,4 +1,4 @@
-"""Pure ASGI middleware: request body size limit, CORS denial cleanup, security headers."""
+"""Pure ASGI middleware: request body size limit, CORS guard, security headers."""
 
 from collections.abc import Iterable
 
@@ -65,12 +65,12 @@ class BodySizeLimitMiddleware:
         return declared
 
 
-class CORSDenialMiddleware:
-    """Strip every CORS header from responses to origins that are not allowed.
+class CORSGuardMiddleware:
+    """Tighten Starlette's CORSMiddleware, which it wraps.
 
-    Starlette's CORSMiddleware never grants a disallowed origin, but it still adds
-    Expose-Headers (and, on a refused preflight, Allow-Methods/Headers and Max-Age). A
-    disallowed origin gets no CORS headers at all. Wraps CORSMiddleware.
+    - A disallowed origin gets no CORS headers at all. Starlette never grants it, but still
+      adds Expose-Headers (and, on a refused preflight, Allow-Methods/Headers and Max-Age).
+    - A refused preflight (400) becomes problem+json instead of Starlette's plain text.
     """
 
     def __init__(self, app: ASGIApp, allowed_origins: Iterable[str]) -> None:
@@ -78,19 +78,35 @@ class CORSDenialMiddleware:
         self.allowed_origins = frozenset(allowed_origins)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        origin = Headers(scope=scope).get("origin") if scope["type"] == "http" else None
-        if origin is None or origin in self.allowed_origins:
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        headers = Headers(scope=scope)
+        origin = headers.get("origin")
+        if origin is None:
+            await self.app(scope, receive, send)
+            return
+        disallowed = origin not in self.allowed_origins
+        preflight = scope["method"] == "OPTIONS" and "access-control-request-method" in headers
+        replaced = False
 
-        async def send_without_cors(message: Message) -> None:
+        async def guarded_send(message: Message) -> None:
+            nonlocal replaced
+            if replaced:
+                return  # drop the body of the response we replaced
             if message["type"] == "http.response.start":
-                headers = MutableHeaders(scope=message)
-                for name in [n for n in headers if n.startswith("access-control-")]:
-                    del headers[name]
+                if preflight and message["status"] == 400:
+                    replaced = True
+                    rejection = problem_response(ErrorCode.CORS_PREFLIGHT_REJECTED)
+                    await rejection(scope, receive, send)
+                    return
+                if disallowed:
+                    response_headers = MutableHeaders(scope=message)
+                    for name in [n for n in response_headers if n.startswith("access-control-")]:
+                        del response_headers[name]
             await send(message)
 
-        await self.app(scope, receive, send_without_cors)
+        await self.app(scope, receive, guarded_send)
 
 
 class SecurityHeadersMiddleware:

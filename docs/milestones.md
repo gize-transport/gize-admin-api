@@ -23,13 +23,13 @@ Status: done · Depends on: GZ-001
 - Acceptance: a PR with a lint error, type error, failing test or committed fake secret fails CI.
 
 ### GZ-003 · Settings, app factory and lifecycle
-Status: in review · Depends on: GZ-001
+Status: done · Depends on: GZ-001
 - `core/config.py` (pydantic-settings), fails fast on missing required settings; no secrets in defaults.
 - App factory, lifespan (open/close pools), graceful shutdown (30 s), CORS allowlist per environment, 1 MB body limit, `nosniff` header.
 - Acceptance: app refuses to start without required env; oversized body → 413 problem+json; disallowed origin gets no CORS headers.
 
 ### GZ-004 · Errors and request IDs
-Status: todo · Depends on: GZ-003
+Status: in review · Depends on: GZ-003
 - RFC 9457 problem+json for all errors, including validation (field + reason only) and unhandled exceptions (generic message).
 - Central registry of stable error codes. `X-Request-ID` middleware (accept a safe incoming value or generate one), returned on every response.
 - Acceptance: an unhandled exception returns 500 with code + request ID and no internals; the same request ID appears in the log line.
@@ -104,6 +104,7 @@ Status: todo · Depends on: GZ-011
 - CI: regenerate and fail if `openapi.json` differs (API changed without updating the contract); `oasdiff breaking` against `main`'s `openapi.json` fails the PR on breaking changes unless the PR has the `breaking-change-approved` label.
 - On merge to `main` when `openapi.json` changed: a workflow tags `api-vX.Y.Z` (minor for additive changes, patch otherwise) and attaches `openapi.json` to a GitHub release.
 - Every operation has a stable `operationId` (`<domain>_<action>`, e.g. `routes_list`), summary, response schemas and documented error codes; error codes appear as an enum in the schema.
+- Replace FastAPI's default 422 (`HTTPValidationError`, `application/json`) with the real `ValidationProblem` (`application/problem+json`) from `core/errors.py`, and document `Problem` for the other error responses (handed over from GZ-004).
 - Acceptance: removing a response field in a test PR fails CI; an additive change produces a new minor tag after merge.
 
 ---
