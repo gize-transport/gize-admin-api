@@ -31,6 +31,7 @@ uv run pytest                         # tests + coverage gate
 | Services coverage gate (90%), after tests | `uv run python -m scripts.check_service_coverage` |
 | Lint, format check, types | `uv run ruff check . && uv run ruff format --check . && uv run mypy` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
+| Coverage must not drop, after tests | `uv run python -m scripts.check_coverage_baseline` (`--update` raises the baseline) |
 | Dependency audit | `uv export --frozen --all-groups --no-emit-project --format requirements-txt \| uv run pip-audit --strict --disable-pip --require-hashes -r /dev/stdin` |
 
 Commands for migrations, the background worker and the OpenAPI export are added by the tickets that introduce them (GZ-006, GZ-008, GZ-015).
@@ -46,6 +47,20 @@ docker run --rm gize-admin-api worker                # Arq worker (from GZ-008)
 ```
 
 The container runs as an unprivileged user (uid 10001). The API finishes in-flight requests for up to 30 s after SIGTERM, so give the container a stop timeout of at least 35 s on whichever host runs it (Docker's default is 10 s: `docker stop -t 35`, or `stop_grace_period: 35s` in Compose).
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`:
+
+| Job | What fails it |
+| --- | --- |
+| Lint, format, types | any pre-commit hook: ruff, ruff format, mypy `--strict`, file hygiene, TODO without a ticket |
+| Secret scan | gitleaks finds a secret anywhere in the git history |
+| Tests and coverage gates | a failing test, total coverage < 85%, service modules < 90%, total below `.coverage-baseline` |
+| Dependency audit | `pip-audit` finds a known vulnerability in any locked dependency |
+| Docker image build | the image does not build, does not run as uid 10001, or cannot import the app |
+
+There is no branch protection on our plan, so CLAUDE.md's merge rules are the protection: merge only when every check is green. When coverage improves, run the ratchet with `--update` and commit `.coverage-baseline`; lowering it is a hand edit the PR must justify.
 
 ## Working on a ticket
 

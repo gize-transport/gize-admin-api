@@ -1,0 +1,138 @@
+# Runs on every pull request and every push to main. Every job must pass before a PR is
+# merged (CLAUDE.md, "Merging without branch protection").
+# Third-party actions are pinned to commit SHAs; the comment names the release.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.11.30"
+  # Keep in step with the gitleaks hook rev in .pre-commit-config.yaml.
+  GITLEAKS_VERSION: "v8.30.1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: Lint, format, types (pre-commit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: pre-commit run --all-files
+        # The gitleaks hook only scans staged changes; the secrets job scans history.
+        env:
+          SKIP: gitleaks
+        run: uv run --frozen pre-commit run --all-files --show-diff-on-failure
+
+  secrets:
+    name: Secret scan (gitleaks, full history)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks (pinned, verified by the Go checksum database)
+        env:
+          GOTOOLCHAIN: auto
+        run: go install "github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}"
+      - name: Scan every commit
+        run: '"$(go env GOPATH)/bin/gitleaks" git --redact --verbose --exit-code 1 .'
+
+  test:
+    name: Tests and coverage gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      # Same images as docker-compose.yml.
+      postgres:
+        image: postgres:17-trixie@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: gize-ci-only
+          POSTGRES_DB: gize
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gize"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      redis:
+        image: redis:7.4-alpine@sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Tests (coverage gate 85%)
+        run: uv run --frozen pytest
+      - name: Services coverage gate (90%)
+        run: uv run --frozen python -m scripts.check_service_coverage
+      - name: Coverage must not drop (.coverage-baseline)
+        run: uv run --frozen python -m scripts.check_coverage_baseline
+
+  audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Audit every locked dependency group
+        run: |
+          uv export --frozen --all-groups --no-emit-project --format requirements-txt \
+            | uv run --frozen pip-audit --strict --disable-pip --require-hashes -r /dev/stdin
+
+  docker:
+    name: Docker image build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: docker build --tag gize-admin-api:ci .
+      - name: Runs as the unprivileged user
+        run: test "$(docker run --rm --entrypoint id gize-admin-api:ci -u)" = "10001"
+      - name: Package imports inside the image
+        run: docker run --rm --entrypoint python gize-admin-api:ci -c "import gize_api.main"
