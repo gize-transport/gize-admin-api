@@ -1,4 +1,6 @@
 # Runs on every commit via .githooks/pre-commit (core.hooksPath). CI runs `pre-commit run --all-files`.
+# The gitleaks hook scans staged changes only, so it protects local commits; CI must scan the
+# pushed commit range with `gitleaks git` separately (GZ-002).
 # ruff and mypy run from the project environment so their versions come from uv.lock.
 # Third-party hooks are pinned to commit SHAs.
 fail_fast: false
@@ -39,3 +41,9 @@ repos:
         language: system
         types_or: [python, pyi]
         pass_filenames: false
+      - id: todo-needs-ticket
+        name: TODO/FIXME must name a ticket, e.g. TODO(GZ-012)
+        entry: '(?i)\b(TODO|FIXME|XXX)\b(?!\(GZ-\d{3}\))'
+        language: pygrep
+        types_or: [python, pyi, yaml, toml, dockerfile, shell]
+        exclude: ^\.pre-commit-config\.yaml$

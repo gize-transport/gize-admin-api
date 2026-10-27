@@ -211,6 +211,12 @@ Status: todo · Depends on: GZ-061
 Status: todo · Depends on: GZ-041, GZ-052
 - `GET /v1/overview` (staff): counts of active routes, riders, waitlists ready to open, driver applications awaiting review; one bounded query each, no N+1.
 
+### GZ-065 · Automated dependency and image updates
+Status: todo · Depends on: GZ-002
+- Found in GZ-001 review: base images, Compose services, the Dockerfile frontend and pre-commit hooks are pinned by digest/SHA, and `uv.lock` pins Python packages, but nothing proposes updates, so security patches go stale silently.
+- Dependabot (or Renovate) for `uv.lock`, Docker digests (`Dockerfile`, `docker-compose.yml`), GitHub Actions and pre-commit hooks; weekly, grouped, each update a normal PR through CI.
+- Acceptance: a stale pin produces an update PR that passes CI; nothing auto-merges.
+
 ### GZ-063 · Load and failure drill
 Status: todo · Depends on: GZ-062
 - Light load test at expected peak (staff + registration traffic); drills: Redis down, DB slow, SMS down – confirm behaviour and alerts.

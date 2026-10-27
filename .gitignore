@@ -21,6 +21,7 @@ coverage.xml
 htmlcov/
 
 # Editors and OS
+.claude/settings.local.json
 .idea/
 .vscode/
 .DS_Store

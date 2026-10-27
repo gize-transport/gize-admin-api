@@ -5,6 +5,11 @@
 # The access log is off because it would print raw query strings; GZ-005 adds a scrubbed one.
 set -eu
 
+if [ "$#" -gt 1 ]; then
+  echo "usage: entrypoint.sh [api|worker]" >&2
+  exit 64
+fi
+
 case "${1:-api}" in
   api)
     exec uvicorn gize_api.main:app \

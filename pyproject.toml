@@ -24,11 +24,11 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.8,<0.12"]
+requires = ["uv_build>=0.11.30,<0.12"]
 build-backend = "uv_build"
 
 [tool.uv]
-required-version = ">=0.8"
+required-version = ">=0.11.30,<0.12"
 
 # --- ruff ---------------------------------------------------------------
 [tool.ruff]
@@ -51,25 +51,38 @@ select = [
     "SIM",      # simplify
     "PT",       # pytest style
     "ERA",      # commented-out code
+    "BLE",      # blind except
+    "G",        # logging format strings (keep structlog fields structured)
+    "LOG",      # logging misuse
+    "ANN401",   # `Any` in signatures; justify with a noqa comment
     "RUF",      # ruff-specific
 ]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gize_api", "scripts"]
 
 [tool.ruff.lint.per-file-ignores]
 # Assertions are how pytest tests express expectations.
 "tests/**" = ["S101"]
+# Scripts are command-line tools that report on stdout.
+"scripts/**" = ["T201"]
 
 # --- mypy ---------------------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 mypy_path = "src"
 warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 
 # --- pytest / coverage --------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = [
+    "-ra",
+    "--import-mode=importlib",
     "--strict-markers",
     "--strict-config",
     "--cov=gize_api",
@@ -78,6 +91,7 @@ addopts = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
+xfail_strict = true
 
 [tool.coverage.run]
 branch = true

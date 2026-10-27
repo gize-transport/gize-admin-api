@@ -1,13 +1,15 @@
 # Local development and test services. Ports bind to 127.0.0.1 only.
 # Postgres major version matches the Supabase project (17). Update both together.
+# Debian (glibc) image, not Alpine (musl), so text collation matches Supabase.
+# The default password is for this local, loopback-only container and nothing else.
 name: gize-admin-api
 
 services:
   postgres:
-    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b  # 17.11
+    image: postgres:17-trixie@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe  # 17.11, glibc
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gize-local-only}
       POSTGRES_DB: gize
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
