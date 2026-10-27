@@ -15,6 +15,9 @@ SQLAlchemy (GZ-006) and outbound httpx (GZ-008) instrumentation join when those 
 """
 
 import asyncio
+import contextlib
+import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -37,6 +40,7 @@ from starlette.routing import BaseRoute, Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from gize_api.core.config import Settings
+from gize_api.core.logging import known_method
 
 EXPORT_TIMEOUT_SECONDS = 5
 SHUTDOWN_BUDGET_SECONDS = 5.0
@@ -73,6 +77,8 @@ _CLIENT_ATTRIBUTES = (
     "server.address",
     "server.port",
 )
+# Set only if OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_* is configured; blanked regardless.
+_CAPTURED_HEADER_PREFIXES = ("http.request.header.", "http.response.header.")
 _TRACE_CONTEXT_HEADERS = frozenset({b"traceparent", b"tracestate", b"baggage"})
 
 logger = structlog.get_logger("gize_api.telemetry")
@@ -108,23 +114,37 @@ class Telemetry:
         RedisInstrumentor.uninstrument_client(client)
 
     async def shutdown(self, budget_seconds: float = SHUTDOWN_BUDGET_SECONDS) -> None:
-        """Flush and stop exporters within `budget_seconds`, without blocking the event loop.
+        """Flush and stop exporters within one overall deadline, off the event loop.
 
         Anything not exported by then is dropped: shutdown must fit inside the container's
-        stop timeout together with the 30 s request drain.
+        stop timeout together with the 30 s request drain. The work runs in a daemon thread,
+        so a hung collector cannot hold the process open after the deadline either.
         """
+        loop = asyncio.get_running_loop()
+        finished = loop.create_future()
+        deadline = time.monotonic() + budget_seconds
+
+        def run() -> None:
+            try:
+                self._shutdown_until(deadline)
+            finally:
+                with contextlib.suppress(RuntimeError):  # loop already closed
+                    loop.call_soon_threadsafe(_resolve, finished)
+
+        threading.Thread(target=run, name="telemetry-shutdown", daemon=True).start()
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(self._shutdown_now, budget_seconds), timeout=budget_seconds
-            )
+            await asyncio.wait_for(asyncio.shield(finished), timeout=budget_seconds)
         except TimeoutError:
             logger.warning("telemetry_shutdown_timed_out", budget_seconds=budget_seconds)
 
-    def _shutdown_now(self, budget_seconds: float) -> None:
-        budget_ms = int(budget_seconds * 1000)
-        self.tracer_provider.force_flush(timeout_millis=budget_ms)
+    def _shutdown_until(self, deadline: float) -> None:
+        def remaining_ms() -> int:
+            return max(0, int((deadline - time.monotonic()) * 1000))
+
+        self.tracer_provider.force_flush(timeout_millis=remaining_ms())
+        self.meter_provider.force_flush(timeout_millis=remaining_ms())
         self.tracer_provider.shutdown()
-        self.meter_provider.shutdown(timeout_millis=budget_ms)
+        self.meter_provider.shutdown(timeout_millis=remaining_ms())
 
 
 def configure_telemetry(
@@ -186,6 +206,11 @@ def configure_telemetry(
     return Telemetry(tracer_provider=tracer_provider, meter_provider=meter_provider)
 
 
+def _resolve(future: "asyncio.Future[None]") -> None:
+    if not future.done():
+        future.set_result(None)
+
+
 class _DropInboundTraceContext:
     """Remove trace headers sent by clients, so every request starts a trace of our own."""
 
@@ -215,7 +240,7 @@ def _span_details(
     """Name request spans `GET /v1/riders/{rider_id}`: the template, never the raw path."""
 
     def details(scope: Scope) -> tuple[str, dict[str, str]]:
-        method = str(scope.get("method", "HTTP"))
+        method = known_method(str(scope.get("method", "HTTP")))
         template = _route_template(routes, scope)
         if template is None:
             return method, {}
@@ -235,6 +260,6 @@ def _scrub_request_span(
     for name in _URL_ATTRIBUTES:
         if name in present:
             span.set_attribute(name, "" if name == "url.query" else template or "unmatched")
-    for name in _CLIENT_ATTRIBUTES:
-        if name in present:
+    for name in present:
+        if name in _CLIENT_ATTRIBUTES or name.startswith(_CAPTURED_HEADER_PREFIXES):
             span.set_attribute(name, "")

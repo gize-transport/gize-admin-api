@@ -35,12 +35,18 @@ class FailingTransport(Transport):
         raise ConnectionError("sentry unreachable")
 
 
+def _reset_sentry() -> None:
+    """Back to a disabled client. A bare `init()` would patch Sentry's integrations into
+    Starlette, logging and httpx process-wide and change every later test."""
+    sentry_sdk.get_client().close()
+    sentry_sdk.init(default_integrations=False, auto_enabling_integrations=False)
+
+
 @pytest.fixture
 def sentry_enabled() -> Iterator[None]:
     CapturingTransport.envelopes = []
     yield
-    sentry_sdk.get_client().close()
-    sentry_sdk.init()  # back to a disabled client
+    _reset_sentry()
 
 
 def _events() -> list[dict[str, Any]]:
@@ -171,3 +177,34 @@ def test_scrub_event_scrubs_content_and_keeps_metadata() -> None:
     assert scrubbed["sdk"]["name"] == "sentry.python.fastapi"
     assert scrubbed["contexts"]["runtime"]["name"] == "CPython"
     assert scrubbed["contexts"]["trace"]["trace_id"] == "0911223344aa4bbb8ccc0911223344aa"
+
+
+def test_scrub_event_scrubs_custom_contexts_but_not_sdk_ones() -> None:
+    event: dict[str, Any] = {
+        "contexts": {
+            "rider": {"full_name": "Abebe Kebede", "phone": PHONE},
+            "runtime": {"name": "CPython"},
+            "trace": {"trace_id": "0911223344aa4bbb8ccc0911223344aa"},
+        }
+    }
+    result = scrub_event(cast(Event, event), {})
+    assert result is not None
+    contexts = cast(dict[str, Any], result)["contexts"]
+    assert "Abebe" not in json.dumps(contexts["rider"])
+    assert PHONE not in json.dumps(contexts["rider"])
+    assert contexts["runtime"] == {"name": "CPython"}
+    assert contexts["trace"]["trace_id"] == "0911223344aa4bbb8ccc0911223344aa"
+
+
+def test_reset_leaves_no_sentry_integrations_behind(make_settings: SettingsFactory) -> None:
+    configure_sentry(make_settings(sentry_dsn=DSN), transport=CapturingTransport)
+    _reset_sentry()
+    client = sentry_sdk.get_client()
+    assert not client.options.get("dsn")
+    assert not client.integrations
+
+
+def test_scrub_event_without_contexts() -> None:
+    result = scrub_event(cast(Event, {"message": f"call {PHONE}"}), {})
+    assert result is not None
+    assert PHONE not in json.dumps(result)

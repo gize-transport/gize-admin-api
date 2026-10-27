@@ -1,5 +1,8 @@
 """GZ-005: OpenTelemetry traces and metrics; off unless configured; never leaks request data."""
 
+import asyncio
+import subprocess
+import sys
 import time
 from collections.abc import Sequence
 
@@ -18,6 +21,7 @@ from starlette.types import Message, Receive, Scope, Send
 from gize_api.core.request_id import REQUEST_ID_HEADER
 from gize_api.core.telemetry import (
     _DropInboundTraceContext,
+    _resolve,
     _scrub_request_span,
     configure_telemetry,
 )
@@ -363,3 +367,55 @@ async def test_inbound_trace_headers_dropped_only_from_http(
 
     await _DropInboundTraceContext(inner)(scope, receive, send)
     assert seen[0].get("headers") == expected_headers
+
+
+def test_process_exit_is_bounded_when_the_collector_hangs(blackhole_url: str) -> None:
+    """The await returning is not enough: the process must also exit within the budget."""
+    script = f"""
+import asyncio
+from gize_api.core.config import Settings
+from gize_api.core.telemetry import configure_telemetry
+
+settings = Settings(app_env="test", redis_url="redis://127.0.0.1:1/0",
+                    otel_exporter_otlp_endpoint="{blackhole_url}")
+telemetry = configure_telemetry(settings)
+with telemetry.tracer_provider.get_tracer("t").start_as_current_span("pending"):
+    pass
+telemetry.meter_provider.get_meter("t").create_counter("c").add(1)
+asyncio.run(telemetry.shutdown(budget_seconds=1.0))
+"""
+    started = time.monotonic()
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=30)  # noqa: S603
+    assert time.monotonic() - started < 4.0
+
+
+async def test_unknown_methods_named_other(
+    instrumented: GizeAPI, spans: InMemorySpanExporter
+) -> None:
+    async with _client(instrumented) as client:
+        await client.request("FOO", "/_test/riders/1")
+    (server,) = _server_spans(spans)
+    assert not server.name.startswith("FOO")
+
+
+def test_captured_http_headers_are_blanked() -> None:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    with provider.get_tracer("test").start_as_current_span(
+        "GET",
+        attributes={
+            "http.request.header.authorization": ("Bearer x",),
+            "http.response.header.set_cookie": ("s=1",),
+        },
+    ) as span:
+        _scrub_request_span(span, {"path": "/x", "type": "http"})
+    (finished,) = exporter.get_finished_spans()
+    assert all(not value for value in (finished.attributes or {}).values())
+
+
+async def test_resolving_a_finished_shutdown_future_is_harmless() -> None:
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    _resolve(future)
+    _resolve(future)  # a second resolution (late thread) must not raise
+    assert future.done()

@@ -24,6 +24,10 @@ from gize_api.core.logging import scrub_text, scrub_value
 
 # Sections that carry request or application content; everything else is SDK metadata.
 _CONTENT_SECTIONS = ("message", "logentry", "extra", "tags", "request", "breadcrumbs")
+# Contexts the SDK fills itself; any other context (set_context) is application content.
+_SDK_CONTEXTS = frozenset(
+    {"trace", "runtime", "os", "device", "app", "browser", "culture", "cloud_resource", "otel"}
+)
 
 
 def configure_sentry(settings: Settings, *, transport: type[Transport] | None = None) -> bool:
@@ -75,7 +79,12 @@ def scrub_event(event: Event, hint: Hint) -> Event | None:
     for section in _CONTENT_SECTIONS:
         if section in data:
             data[section] = scrub_value(section, data[section])
+    contexts = data.get("contexts")
+    if isinstance(contexts, dict):
+        for name, context in contexts.items():
+            if name not in _SDK_CONTEXTS:
+                contexts[name] = scrub_value(name, context)
     for value in data.get("exception", {}).get("values", []):
         if isinstance(value.get("value"), str):
-            value["value"] = scrub_text(value["value"])
+            value["value"] = scrub_text(value["value"], keep_tail=True)
     return event

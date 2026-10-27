@@ -203,13 +203,17 @@ def _is_bare_origin(origin: str) -> bool:
     )
 
 
+_HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}")
+_HEADER_VALUE = re.compile(r"[^\x00-\x1f\x7f]{1,4096}")
+
+
 def _parse_headers(text: str) -> dict[str, str] | None:
     """Parse `name=value,…`, percent-decoded as the OTel spec (and Grafana's snippet) writes it."""
     headers: dict[str, str] = {}
     for pair in text.split(","):
         name, sep, value = pair.partition("=")
         name, value = unquote(name.strip()), unquote(value.strip())
-        if not sep or not name or not value:
+        if not sep or not _HEADER_NAME.fullmatch(name) or not _HEADER_VALUE.fullmatch(value):
             return None
         headers[name] = value
     return headers

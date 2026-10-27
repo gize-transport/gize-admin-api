@@ -456,3 +456,172 @@ def test_no_observability_warning_in_local(
 ) -> None:
     create_app(make_settings(app_env="local"))
     assert not [line for line in _lines(capsys) if line["event"] == "observability_disabled"]
+
+
+# --- re-review hardening ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "leaks"),
+    [
+        ("name='Abebe Kebede'", ["Abebe", "Kebede"]),
+        ('password = "hunter 2"', ["hunter 2"]),
+        ("rider_name=Abebe Kebede, seats=2", ["Abebe", "Kebede"]),
+        ("<Obj2 name=Abebe Kebede>", ["Abebe", "Kebede"]),
+        ("{'full_name': 'Abebe Kebede'}", ["Abebe", "Kebede"]),
+        ("'password': b'hunter2'", ["hunter2"]),
+        (
+            "1 validation error for Rider\nfull_name\n  Value error [type=value_error, "
+            "input_value='Abebe Kebede', input_type=str]",
+            ["Abebe", "Kebede"],
+        ),
+        ("input_value={'otp': '482913', 'x': 1}, input_type=dict", ["482913"]),
+        ("sms code 482913", ["482913"]),
+        ("otp is 482913", ["482913"]),
+        ("OTP 482913", ["482913"]),
+        ("Your Gize verification code is 482913", ["482913"]),
+        ("code=482913", ["482913"]),
+        ("Authorization: Token abc123def", ["abc123def"]),
+        ("Authorization: ApiKey abc123def", ["abc123def"]),
+        ("https://user:p@ss@host/x", ["p@ss", "ss@host"]),
+        (
+            "pw=hunter2 pass=hunter3 passcode=4321 passphrase=open-sesame",
+            ["hunter2", "hunter3", "4321", "open-sesame"],
+        ),
+        ("token=" + "x" * 600, ["x" * 20]),
+    ],
+)
+def test_scrub_text_free_text_leaks_closed(text: str, leaks: list[str]) -> None:
+    scrubbed = scrub_text(text)
+    for leak in leaks:
+        assert leak not in scrubbed, (text, scrubbed)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "error code INTERNAL_ERROR returned",
+        "status 404 after 12 ms",
+        "route code R-12 has 14 seats",
+        "pin the version 2026.10",
+    ],
+)
+def test_scrub_text_leaves_error_codes_and_numbers(text: str) -> None:
+    assert scrub_text(text) == text
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("phoneNumber", "0911223344", "09••••3344"),
+        ("riderPhone", "0911223344", "09••••3344"),
+        ("telephone", "0911223344", "09••••3344"),
+        ("tel", "0911223344", "09••••3344"),
+        ("fullName", "Abebe", REDACTED),
+        ("firstName", "Abebe", REDACTED),
+        ("fullname", "Abebe", REDACTED),
+        ("lastname", "Kebede", REDACTED),
+        ("surname", "Kebede", REDACTED),
+        ("username", "abebe", REDACTED),
+        ("emailAddress", "a@b.c", REDACTED),
+        ("accessToken", "abc", REDACTED),
+        ("refreshToken", "abc", REDACTED),
+        ("authToken", "abc", REDACTED),
+        ("sessionId", "abc", REDACTED),
+        ("national_id_number", "ET1", REDACTED),
+        ("kebeleId", "K1", REDACTED),
+        ("pw", "x", REDACTED),
+        ("passcode", "x", REDACTED),
+        ("hash", "x", REDACTED),
+        ("code", "482913", REDACTED),
+        ("code", 482913, REDACTED),
+        ("code", "INTERNAL_ERROR", "INTERNAL_ERROR"),
+        ("phone", 911223344.0, "9••••3344"),
+        ("amount", 251911223344, "2519••••3344"),
+        ("seats", 14, 14),
+    ],
+)
+def test_scrub_value_key_variants(key: str, value: object, expected: object) -> None:
+    assert scrub_value(key, value) == expected
+
+
+def test_dict_keys_are_scrubbed() -> None:
+    assert scrub_value("by_phone", {"0911223344": 1}) == {"09••••3344": 1}
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("payload", {"status": "sent to 0911223344"}),
+        ("rider_id", {"phone": "0911223344"}),
+        ("external_id", "0911223344"),
+        ("status", "sent to 0911223344"),
+        ("route", "/v1/x?phone=0911223344"),
+    ],
+)
+def test_trusted_and_id_keys_cannot_carry_phones(key: str, value: object) -> None:
+    assert "0911223344" not in json.dumps(scrub_value(key, value))
+
+
+def test_containers_are_capped() -> None:
+    scrubbed = scrub_value("items", list(range(500)))
+    assert len(scrubbed) == 51
+    assert scrubbed[-1] == "[+450 more]"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("00251911223344", "00251 9••••3344".replace(" ", "")),
+        ("0911.223.344", "09••••3344"),
+        ("(0911) 223344", "(09••••3344"),
+        ("+251(0)911223344", "+2519••••3344"),
+        ("otp_0911223344", "otp_09••••3344"),
+    ],
+)
+def test_more_phone_formats(text: str, expected: str) -> None:
+    assert mask_phone_numbers(text) == expected
+
+
+def test_exception_keeps_the_tail_of_long_tracebacks(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging("INFO")
+
+    try:
+        raise ValueError("context " * 1500 + "the real cause 0911223344")
+    except ValueError:
+        structlog.get_logger("gize_api.test").exception("failed")
+    (line,) = _lines(capsys)
+    assert line["exception"].startswith("[TRUNCATED]…")
+    assert line["exception"].rstrip().endswith("the real cause 09••••3344")  # the tail is kept
+
+
+async def test_unknown_methods_are_logged_as_other(
+    app: FastAPI, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async with _client(app) as client:
+        await client.request("FOO0911223344", "/_test/riders/1")
+    (access,) = [line for line in _lines(capsys) if line["event"] == "request"]
+    assert access["method"] == "_OTHER"
+
+
+def test_dicts_are_capped() -> None:
+    scrubbed = scrub_value("items", {f"k{i}": i for i in range(60)})
+    assert len(scrubbed) == 51
+    assert scrubbed["…"] == "[+10 more]"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # a secret key inside an already-redacted value is skipped, not redacted twice
+        ("name='Abebe password=hunter2' seats=2", "name='[REDACTED]' seats=2"),
+        ("password=, seats=2", "password=, seats=2"),  # empty value: nothing to redact
+        ("password='abc\nnext line", "password=[REDACTED]\nnext line"),  # unclosed quote
+    ],
+)
+def test_assignment_edge_cases(text: str, expected: str) -> None:
+    assert scrub_text(text) == expected
+
+
+def test_fractional_number_under_a_phone_key_is_redacted() -> None:
+    assert scrub_value("phone", 911223344.5) == REDACTED

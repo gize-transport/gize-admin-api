@@ -305,3 +305,17 @@ def test_trace_sampler_ratio_rejected(clean_env: pytest.MonkeyPatch, value: str)
     _set(clean_env, OTEL_TRACES_SAMPLER_RATIO=value)
     with pytest.raises(ConfigError, match="otel_traces_sampler_ratio"):
         load_settings()
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["a=b%0D%0AX-Evil: 1", "bad name=v", "a=v%00", "a b=c"],
+)
+def test_otlp_headers_with_control_characters_rejected(
+    clean_env: pytest.MonkeyPatch, value: str
+) -> None:
+    _set(clean_env, OTEL_EXPORTER_OTLP_HEADERS=value)
+    with pytest.raises(ConfigError) as exc_info:
+        load_settings()
+    assert "otel_exporter_otlp_headers" in str(exc_info.value)
+    assert "Evil" not in str(exc_info.value)
