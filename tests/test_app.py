@@ -80,6 +80,11 @@ async def test_lifespan_opens_and_closes_real_redis_connections(
         async with app.router.lifespan_context(app):
             assert await app.state.redis.ping() is True
             assert await ours() == [REDIS_CLIENT_NAME]
+        # Redis drops a closed client on its next event-loop pass; each round trip lets it
+        # run one, so a bounded number of queries (no sleeping) settles it.
+        for _ in range(20):
+            if not await ours():
+                break
         assert await ours() == []
 
 
@@ -109,6 +114,7 @@ async def test_declared_body_over_limit_rejected_413(app: FastAPI) -> None:
         "title": "Payload Too Large",
         "status": 413,
         "code": "PAYLOAD_TOO_LARGE",
+        "request_id": response.headers["x-request-id"],
     }
 
 

@@ -13,11 +13,13 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
 from gize_api.core.config import Settings, load_settings
+from gize_api.core.errors import install_exception_handlers
 from gize_api.core.middleware import (
     BodySizeLimitMiddleware,
-    CORSDenialMiddleware,
+    CORSGuardMiddleware,
     SecurityHeadersMiddleware,
 )
+from gize_api.core.request_id import RequestIdMiddleware
 
 MAX_BODY_BYTES = 1024 * 1024
 
@@ -32,14 +34,15 @@ CORS_MAX_AGE_SECONDS = 600
 
 
 class GizeAPI(FastAPI):
-    """FastAPI with security headers wrapped around the whole stack.
+    """FastAPI with request IDs and security headers wrapped around the whole stack.
 
     Middleware added with `add_middleware` runs inside Starlette's ServerErrorMiddleware, so
-    it never sees the 500 response for an unhandled error. Wrapping the built stack does.
+    it never sees the 500 response for an unhandled error. Wrapping the built stack does:
+    the request ID is set before anything else runs, and every response carries both.
     """
 
     def build_middleware_stack(self) -> ASGIApp:
-        return SecurityHeadersMiddleware(super().build_middleware_stack())
+        return SecurityHeadersMiddleware(RequestIdMiddleware(super().build_middleware_stack()))
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -54,9 +57,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if settings.docs_enabled else None,
     )
     app.state.settings = settings
+    install_exception_handlers(app)
 
     # add_middleware wraps: the last one added runs first. Order from the outside in:
-    # CORS denial cleanup -> CORS -> body limit -> routes.
+    # CORS guard -> CORS -> body limit -> routes.
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
     app.add_middleware(
         CORSMiddleware,
@@ -67,7 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=False,
         max_age=CORS_MAX_AGE_SECONDS,
     )
-    app.add_middleware(CORSDenialMiddleware, allowed_origins=settings.cors_allowed_origins)
+    app.add_middleware(CORSGuardMiddleware, allowed_origins=settings.cors_allowed_origins)
     return app
 
 
