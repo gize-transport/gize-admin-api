@@ -52,15 +52,18 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`:
 
-| Job | What fails it |
+| Check | What fails it |
 | --- | --- |
-| Lint, format, types | any pre-commit hook: ruff, ruff format, mypy `--strict`, file hygiene, TODO without a ticket |
-| Secret scan | gitleaks finds a secret anywhere in the git history |
-| Tests and coverage gates | a failing test, total coverage < 85%, service modules < 90%, total below `.coverage-baseline` |
-| Dependency audit | `pip-audit` finds a known vulnerability in any locked dependency |
+| Lint, types, dependency audit | `uv.lock` out of date; any pre-commit hook (ruff, ruff format, mypy `--strict`, file hygiene, TODO without a ticket); `pip-audit` finds a known vulnerability in any locked dependency |
+| Secret scan (gitleaks) | gitleaks finds a secret in any commit reachable from the PR |
+| Tests and coverage gates | a failing test; total coverage < 85%; service modules < 90%; total coverage differs from `.coverage-baseline` |
 | Docker image build | the image does not build, does not run as uid 10001, or cannot import the app |
 
-There is no branch protection on our plan, so CLAUDE.md's merge rules are the protection: merge only when every check is green. When coverage improves, run the ratchet with `--update` and commit `.coverage-baseline`; lowering it is a hand edit the PR must justify.
+There is no branch protection on our plan, so CLAUDE.md's merge rules are the protection. Before merging, confirm **all four checks above are listed and green** on the PR: `gh pr checks` only shows checks that ran, so a job deleted from the workflow would not show up as failing. `tests/test_ci_config.py` pins the job list, and any change under `.github/workflows/` needs an explicit reviewer look.
+
+**Coverage ratchet.** `.coverage-baseline` holds `main`'s total coverage. CI fails when coverage drops and also when it rises without the baseline being raised, so a later PR cannot quietly give the gain back. When coverage improves, run `uv run python -m scripts.check_coverage_baseline --update` and commit the file. Lowering it is a hand edit the PR must justify.
+
+**If gitleaks finds a real secret** that already reached `main`: rotate the secret first (it is compromised whatever happens to the history), then add the finding's fingerprint (printed by gitleaks) to `.gitleaksignore` with a comment naming the rotation, in its own PR.
 
 ## Working on a ticket
 

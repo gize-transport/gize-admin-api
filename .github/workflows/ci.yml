@@ -1,5 +1,6 @@
-# Runs on every pull request and every push to main. Every job must pass before a PR is
-# merged (CLAUDE.md, "Merging without branch protection").
+# Runs on every pull request and every push to main. All four checks must be present and
+# green before a PR is merged (CLAUDE.md, "Merging without branch protection"); the list is
+# pinned in tests/test_ci_config.py and README.md.
 # Third-party actions are pinned to commit SHAs; the comment names the release.
 name: CI
 
@@ -12,13 +13,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # PR runs replace each other; every push to main gets its own run.
+  group: ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # Tests run on the image's exact Python patch release (Dockerfile PYTHON_IMAGE tag).
+  UV_PYTHON: "3.12.16"
+  # Keep in step with the Dockerfile uv image and pyproject's required-version.
   UV_VERSION: "0.11.30"
   # Keep in step with the gitleaks hook rev in .pre-commit-config.yaml.
-  GITLEAKS_VERSION: "v8.30.1"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 
 defaults:
   run:
@@ -26,18 +32,22 @@ defaults:
 
 jobs:
   lint:
-    name: Lint, format, types (pre-commit)
+    name: Lint, types, dependency audit
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.UV_PYTHON }}
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-      - run: uv sync --frozen
+      - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        run: uv sync --locked
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cache/pre-commit
@@ -46,10 +56,14 @@ jobs:
         # The gitleaks hook only scans staged changes; the secrets job scans history.
         env:
           SKIP: gitleaks
-        run: uv run --frozen pre-commit run --all-files --show-diff-on-failure
+        run: uv run --locked pre-commit run --all-files --show-diff-on-failure
+      - name: pip-audit, every locked dependency group
+        run: |
+          uv export --locked --all-groups --no-emit-project --format requirements-txt \
+            | uv run --locked pip-audit --strict --disable-pip --require-hashes -r /dev/stdin
 
   secrets:
-    name: Secret scan (gitleaks, full history)
+    name: Secret scan (gitleaks)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -57,19 +71,24 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Install gitleaks (pinned, verified by the Go checksum database)
-        env:
-          GOTOOLCHAIN: auto
-        run: go install "github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}"
-      - name: Scan every commit
-        run: '"$(go env GOPATH)/bin/gitleaks" git --redact --verbose --exit-code 1 .'
+      - name: Install gitleaks (pinned release, SHA-256 verified)
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --max-time 60 --output "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum --check --strict
+          tar --extract --gzip --file "${RUNNER_TEMP}/${tarball}" --directory "${RUNNER_TEMP}" gitleaks
+      - name: Scan every commit reachable from this run's HEAD
+        # HEAD is the PR merge commit (or the pushed main commit). Scanning only its history
+        # keeps other branches from failing this run.
+        run: '"${RUNNER_TEMP}/gitleaks" git --log-opts="--full-history HEAD" --redact --verbose --exit-code 1 .'
 
   test:
     name: Tests and coverage gates
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
-      # Same images as docker-compose.yml.
+      # Same images as docker-compose.yml (checked by tests/test_ci_config.py).
       postgres:
         image: postgres:17-trixie@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
         env:
@@ -92,35 +111,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.UV_PYTHON }}
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-      - run: uv sync --frozen
+      - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        run: uv sync --locked
       - name: Tests (coverage gate 85%)
-        run: uv run --frozen pytest
+        run: uv run --locked pytest
       - name: Services coverage gate (90%)
-        run: uv run --frozen python -m scripts.check_service_coverage
-      - name: Coverage must not drop (.coverage-baseline)
-        run: uv run --frozen python -m scripts.check_coverage_baseline
-
-  audit:
-    name: Dependency audit (pip-audit)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
-      - run: uv sync --frozen
-      - name: Audit every locked dependency group
-        run: |
-          uv export --frozen --all-groups --no-emit-project --format requirements-txt \
-            | uv run --frozen pip-audit --strict --disable-pip --require-hashes -r /dev/stdin
+        run: uv run --locked python -m scripts.check_service_coverage
+      - name: Coverage equals .coverage-baseline (must not drop)
+        run: uv run --locked python -m scripts.check_coverage_baseline
 
   docker:
     name: Docker image build

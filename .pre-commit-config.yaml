@@ -1,6 +1,6 @@
 # Runs on every commit via .githooks/pre-commit (core.hooksPath). CI runs `pre-commit run --all-files`.
-# The gitleaks hook scans staged changes only, so it protects local commits; CI must scan the
-# pushed commit range with `gitleaks git` separately (GZ-002).
+# The gitleaks hook scans staged changes only, so it protects local commits; CI's secrets job
+# scans every commit reachable from the PR with `gitleaks git`.
 # ruff and mypy run from the project environment so their versions come from uv.lock.
 # Third-party hooks are pinned to commit SHAs.
 fail_fast: false
