@@ -6,13 +6,13 @@ exception text, SQL, stack traces, input values or internal IDs: those go to the
 the same request ID. Codes and reasons are part of the API contract: only ever add.
 """
 
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from http import HTTPStatus
 from typing import Literal
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from gize_api.core.request_id import current_request_id
+from gize_api.core.sentry import report_exception
 
 PROBLEM_JSON = "application/problem+json"
 MAX_VALIDATION_ERRORS = 50
@@ -29,7 +30,7 @@ MAX_FIELD_PARTS = 8
 
 _LOGGED_FLAG = "gize_unhandled_error_logged"
 
-logger = logging.getLogger("gize_api.errors")
+logger = structlog.get_logger("gize_api.errors")
 
 
 class ErrorCode(StrEnum):
@@ -260,12 +261,7 @@ async def _http_error(request: Request, exc: Exception) -> Response:
     if exc.status_code < 400:
         return Response(status_code=exc.status_code, headers=exc.headers)
     if exc.status_code >= 500:
-        logger.error(
-            "http_error status=%s request_id=%s route=%s",
-            exc.status_code,
-            current_request_id(),
-            _route(request.scope),
-        )
+        logger.error("http_error", status=exc.status_code, route=_route(request.scope))
     code = _CODE_FOR_STATUS.get(exc.status_code)
     if code is None:
         code = ErrorCode.INTERNAL_ERROR if exc.status_code >= 500 else ErrorCode.BAD_REQUEST
@@ -273,12 +269,9 @@ async def _http_error(request: Request, exc: Exception) -> Response:
 
 
 async def _unhandled_error(request: Request, exc: Exception) -> Response:
-    logger.error(
-        "unhandled_error request_id=%s route=%s",
-        current_request_id(),
-        _route(request.scope),
-        exc_info=exc,
-    )
+    route = _route(request.scope)
+    logger.error("unhandled_error", route=route, exc_info=exc)
+    report_exception(exc, request_id=current_request_id(), route=route)
     request.scope.setdefault("state", {})[_LOGGED_FLAG] = True
     return problem_response(ErrorCode.INTERNAL_ERROR)
 

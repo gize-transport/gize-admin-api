@@ -46,7 +46,18 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
+| `SENTRY_DSN` | no, secret | Sentry error reporting; off when unset. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | OTLP/HTTP base URL for traces and metrics (`https` in staging/production); off when unset. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | no, secret | `name=value` pairs, comma-separated (e.g. Grafana Cloud auth). |
+| `OTEL_SERVICE_NAME` | no | `gize-admin-api` by default. |
+| `RELEASE` | no | Build identifier (e.g. git SHA) for Sentry and traces. |
 | `TEST_REDIS_URL` | tests only | Redis the test suite uses (CI sets it; locally read from `.env`). Tests fail, never skip, without it. |
+
+## Logs, traces and errors
+
+The API writes one JSON object per line to stderr: `timestamp`, `level`, `logger`, `event`, `request_id` and (once authenticated) `staff_id`, plus one `request` line per request with the route template, status and duration. Secrets and personal data are scrubbed before anything is written: tokens, passwords, OTPs and names become `[REDACTED]`, phone numbers become `+2519••••1234`. Use `structlog.get_logger(__name__)` and pass data as fields, never formatted into the message.
+
+With `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT` set, unhandled errors go to Sentry (tagged with the request ID) and traces and metrics go to the OTLP endpoint. Staging and production log `observability_disabled` at startup for each one that is unset.
 
 ## Docker image
 

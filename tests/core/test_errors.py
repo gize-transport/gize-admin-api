@@ -1,7 +1,7 @@
 """GZ-004: every error is problem+json with a stable code and the request ID, nothing more."""
 
 import asyncio
-import logging
+import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
@@ -124,8 +124,10 @@ def _assert_problem(response: httpx.Response, status: int, code: str) -> dict[st
     return body
 
 
-def _unhandled_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if r.getMessage().startswith("unhandled_error")]
+def _logged(capsys: pytest.CaptureFixture[str], event: str) -> list[dict[str, Any]]:
+    """The rendered JSON log lines (what production writes) for one event."""
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    return [line for line in lines if line.get("event") == event]
 
 
 # --- unhandled errors -------------------------------------------------------------------
@@ -141,36 +143,36 @@ async def test_unhandled_exception_is_generic_500(app: FastAPI) -> None:
 
 
 async def test_unhandled_exception_log_line_shows_request_id_and_route(
-    app: FastAPI, caplog: pytest.LogCaptureFixture
+    app: FastAPI, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    caplog.set_level(logging.ERROR)
     async with _client(app) as client:
         response = await client.get("/_test/crash", headers={REQUEST_ID_HEADER: "req-abc-12345"})
     assert response.headers[REQUEST_ID_HEADER] == "req-abc-12345"
-    (record,) = _unhandled_records(caplog)
-    assert record.getMessage() == "unhandled_error request_id=req-abc-12345 route=/_test/crash"
-    assert record.exc_info is not None
+    (line,) = _logged(capsys, "unhandled_error")
+    assert line["request_id"] == "req-abc-12345"
+    assert line["route"] == "/_test/crash"
+    assert line["level"] == "error"
+    assert "RuntimeError" in line["exception"]
+    assert "hunter2" not in line["exception"]  # password=… scrubbed from the traceback
 
 
 async def test_unhandled_exception_logged_once_and_never_escapes_to_the_server(
-    app: FastAPI, caplog: pytest.LogCaptureFixture
+    app: FastAPI, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    caplog.set_level(logging.ERROR)
     async with _client(app, raise_app_exceptions=True) as client:
         response = await client.get("/_test/crash")
     assert response.status_code == 500
-    assert len(_unhandled_records(caplog)) == 1
+    assert len(_logged(capsys, "unhandled_error")) == 1
 
 
 async def test_failure_after_response_started_is_logged_and_left_incomplete(
-    app: FastAPI, caplog: pytest.LogCaptureFixture
+    app: FastAPI, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Driven at the ASGI level: httpx's test transport cannot model an aborted response.
 
     The guard logs (with the request ID) and returns without completing the response, so the
     server aborts the connection and the client never mistakes a truncated body for success.
     """
-    caplog.set_level(logging.ERROR)
     sent: list[Message] = []
 
     requested = False
@@ -205,10 +207,9 @@ async def test_failure_after_response_started_is_logged_and_left_incomplete(
     start = next(m for m in sent if m["type"] == "http.response.start")
     request_id = dict(start["headers"])[b"x-request-id"].decode()
     assert not any(m["type"] == "http.response.body" and not m.get("more_body") for m in sent)
-    (record,) = _unhandled_records(caplog)
-    assert record.getMessage() == (
-        f"unhandled_error request_id={request_id} route=/_test/crash-after-start"
-    )
+    (line,) = _logged(capsys, "unhandled_error")
+    assert line["request_id"] == request_id
+    assert line["route"] == "/_test/crash-after-start"
 
 
 async def test_unhandled_500_is_readable_cross_origin(app: FastAPI) -> None:
@@ -221,16 +222,15 @@ async def test_unhandled_500_is_readable_cross_origin(app: FastAPI) -> None:
 
 
 async def test_dependency_failure_is_generic_500(
-    app: FastAPI, caplog: pytest.LogCaptureFixture
+    app: FastAPI, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    caplog.set_level(logging.ERROR)
     async with _client(app) as client:
         response = await client.get("/_test/redis-down")
     _assert_problem(response, 500, "INTERNAL_ERROR")
     for leak in ("127.0.0.1", "Connection", "refused", "redis", "Redis"):
         assert leak not in response.text
-    (record,) = _unhandled_records(caplog)
-    assert response.headers[REQUEST_ID_HEADER] in record.getMessage()
+    (line,) = _logged(capsys, "unhandled_error")
+    assert line["request_id"] == response.headers[REQUEST_ID_HEADER]
 
 
 # --- validation -------------------------------------------------------------------------
@@ -374,16 +374,15 @@ async def test_http_exception_detail_never_reaches_client(app: FastAPI) -> None:
     assert "internal detail" not in response.text
 
 
-async def test_raised_http_500_is_logged(app: FastAPI, caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.ERROR)
+async def test_raised_http_500_is_logged(app: FastAPI, capsys: pytest.CaptureFixture[str]) -> None:
     async with _client(app) as client:
         response = await client.get("/_test/http-500")
     _assert_problem(response, 500, "INTERNAL_ERROR")
     assert "internal detail" not in response.text
-    assert [r.getMessage() for r in caplog.records if r.name == "gize_api.errors"] == [
-        f"http_error status=500 request_id={response.headers[REQUEST_ID_HEADER]} "
-        "route=/_test/http-500"
-    ]
+    (line,) = _logged(capsys, "http_error")
+    assert line["status"] == 500
+    assert line["route"] == "/_test/http-500"
+    assert line["request_id"] == response.headers[REQUEST_ID_HEADER]
 
 
 @pytest.mark.parametrize(

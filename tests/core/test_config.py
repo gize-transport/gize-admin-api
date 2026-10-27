@@ -191,3 +191,64 @@ def test_docs_enabled_only_in_local_and_staging(
 ) -> None:
     _set(clean_env, APP_ENV=app_env)
     assert load_settings().docs_enabled is docs
+
+
+# --- observability (GZ-005) -------------------------------------------------------------
+
+
+def test_observability_is_optional(clean_env: pytest.MonkeyPatch) -> None:
+    _set(clean_env)
+    settings = load_settings()
+    assert settings.sentry_dsn is None
+    assert settings.otel_exporter_otlp_endpoint is None
+    assert settings.otlp_headers() is None
+    assert settings.missing_observability() == ["sentry_dsn", "otel_exporter_otlp_endpoint"]
+
+
+def test_observability_settings_load(clean_env: pytest.MonkeyPatch) -> None:
+    _set(
+        clean_env,
+        APP_ENV="production",
+        SENTRY_DSN="https://dsnkey987@o1.ingest.sentry.io/42",
+        OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp.example.com/otlp/",
+        OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic c2VjcmV0, X-Scope = gize",
+        OTEL_SERVICE_NAME="gize-admin-api-staging",
+        RELEASE="2026.10.27-abc123",
+    )
+    settings = load_settings()
+    assert settings.otel_exporter_otlp_endpoint == "https://otlp.example.com/otlp"
+    assert settings.otlp_headers() == {"Authorization": "Basic c2VjcmV0", "X-Scope": "gize"}
+    assert settings.missing_observability() == []
+    assert "c2VjcmV0" not in repr(settings)
+    assert "dsnkey987" not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SENTRY_DSN", "http://abc@o1.ingest.sentry.io/42"),
+        ("SENTRY_DSN", "not a url"),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "ftp://otlp.example.com"),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://user:pw@otlp.example.com"),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otlp.example.com?x=1"),
+        ("OTEL_EXPORTER_OTLP_HEADERS", "Authorization"),
+        ("OTEL_EXPORTER_OTLP_HEADERS", "=value"),
+        ("OTEL_SERVICE_NAME", "Gize API"),
+        ("RELEASE", "v1 with spaces"),
+    ],
+)
+def test_observability_settings_rejected(
+    clean_env: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    _set(clean_env, **{name: value})
+    with pytest.raises(ConfigError, match=name.lower()):
+        load_settings()
+
+
+@pytest.mark.parametrize("app_env", ["staging", "production"])
+def test_plain_http_otlp_rejected_outside_local_and_test(
+    clean_env: pytest.MonkeyPatch, app_env: str
+) -> None:
+    _set(clean_env, APP_ENV=app_env, OTEL_EXPORTER_OTLP_ENDPOINT="http://otlp.example.com")
+    with pytest.raises(ConfigError, match="otel_exporter_otlp_endpoint"):
+        load_settings()

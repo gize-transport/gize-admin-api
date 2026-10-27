@@ -29,13 +29,13 @@ Status: done · Depends on: GZ-001
 - Acceptance: app refuses to start without required env; oversized body → 413 problem+json; disallowed origin gets no CORS headers.
 
 ### GZ-004 · Errors and request IDs
-Status: in review · Depends on: GZ-003
+Status: done · Depends on: GZ-003
 - RFC 9457 problem+json for all errors, including validation (field + reason only) and unhandled exceptions (generic message).
 - Central registry of stable error codes. `X-Request-ID` middleware (accept a safe incoming value or generate one), returned on every response.
 - Acceptance: an unhandled exception returns 500 with code + request ID and no internals; the same request ID appears in the log line.
 
 ### GZ-005 · Logging, telemetry and Sentry
-Status: todo · Depends on: GZ-004
+Status: in review · Depends on: GZ-004
 - structlog JSON with request ID, staff ID, path, status, duration; phone masking processor; deny-list for sensitive keys.
 - OpenTelemetry (FastAPI, SQLAlchemy, Redis, httpx instrumentation; OTLP exporter configurable; off locally). Sentry with PII scrubbing.
 - Acceptance: a test asserts tokens, OTP codes and full phone numbers never appear in captured logs.

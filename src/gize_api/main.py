@@ -7,19 +7,23 @@ app: building one needs the environment, and importing this module must not.
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
 from redis.asyncio import Redis
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
-from gize_api.core.config import Settings, load_settings
+from gize_api.core.config import Environment, Settings, load_settings
 from gize_api.core.errors import HandledErrorGuard, install_exception_handlers
+from gize_api.core.logging import AccessLogMiddleware, configure_logging
 from gize_api.core.middleware import (
     BodySizeLimitMiddleware,
     CORSGuardMiddleware,
     SecurityHeadersMiddleware,
 )
 from gize_api.core.request_id import RequestIdMiddleware
+from gize_api.core.sentry import configure_sentry
+from gize_api.core.telemetry import Telemetry, configure_telemetry
 
 MAX_BODY_BYTES = 1024 * 1024
 
@@ -38,12 +42,15 @@ class GizeAPI(FastAPI):
 
     Middleware added with `add_middleware` runs inside Starlette's ServerErrorMiddleware, so
     it never sees the 500 for an unhandled error. Wrapping the built stack does. From the
-    outside in: security headers -> request ID -> CORS guard -> CORS -> handled-error guard
-    -> ServerErrorMiddleware -> `add_middleware` layers -> routes. So every response,
-    including a 500, has the request ID and nosniff, and is readable by allowed origins.
+    outside in: tracing (when configured) -> security headers -> request ID -> access log ->
+    CORS guard -> CORS -> handled-error guard -> ServerErrorMiddleware -> `add_middleware`
+    layers -> routes. So
+    every response, including a 500, has the request ID and nosniff, is readable by allowed
+    origins, and gets exactly one access-log line.
     """
 
     cors_allowed_origins: Sequence[str] = ()
+    telemetry: Telemetry | None = None
 
     def build_middleware_stack(self) -> ASGIApp:
         app: ASGIApp = HandledErrorGuard(super().build_middleware_stack())
@@ -57,13 +64,20 @@ class GizeAPI(FastAPI):
             max_age=CORS_MAX_AGE_SECONDS,
         )
         app = CORSGuardMiddleware(app, allowed_origins=self.cors_allowed_origins)
-        return SecurityHeadersMiddleware(RequestIdMiddleware(app))
+        app = SecurityHeadersMiddleware(RequestIdMiddleware(AccessLogMiddleware(app)))
+        if self.telemetry is not None:
+            app = self.telemetry.wrap(app, self.routes)
+        return app
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the API. Without `settings`, read them from the environment (fails fast)."""
     if settings is None:
         settings = load_settings()
+    configure_logging(settings.log_level)
+    if settings.app_env in {Environment.STAGING, Environment.PRODUCTION}:
+        for name in settings.missing_observability():
+            structlog.get_logger("gize_api.startup").warning("observability_disabled", setting=name)
     app = GizeAPI(
         title="Gize Admin API",
         lifespan=_lifespan(settings),
@@ -72,6 +86,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if settings.docs_enabled else None,
     )
     app.state.settings = settings
+    app.telemetry = configure_telemetry(settings)
+    configure_sentry(settings)
     app.cors_allowed_origins = settings.cors_allowed_origins
     install_exception_handlers(app)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
@@ -96,5 +112,8 @@ def _lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextMan
         finally:
             del app.state.redis
             await redis.aclose()
+            telemetry = getattr(app, "telemetry", None)
+            if telemetry is not None:
+                telemetry.shutdown()
 
     return lifespan
