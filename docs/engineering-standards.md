@@ -50,7 +50,7 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
 
 - **Structured JSON logs** via structlog. Every line has `request_id`, `staff_id` (when authenticated), route/endpoint, status and duration. Never log tokens, passwords, OTP codes, names, children's data or full phone numbers (mask as `+2519••••1234`).
 - **Metrics** (OpenTelemetry → Grafana Cloud): request rate, error rate and duration per endpoint; the same for each external dependency (Postgres, Redis, SMS). New endpoints and dependencies must be covered.
-- **Traces:** OpenTelemetry tracing for HTTP, SQLAlchemy, Redis and outbound HTTP; propagate W3C trace context to the worker and outbound calls.
+- **Traces:** OpenTelemetry tracing for HTTP, SQLAlchemy, Redis and outbound HTTP. W3C trace context goes only to our own processes (the worker); outbound calls to third parties never carry trace headers, which would hand them our internal trace IDs (owner decision, GZ-008 planning).
 - **Errors:** Sentry with PII scrubbing on; request ID attached.
 - **Security events** – failed token verification, permission denials, rate-limit hits, repeated OTP failures – logged at WARNING with an `event` field; Grafana/Sentry alerts send them to the private Telegram group and email.
 - **Health:** `GET /health/live` (process up, no dependencies) and `GET /health/ready`. Neither requires auth; neither reveals versions or internals.

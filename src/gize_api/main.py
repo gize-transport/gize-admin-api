@@ -37,7 +37,7 @@ REDIS_CLIENT_NAME = "gize-api"
 
 CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 CORS_ALLOWED_HEADERS = ["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"]
-CORS_EXPOSED_HEADERS = ["X-Request-ID", "Retry-After"]
+CORS_EXPOSED_HEADERS = ["X-Request-ID", "Retry-After", "Idempotent-Replayed"]
 CORS_MAX_AGE_SECONDS = 600
 
 

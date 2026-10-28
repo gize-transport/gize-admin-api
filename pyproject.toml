@@ -6,15 +6,19 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.14",
+    "arq>=0.26",
     "asyncpg>=0.30",
     "fastapi>=0.115",
+    "httpx>=0.28",
     "opentelemetry-api>=1.28",
     "opentelemetry-exporter-otlp-proto-http>=1.28",
     "opentelemetry-instrumentation-asgi>=0.49b0",
     "opentelemetry-instrumentation-redis>=0.49b0",
     "opentelemetry-sdk>=1.28",
     "pydantic-settings>=2.7",
-    "redis>=5.2",
+    # Arq (background jobs) supports only redis-py < 6 (as of arq 0.28); owner-approved
+    # downgrade at GZ-008. Move up when Arq allows it.
+    "redis>=5.3,<6",
     "sentry-sdk>=2.18",
     "sqlalchemy[asyncio]>=2.0.36",
     "structlog>=24.4",
@@ -114,6 +118,9 @@ xfail_strict = true
 [tool.coverage.run]
 branch = true
 source = ["gize_api"]
+# SQLAlchemy's async layer runs code in greenlets; without this, lines after a switch are
+# silently not recorded.
+concurrency = ["greenlet", "thread"]
 
 [tool.coverage.report]
 fail_under = 85

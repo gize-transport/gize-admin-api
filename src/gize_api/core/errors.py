@@ -51,6 +51,10 @@ class ErrorCode(StrEnum):
     METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
     PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
     VALIDATION_FAILED = "VALIDATION_FAILED"
+    INVALID_CURSOR = "INVALID_CURSOR"
+    IDEMPOTENCY_KEY_REQUIRED = "IDEMPOTENCY_KEY_REQUIRED"
+    IDEMPOTENCY_KEY_MISMATCH = "IDEMPOTENCY_KEY_MISMATCH"
+    IDEMPOTENCY_IN_PROGRESS = "IDEMPOTENCY_IN_PROGRESS"
     RATE_LIMITED = "RATE_LIMITED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
@@ -86,6 +90,10 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.METHOD_NOT_ALLOWED: ErrorSpec(405, "Method Not Allowed"),
     ErrorCode.PAYLOAD_TOO_LARGE: ErrorSpec(413, "Payload Too Large"),
     ErrorCode.VALIDATION_FAILED: ErrorSpec(422, "Validation Failed"),
+    ErrorCode.INVALID_CURSOR: ErrorSpec(422, "Invalid Cursor"),
+    ErrorCode.IDEMPOTENCY_KEY_REQUIRED: ErrorSpec(428, "Idempotency Key Required"),
+    ErrorCode.IDEMPOTENCY_KEY_MISMATCH: ErrorSpec(422, "Idempotency Key Mismatch"),
+    ErrorCode.IDEMPOTENCY_IN_PROGRESS: ErrorSpec(409, "Request In Progress"),
     ErrorCode.RATE_LIMITED: ErrorSpec(429, "Too Many Requests"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
