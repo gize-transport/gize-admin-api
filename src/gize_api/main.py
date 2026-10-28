@@ -7,19 +7,24 @@ app: building one needs the environment, and importing this module must not.
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
+from fastapi.telemetry import TelemetryConfig
 from redis.asyncio import Redis
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
-from gize_api.core.config import Settings, load_settings
-from gize_api.core.errors import HandledErrorGuard, install_exception_handlers
+from gize_api.core.config import Environment, Settings, load_settings
+from gize_api.core.errors import HandledErrorGuard, LastResortGuard, install_exception_handlers
+from gize_api.core.logging import AccessLogMiddleware, configure_logging
 from gize_api.core.middleware import (
     BodySizeLimitMiddleware,
     CORSGuardMiddleware,
     SecurityHeadersMiddleware,
 )
 from gize_api.core.request_id import RequestIdMiddleware
+from gize_api.core.sentry import configure_sentry
+from gize_api.core.telemetry import Telemetry, configure_telemetry
 
 MAX_BODY_BYTES = 1024 * 1024
 
@@ -38,12 +43,16 @@ class GizeAPI(FastAPI):
 
     Middleware added with `add_middleware` runs inside Starlette's ServerErrorMiddleware, so
     it never sees the 500 for an unhandled error. Wrapping the built stack does. From the
-    outside in: security headers -> request ID -> CORS guard -> CORS -> handled-error guard
-    -> ServerErrorMiddleware -> `add_middleware` layers -> routes. So every response,
-    including a 500, has the request ID and nosniff, and is readable by allowed origins.
+    outside in: tracing (when configured) -> last-resort guard -> security headers ->
+    request ID -> access log ->
+    CORS guard -> CORS -> handled-error guard -> ServerErrorMiddleware -> `add_middleware`
+    layers -> routes. So
+    every response, including a 500, has the request ID and nosniff, is readable by allowed
+    origins, and gets exactly one access-log line.
     """
 
     cors_allowed_origins: Sequence[str] = ()
+    telemetry: Telemetry | None = None
 
     def build_middleware_stack(self) -> ASGIApp:
         app: ASGIApp = HandledErrorGuard(super().build_middleware_stack())
@@ -57,44 +66,88 @@ class GizeAPI(FastAPI):
             max_age=CORS_MAX_AGE_SECONDS,
         )
         app = CORSGuardMiddleware(app, allowed_origins=self.cors_allowed_origins)
-        return SecurityHeadersMiddleware(RequestIdMiddleware(app))
+        app = SecurityHeadersMiddleware(RequestIdMiddleware(AccessLogMiddleware(app)))
+        app = LastResortGuard(app)
+        if self.telemetry is not None:
+            app = self.telemetry.wrap(app, self.routes)
+        return app
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+# FastAPI's own OpenTelemetry layer (on by default once any global provider exists) would
+# record raw URLs and exception text; ours is configured in core/telemetry.py instead.
+_FASTAPI_NATIVE_TELEMETRY_OFF: TelemetryConfig = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
+
+
+def create_app(settings: Settings | None = None) -> GizeAPI:
     """Build the API. Without `settings`, read them from the environment (fails fast)."""
     if settings is None:
         settings = load_settings()
+    configure_logging(settings.log_level)
+    # Production without them refuses to start (config.py) unless explicitly opted out.
+    if settings.app_env in {Environment.STAGING, Environment.PRODUCTION}:
+        for name in settings.missing_observability():
+            structlog.get_logger("gize_api.startup").warning("observability_disabled", setting=name)
     app = GizeAPI(
         title="Gize Admin API",
         lifespan=_lifespan(settings),
         docs_url="/docs" if settings.docs_enabled else None,
         redoc_url="/redoc" if settings.docs_enabled else None,
         openapi_url="/openapi.json" if settings.docs_enabled else None,
+        telemetry=_FASTAPI_NATIVE_TELEMETRY_OFF,
     )
     app.state.settings = settings
+    app.telemetry = configure_telemetry(settings)
+    configure_sentry(settings)
     app.cors_allowed_origins = settings.cors_allowed_origins
     install_exception_handlers(app)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
     return app
 
 
-def _lifespan(settings: Settings) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(app: GizeAPI) -> AsyncIterator[None]:
         # No connection is made here: the API starts while Redis is down, and readiness
         # (GZ-007) reports it.
-        redis = Redis.from_url(
-            settings.redis_url.get_secret_value(),
-            socket_timeout=REDIS_TIMEOUT_SECONDS,
-            socket_connect_timeout=REDIS_TIMEOUT_SECONDS,
-            max_connections=REDIS_MAX_CONNECTIONS,
-            client_name=REDIS_CLIENT_NAME,
-        )
-        app.state.redis = redis
+        # A startup failure is logged here as type and frames; uvicorn's own report of it
+        # (formatted traceback text) is suppressed by the logging filter.
+        try:
+            redis = Redis.from_url(
+                settings.redis_url.get_secret_value(),
+                socket_timeout=REDIS_TIMEOUT_SECONDS,
+                socket_connect_timeout=REDIS_TIMEOUT_SECONDS,
+                max_connections=REDIS_MAX_CONNECTIONS,
+                client_name=REDIS_CLIENT_NAME,
+            )
+            app.state.redis = redis
+            telemetry = app.telemetry
+            if telemetry is not None:
+                telemetry.instrument_redis(redis)
+        except Exception:
+            structlog.get_logger("gize_api.startup").error(
+                "lifespan_failed", phase="startup", exc_info=True
+            )
+            raise
         try:
             yield
         finally:
+            # Each step runs even if an earlier one fails.
             del app.state.redis
-            await redis.aclose()
+            try:
+                if telemetry is not None:
+                    telemetry.uninstrument_redis(redis)
+                await redis.aclose()
+            except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
+                structlog.get_logger("gize_api.startup").warning(
+                    "redis_close_failed", exc_info=True
+                )
+            if telemetry is not None:
+                await telemetry.shutdown()
 
     return lifespan

@@ -29,13 +29,13 @@ Status: done · Depends on: GZ-001
 - Acceptance: app refuses to start without required env; oversized body → 413 problem+json; disallowed origin gets no CORS headers.
 
 ### GZ-004 · Errors and request IDs
-Status: in review · Depends on: GZ-003
+Status: done · Depends on: GZ-003
 - RFC 9457 problem+json for all errors, including validation (field + reason only) and unhandled exceptions (generic message).
 - Central registry of stable error codes. `X-Request-ID` middleware (accept a safe incoming value or generate one), returned on every response.
 - Acceptance: an unhandled exception returns 500 with code + request ID and no internals; the same request ID appears in the log line.
 
 ### GZ-005 · Logging, telemetry and Sentry
-Status: todo · Depends on: GZ-004
+Status: in review · Depends on: GZ-004
 - structlog JSON with request ID, staff ID, path, status, duration; phone masking processor; deny-list for sensitive keys.
 - OpenTelemetry (FastAPI, SQLAlchemy, Redis, httpx instrumentation; OTLP exporter configurable; off locally). Sentry with PII scrubbing.
 - Acceptance: a test asserts tokens, OTP codes and full phone numbers never appear in captured logs.
@@ -47,6 +47,8 @@ Status: todo · Depends on: GZ-003
 - Alembic configured to run as `gize_migrator`; base model mixins (UUID PK, timestamps, `deleted_at`); helper that enables deny-all RLS on every new table.
 - Test fixtures: real Postgres, migrations applied once, transaction rollback per test, factories.
 - CI migration check job (moved from GZ-002): `alembic upgrade head → downgrade -1 → upgrade head`.
+- `create_async_engine(..., hide_parameters=True)` so statement parameters never reach error text (from GZ-005 review).
+- OpenTelemetry SQLAlchemy instrumentation on the engine via `Telemetry` (never the global provider; statements without parameters), plus per-dependency metrics for Postgres (handed over from GZ-005).
 - Acceptance: `gize_app` cannot create or drop tables (test); `anon` cannot read `gize` tables (test).
 
 ### GZ-007 · Health endpoints
@@ -60,12 +62,15 @@ Status: todo · Depends on: GZ-006
 - Idempotency: `idempotency_keys` table, dependency for POST handlers, conflict on same key + different body, Arq cleanup job (24 h).
 - `core/http.py` outbound client: timeouts, host allowlist, private-IP blocking.
 - Arq worker skeleton with graceful shutdown.
+- OpenTelemetry httpx instrumentation on the outbound client only (URLs without query strings, no trace headers to third parties), plus per-host request/error/duration metrics (handed over from GZ-005). Sentry already sends no trace headers and keeps no breadcrumbs.
 - Acceptance: tests for replayed idempotent request, mismatched body (422), blocked private-IP request, worker job executes in tests.
 
 ### GZ-009 · Rate limiting core
 Status: todo · Depends on: GZ-008
 - slowapi + Redis; key = staff ID, fallback `CF-Connecting-IP` / socket IP; named limit policies; 429 + `Retry-After` problem+json.
 - Fail-open (staff) vs fail-closed (OTP/SMS/public) policy when Redis is down; security event logged on limit hits.
+- Redis metrics per command: request count, error count, duration (moved from GZ-005; instrument the limiter's own Redis client per client, like the app's).
+- `RateLimitExceeded` needs its own handler that sets `Retry-After` (from GZ-004 review). Every security event also becomes a Sentry warning (GZ-005): decide which limit hits are sampled or aggregated so a flood cannot exhaust the Sentry quota.
 - Acceptance: tests for limit hit, Retry-After present, both Redis-down behaviours.
 
 ---
@@ -218,6 +223,12 @@ Status: todo · Depends on: GZ-002
 - Found in GZ-001 review: base images, Compose services, the Dockerfile frontend and pre-commit hooks are pinned by digest/SHA, and `uv.lock` pins Python packages, but nothing proposes updates, so security patches go stale silently.
 - Dependabot (or Renovate) for `uv.lock`, Docker digests (`Dockerfile`, `docker-compose.yml`), GitHub Actions and pre-commit hooks; weekly, grouped, each update a normal PR through CI.
 - Acceptance: a stale pin produces an update PR that passes CI; nothing auto-merges.
+
+### GZ-066 · Ship logs and route alerts
+Status: todo · Depends on: GZ-062 (hosting chosen)
+- Found in GZ-005 review: the JSON logs go to stderr and nothing ships them yet, so security-event alerts rely on Sentry warning events (`log_security_event`).
+- Ship stderr JSON logs to Grafana Cloud (Loki) with the host's log driver or an agent; alert rules for `category=security`, 5xx rate and `observability_disabled` to the Telegram group and email.
+- Acceptance: a forced security event and a forced 500 each reach the Telegram group within 5 minutes.
 
 ### GZ-063 · Load and failure drill
 Status: todo · Depends on: GZ-062

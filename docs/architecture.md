@@ -50,7 +50,8 @@ src/gize_api/
     security.py           # JWT verification (Supabase JWKS), current_staff dependency, role guards
     errors.py             # exception types → RFC 9457 problem+json responses
     logging.py            # structlog JSON, request context, PII masking
-    telemetry.py          # OpenTelemetry setup, Sentry init
+    telemetry.py          # OpenTelemetry setup (traces, metrics)
+    sentry.py             # Sentry init and event scrubbing
     ratelimit.py          # slowapi + Redis, key functions, fail-open/closed policy
     idempotency.py        # Idempotency-Key handling (Postgres table)
     http.py               # outbound HTTP client with timeouts + host allowlist (SSRF guard)

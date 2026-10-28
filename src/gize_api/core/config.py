@@ -8,7 +8,7 @@ a malformed URL can carry a password.
 import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, unquote, urlsplit
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     redis_url: SecretStr
     cors_allowed_origins: Annotated[tuple[str, ...], NoDecode] = Field(default=(), max_length=20)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Observability: each is off when unset. Production refuses to start without both unless
+    # OBSERVABILITY_REQUIRED=false; staging (and an opted-out production) warns at startup.
+    observability_required: bool = True
+    sentry_dsn: SecretStr | None = None
+    otel_exporter_otlp_endpoint: str | None = None
+    otel_exporter_otlp_headers: SecretStr | None = None
+    otel_service_name: str = Field(default="gize-admin-api", pattern=r"^[a-z0-9-]{1,63}$")
+    # Share of new traces recorded (0..1). Inbound client trace context is ignored.
+    otel_traces_sampler_ratio: float = Field(default=1.0, ge=0.0, le=1.0, allow_inf_nan=False)
+    release: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,64}$")
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
@@ -77,6 +87,64 @@ class Settings(BaseSettings):
             raise ValueError("must be redis://[user:password@]host[:port][/db] (or rediss://)")
         return value
 
+    @field_validator("sentry_dsn")
+    @classmethod
+    def _sentry_dsn_shape(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        parts = _safe_split(value.get_secret_value())
+        if parts is None or parts.scheme != "https" or not parts.hostname:
+            raise ValueError("must be the https DSN from the Sentry project settings")
+        return value
+
+    @field_validator("otel_exporter_otlp_endpoint")
+    @classmethod
+    def _otlp_endpoint_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = _safe_split(value)
+        if (
+            parts is None
+            or parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or parts.username is not None
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError("must be the OTLP/HTTP base URL, e.g. https://otlp.example.com/otlp")
+        return value.rstrip("/")
+
+    @field_validator("otel_exporter_otlp_headers")
+    @classmethod
+    def _otlp_headers_shape(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and _parse_headers(value.get_secret_value()) is None:
+            raise ValueError("must be comma-separated name=value pairs")
+        return value
+
+    @model_validator(mode="after")
+    def _observability_in_production(self) -> Self:
+        if (
+            self.app_env is Environment.PRODUCTION
+            and self.observability_required
+            and self.missing_observability()
+        ):
+            missing = ", ".join(self.missing_observability())
+            raise ValueError(
+                f"production requires {missing} (set OBSERVABILITY_REQUIRED=false to opt out)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _https_otlp_outside_local(self) -> Self:
+        endpoint = self.otel_exporter_otlp_endpoint
+        if (
+            endpoint is not None
+            and self.app_env in {Environment.STAGING, Environment.PRODUCTION}
+            and not endpoint.startswith("https://")
+        ):
+            raise ValueError("otel_exporter_otlp_endpoint must use https in staging and production")
+        return self
+
     @model_validator(mode="after")
     def _https_origins_outside_local(self) -> Self:
         if self.app_env in {Environment.STAGING, Environment.PRODUCTION} and any(
@@ -84,6 +152,21 @@ class Settings(BaseSettings):
         ):
             raise ValueError("cors_allowed_origins must use https in staging and production")
         return self
+
+    def otlp_headers(self) -> dict[str, str] | None:
+        """OTLP exporter headers (e.g. Grafana Cloud auth), or None."""
+        if self.otel_exporter_otlp_headers is None:
+            return None
+        return _parse_headers(self.otel_exporter_otlp_headers.get_secret_value())
+
+    def missing_observability(self) -> list[str]:
+        """Observability settings that are unset; startup warns about them outside local/test."""
+        missing = []
+        if self.sentry_dsn is None:
+            missing.append("sentry_dsn")
+        if self.otel_exporter_otlp_endpoint is None:
+            missing.append("otel_exporter_otlp_endpoint")
+        return missing
 
     @property
     def docs_enabled(self) -> bool:
@@ -118,6 +201,22 @@ def _is_bare_origin(origin: str) -> bool:
         and origin == f"{parts.scheme}://{parts.netloc}"
         and origin == origin.lower()
     )
+
+
+_HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}")
+_HEADER_VALUE = re.compile(r"[^\x00-\x1f\x7f]{1,4096}")
+
+
+def _parse_headers(text: str) -> dict[str, str] | None:
+    """Parse `name=value,…`, percent-decoded as the OTel spec (and Grafana's snippet) writes it."""
+    headers: dict[str, str] = {}
+    for pair in text.split(","):
+        name, sep, value = pair.partition("=")
+        name, value = unquote(name.strip()), unquote(value.strip())
+        if not sep or not _HEADER_NAME.fullmatch(name) or not _HEADER_VALUE.fullmatch(value):
+            return None
+        headers[name] = value
+    return headers
 
 
 def load_settings() -> Settings:

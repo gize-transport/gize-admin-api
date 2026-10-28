@@ -9,6 +9,7 @@ import re
 import uuid
 from contextvars import ContextVar
 
+from opentelemetry import trace
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -36,6 +37,10 @@ class RequestIdMiddleware:
 
         request_id = _accept_or_generate(Headers(scope=scope).get(REQUEST_ID_HEADER))
         token = _request_id.set(request_id)
+        # Links the trace to logs and Sentry, which carry the same ID.
+        span = trace.get_current_span()
+        if span.is_recording():
+            span.set_attribute("gize.request_id", request_id)
 
         async def send_with_id(message: Message) -> None:
             if message["type"] == "http.response.start":
