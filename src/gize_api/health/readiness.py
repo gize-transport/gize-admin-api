@@ -19,6 +19,7 @@ readiness on it would take the whole API offline (engineering-standards.md, "Hea
 
 import asyncio
 import contextlib
+import contextvars
 import time
 
 import structlog
@@ -67,21 +68,27 @@ class Readiness:
             return self._ready
         check = self._check
         if check is None or check.done():
-            check = self._check = asyncio.create_task(self._run_checks())
+            # A clean context: the check outlives the probe that starts it, and its log
+            # lines belong to no request.
+            check = self._check = asyncio.create_task(
+                self._run_checks(), context=contextvars.Context()
+            )
         done, _ = await asyncio.wait({check}, timeout=READINESS_TIMEOUT_SECONDS)
         return check in done and check.result()
 
     async def close(self) -> None:
-        """Stop a running check and close the connections (at shutdown)."""
-        for task in (self._check, self._redis_check):
-            if task is not None and not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+        """Stop running checks and close the connections (at shutdown), whatever fails."""
         try:
-            await self._engine.dispose()
+            for task in (self._check, self._redis_check):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(Exception, asyncio.CancelledError):
+                        await task
         finally:
-            await self._redis.aclose()
+            try:
+                await self._engine.dispose()
+            finally:
+                await self._redis.aclose()
 
     def _fresh(self) -> bool:
         return (
@@ -91,7 +98,9 @@ class Readiness:
 
     async def _run_checks(self) -> bool:
         if self._redis_check is None or self._redis_check.done():
-            self._redis_check = asyncio.create_task(self._check_redis())
+            self._redis_check = asyncio.create_task(
+                self._check_redis(), context=contextvars.Context()
+            )
         postgres = await self._check_postgres()
         self._ready, self._checked_at = postgres, time.monotonic()
         return postgres
@@ -118,14 +127,18 @@ class Readiness:
         return True
 
     def _failed(self, dependency: str, error: Exception) -> None:
-        if self._telemetry is not None:
-            self._telemetry.record_dependency_unavailable(dependency, error)
+        # Reporting must never change the answer (a broken exporter is not an outage).
+        with contextlib.suppress(Exception):
+            if self._telemetry is not None:
+                self._telemetry.record_dependency_unavailable(dependency, error)
         now = time.monotonic()
         logged_at = self._outage_logged_at.get(dependency)
         if logged_at is None or now - logged_at >= OUTAGE_REMINDER_SECONDS:
             self._outage_logged_at[dependency] = now
-            logger.error("dependency_unavailable", dependency=dependency, exc_info=error)
+            with contextlib.suppress(Exception):
+                logger.error("dependency_unavailable", dependency=dependency, exc_info=error)
 
     def _succeeded(self, dependency: str) -> None:
         if self._outage_logged_at.pop(dependency, None) is not None:
-            logger.info("dependency_recovered", dependency=dependency)
+            with contextlib.suppress(Exception):
+                logger.info("dependency_recovered", dependency=dependency)

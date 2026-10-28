@@ -13,6 +13,7 @@ import httpx
 import pytest
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoint
 from redis.asyncio import Redis
+from sqlalchemy.pool import QueuePool
 
 from gize_api.core.telemetry import configure_telemetry
 from gize_api.health.readiness import READINESS_TIMEOUT_SECONDS, Readiness
@@ -332,3 +333,59 @@ async def test_probes_are_counted(
         if isinstance(point, NumberDataPoint)
     }
     assert points == {("live", 200): 2, ("ready", 200): 1}
+
+
+async def test_a_reporting_failure_never_breaks_readiness(
+    make_settings: SettingsFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Logging or metrics failing (a bug, an exporter problem) must not turn into a 500."""
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("reporting is broken")
+
+    monkeypatch.setattr(
+        "gize_api.health.readiness.logger",
+        type("Broken", (), {"error": staticmethod(broken), "info": staticmethod(broken)})(),
+    )
+    app = create_app(make_settings())  # unreachable Postgres and Redis
+    async with app.router.lifespan_context(app), _client(app) as client:
+        response = await client.get("/health/ready")
+        await asyncio.sleep(READINESS_TIMEOUT_SECONDS)  # the Redis task has finished
+    assert response.status_code == 503  # not ready, and answered: never a 500
+
+
+async def test_close_releases_connections_even_if_a_check_failed(
+    make_settings: SettingsFactory, database: DatabaseUrls
+) -> None:
+    readiness = Readiness.for_settings(make_settings(database_url=database.app), None)
+
+    async def fails_when_cancelled() -> bool:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            raise RuntimeError("cleanup failed") from None
+        return True  # pragma: no cover - always cancelled
+
+    async with readiness._engine.connect():
+        pass  # the readiness connection is open and pooled
+    readiness._check = asyncio.ensure_future(fails_when_cancelled())
+    await asyncio.sleep(0)
+    await readiness.close()  # does not raise
+    pool = readiness._engine.sync_engine.pool
+    assert isinstance(pool, QueuePool)
+    assert pool.checkedin() == 0  # disposed: the connection was closed
+
+
+async def test_background_checks_do_not_log_a_probes_request_id(
+    make_settings: SettingsFactory,
+    database: DatabaseUrls,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The check outlives the probe that started it; its lines belong to no request."""
+    app = create_app(make_settings(database_url=database.app))  # unreachable Redis
+    async with app.router.lifespan_context(app), _client(app) as client:
+        await client.get("/health/ready")
+        await asyncio.sleep(READINESS_TIMEOUT_SECONDS)
+    (line,) = [entry for entry in _log_lines(capsys) if entry["event"] == "dependency_unavailable"]
+    assert "request_id" not in line

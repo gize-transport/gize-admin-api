@@ -10,8 +10,8 @@ The session rule: every use of a session is inside `async with session.begin():`
 per unit of work. Autobegin is off, so a query outside a block fails at once (but
 `session.add()` does not: add objects inside the block that should save them). A dependency
 that reads (auth) uses its own short block, finished before the service opens its own, and
-hands on plain values (IDs, role), not ORM objects. Every ORM query refreshes rows the
-session already holds (GizeSession), so a later block never sees stale data; role and
+hands on plain values (IDs, role), not ORM objects. Every ORM query and `get()` refreshes
+rows the session already holds (GizeSession), so a later block never sees stale data; role and
 ownership checks still belong in the service's block, next to the write they protect.
 Never hold a block open across an outbound call (SMS, HTTP).
 
@@ -25,7 +25,7 @@ import traceback
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import FrameType
-from typing import Literal
+from typing import Any, Literal
 
 import sqlalchemy.exc
 from fastapi import Request
@@ -86,17 +86,30 @@ def create_engine(
 
 
 class GizeSession(Session):
-    """The ORM session for the app: every ORM query refreshes rows it already holds.
+    """The ORM session for the app: ORM queries and `get()` refresh rows it already holds.
 
     A request's dependency and handler share one session; without this, a row loaded in the
     dependency's block (a staff member's role) would be served from the session's cache in
-    the service's block, even after another request changed it.
+    the service's block, even after another request changed it. Inside `no_autoflush`
+    nothing is refreshed: unsaved edits would otherwise be overwritten.
     """
+
+    # Forwards Session.get unchanged except for the default; callers are typed through
+    # AsyncSession.get.
+    def get(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if kwargs.get("populate_existing") is None:
+            kwargs["populate_existing"] = self.autoflush
+        return super().get(*args, **kwargs)
 
 
 @event.listens_for(GizeSession, "do_orm_execute")
 def _refresh_loaded_rows(state: ORMExecuteState) -> None:
-    if state.is_select and not state.is_column_load and not state.is_relationship_load:
+    if (
+        state.session.autoflush  # pending edits were just flushed, so nothing is lost
+        and state.is_select
+        and not state.is_column_load
+        and not state.is_relationship_load
+    ):
         state.update_execution_options(populate_existing=True)
 
 

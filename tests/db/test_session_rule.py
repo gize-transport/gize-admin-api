@@ -106,3 +106,53 @@ async def test_each_block_reads_current_rows_not_the_sessions_cache(
     finally:
         await other.close()
         await engine.dispose()
+
+
+@pytest.mark.usefixtures("committed_probe")
+async def test_get_reads_current_rows_too(
+    make_settings: SettingsFactory, database: DatabaseUrls
+) -> None:
+    """`session.get()` answers from the session's cache without SQL unless told otherwise."""
+    engine = create_engine(make_settings(database_url=database.app))
+    other = await asyncpg.connect(database.app, timeout=3)
+    try:
+        async with create_sessionmaker(engine)() as session:
+            async with session.begin():
+                first = await session.get(_Probe, 1)
+            await other.execute("UPDATE gize.test_rule_probe SET role = 'revoked' WHERE id = 1")
+            async with session.begin():  # an explicit choice is respected
+                cached = await session.get(_Probe, 1, populate_existing=False)
+            assert cached is not None
+            assert cached.role == "admin"
+            async with session.begin():
+                again = await session.get(_Probe, 1)
+            assert again is first
+            assert again is not None
+            assert again.role == "revoked"
+    finally:
+        await other.close()
+        await engine.dispose()
+
+
+@pytest.mark.usefixtures("committed_probe")
+async def test_refreshing_never_discards_unsaved_edits(
+    make_settings: SettingsFactory, database: DatabaseUrls
+) -> None:
+    """With autoflush off, a refresh would overwrite pending edits; then rows are not
+    refreshed, and the edit is saved when the block ends."""
+    engine = create_engine(make_settings(database_url=database.app))
+    try:
+        async with create_sessionmaker(engine)() as session:
+            async with session.begin():
+                probe = await session.get(_Probe, 1)
+                assert probe is not None
+                with session.no_autoflush:
+                    probe.role = "edited"
+                    await session.scalar(select(_Probe).where(_Probe.id == 1))
+                    await session.get(_Probe, 1)
+                    assert probe.role == "edited"
+            async with session.begin():
+                saved = await session.scalar(select(_Probe.role).where(_Probe.id == 1))
+        assert saved == "edited"
+    finally:
+        await engine.dispose()

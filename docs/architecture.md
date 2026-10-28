@@ -118,7 +118,7 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 - **Session rule** (`core/db.py`):
   - Every use of a database session is inside `async with session.begin():`, one block per unit of work. Sessions are created with autobegin off, so a query outside a block fails at once; `session.add()` does not, so add objects inside the block that should save them.
   - A dependency that reads (auth) uses its own short block, finishes it before the handler's service opens its own, and hands on plain values (IDs, role), not ORM objects. Role and ownership checks belong in the service's block, next to the write they protect.
-  - Every ORM query refreshes rows the session already holds, so a later block never sees stale data.
+  - Every ORM query and `session.get()` refreshes rows the session already holds, so a later block never sees stale data (except inside `no_autoflush`, where a refresh would overwrite unsaved edits).
   - Never hold a block open across an outbound call (SMS, HTTP).
 
 ## Configuration and environments
