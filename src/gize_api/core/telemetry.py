@@ -33,7 +33,7 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.redis import RedisInstrumentor
-from opentelemetry.metrics import Counter
+from opentelemetry.metrics import Counter, Histogram
 from opentelemetry.sdk.metrics import AlwaysOffExemplarFilter, MeterProvider
 from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import View
@@ -221,6 +221,18 @@ class Telemetry:
         """Count a failed readiness check of `dependency` (a fixed name: postgres, redis)."""
         self._dependency_unavailable.add(
             1, {"dependency": dependency, "error.type": type(error).__name__}
+        )
+
+    def record_outbound_duration(self, seconds: float, attributes: dict[str, str | int]) -> None:
+        """One outbound call (core/http.py): host, method and status or error type."""
+        self._outbound_duration.record(seconds, attributes)
+
+    @functools.cached_property
+    def _outbound_duration(self) -> Histogram:
+        return self.meter_provider.get_meter("gize_api.http").create_histogram(
+            "http.client.request.duration",
+            unit="s",
+            description="Duration of calls to outside services",
         )
 
     def record_health_probe(self, endpoint: str, status: int) -> None:

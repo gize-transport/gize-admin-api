@@ -20,6 +20,7 @@ Connect directly or through Supabase's session-mode pooler (port 5432). Transact
 connection, which transaction mode shares between clients.
 """
 
+import contextvars
 import ssl
 import traceback
 from collections.abc import AsyncIterator, Iterator
@@ -33,7 +34,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
-from sqlalchemy.orm import ORMExecuteState, Session
+from sqlalchemy.orm import ORMExecuteState, Session, SessionTransaction
 
 from gize_api.core.config import Settings, database_ssl_mode
 
@@ -100,6 +101,29 @@ class GizeSession(Session):
         if kwargs.get("populate_existing") is None:
             kwargs["populate_existing"] = self.autoflush
         return super().get(*args, **kwargs)
+
+
+# Open GizeSession transactions in the current task's context, for the outbound HTTP guard.
+_open_transactions: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "gize_open_transactions", default=0
+)
+
+
+def database_transaction_open() -> bool:
+    """True inside `async with session.begin():` (any GizeSession) in the current context."""
+    return _open_transactions.get() > 0
+
+
+@event.listens_for(GizeSession, "after_transaction_create")
+def _transaction_opened(session: Session, transaction: SessionTransaction) -> None:
+    if transaction.parent is None:
+        _open_transactions.set(_open_transactions.get() + 1)
+
+
+@event.listens_for(GizeSession, "after_transaction_end")
+def _transaction_closed(session: Session, transaction: SessionTransaction) -> None:
+    if transaction.parent is None:
+        _open_transactions.set(max(0, _open_transactions.get() - 1))
 
 
 @event.listens_for(GizeSession, "do_orm_execute")
