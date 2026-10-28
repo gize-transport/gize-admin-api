@@ -7,10 +7,16 @@ tokens, credentials, OTP codes and secret or personal `key=value` pairs become
 """
 
 import dataclasses
+import itertools
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
+from pathlib import PurePath
 from typing import Any
 from urllib.parse import unquote
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -167,6 +173,9 @@ _AUTH_HEADER = re.compile(
     r"(?i)\b((?:proxy-)?authorization|(?:set-)?cookie)(\s{0,3}[=:]\s{0,3})[^\n]{1,4096}"
 )
 _AUTH_SCHEME = re.compile(r"(?i)\b(bearer|basic|digest)\s{1,4}[\w.~+/=-]{1,4096}")
+_EMAIL = re.compile(
+    r"(?<![\w.+-])[\w.+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}(?![\w-])"
+)
 _URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]{0,20}://)[^/\s]{1,256}@")
 _CODE_NUMBER = r"\d{3,4}[ -]?\d{1,4}"
 # "code" alone is too generic ("route code 1203"): it needs an OTP qualifier before it, or
@@ -227,6 +236,7 @@ def scrub_text(text: str) -> str:
     text = _AUTH_HEADER.sub(rf"\1\2{REDACTED}", text)
     text = _AUTH_SCHEME.sub(rf"\1 {REDACTED}", text)
     text = _URL_USERINFO.sub(rf"\1{REDACTED}@", text)
+    text = _EMAIL.sub(REDACTED, text)
     text = _redact_values(text, _PAIR)
     text = _redact_values(text, _ASSIGNMENT)
     text = _OTP_KEYWORD_FIRST.sub(_redact_code_list, text)
@@ -260,40 +270,58 @@ def scrub_value(
         return _scrub_int(value)
     if isinstance(value, str):
         return scrub_text(value)
+    if isinstance(value, BaseException):
+        return exception_type_name(value)  # never the message: it holds the failing data
+    if isinstance(value, Enum):
+        return scrub_value(key, value.value, depth, budget)
+    if isinstance(value, (UUID, datetime, date, time, Decimal, PurePath)):
+        return scrub_text(str(value))
     if depth >= MAX_DEPTH:
         return TRUNCATED
     if isinstance(value, (bytes, bytearray)):
         return f"[BYTES {len(value)}]"
+    # Objects are walked one level at a time, never copied whole (they can be huge).
     if isinstance(value, BaseModel):
-        return scrub_value(key, value.model_dump(mode="json"), depth + 1, budget)
+        names = list(type(value).model_fields)
+        return _scrub_fields(((n, getattr(value, n)) for n in names), len(names), depth, budget)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return scrub_value(key, dataclasses.asdict(value), depth + 1, budget)
+        fields = dataclasses.fields(value)
+        pairs = ((f.name, getattr(value, f.name)) for f in fields)
+        return _scrub_fields(pairs, len(fields), depth, budget)
     if isinstance(value, Mapping):
-        return _scrub_mapping(value, depth, budget)
+        return _scrub_fields(value.items(), len(value), depth, budget)
     if isinstance(value, (list, tuple, set, frozenset)):
         return _scrub_sequence(key, value, depth, budget)
     return scrub_text(repr(value))
 
 
-def _scrub_mapping(value: Mapping[Any, Any], depth: int, budget: Budget) -> dict[str, Any]:
-    items = list(value.items())
+def exception_type_name(exc: BaseException) -> str:
+    cls = type(exc)
+    return cls.__name__ if cls.__module__ == "builtins" else f"{cls.__module__}.{cls.__name__}"
+
+
+def _scrub_fields(
+    pairs: Iterable[tuple[Any, Any]], total: int, depth: int, budget: Budget
+) -> dict[str, Any]:
     scrubbed = {
-        scrub_text(str(k)): scrub_value(str(k), v, depth + 1, budget) for k, v in items[:MAX_ITEMS]
+        scrub_text(str(k)): scrub_value(str(k), v, depth + 1, budget)
+        for k, v in itertools.islice(pairs, MAX_ITEMS)
     }
-    if len(items) > MAX_ITEMS:
-        scrubbed["…"] = f"[+{len(items) - MAX_ITEMS} more]"
+    if total > MAX_ITEMS:
+        scrubbed["…"] = f"[+{total - MAX_ITEMS} more]"
     return scrubbed
 
 
 def _scrub_sequence(key: str, value: Any, depth: int, budget: Budget) -> list[Any]:  # noqa: ANN401
-    elements = list(value)
+    total = len(value)
+    elements = list(itertools.islice(value, MAX_ITEMS))
     # A (name, value) pair such as an ASGI header: decoded, and scrubbed by its name.
-    if len(elements) == 2 and isinstance(elements[0], (str, bytes)):
+    if total == 2 and isinstance(elements[0], (str, bytes)):
         name = str(_as_text(elements[0]))
         return [scrub_text(name), scrub_value(name, _as_text(elements[1]), depth + 1, budget)]
-    scrubbed = [scrub_value(key, item, depth + 1, budget) for item in elements[:MAX_ITEMS]]
-    if len(elements) > MAX_ITEMS:
-        scrubbed.append(f"[+{len(elements) - MAX_ITEMS} more]")
+    scrubbed = [scrub_value(key, item, depth + 1, budget) for item in elements]
+    if total > MAX_ITEMS:
+        scrubbed.append(f"[+{total - MAX_ITEMS} more]")
     return scrubbed
 
 

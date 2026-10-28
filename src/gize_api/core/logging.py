@@ -11,10 +11,13 @@ Exceptions are logged as `exception_type`, `exception_chain` and `exception_fram
 data the failing code held (names, phones, codes), which no pattern can reliably catch.
 """
 
+import json
 import logging
 import sys
+import threading
 import time
 import traceback
+import warnings
 from contextvars import ContextVar
 from types import TracebackType
 from typing import Any, TextIO
@@ -31,6 +34,7 @@ from gize_api.core.scrub import (
     REDACTED,
     TRUNCATED,
     Budget,
+    exception_type_name,
     mask_phone_numbers,
     scrub_text,
     scrub_value,
@@ -97,6 +101,7 @@ def configure_logging(level: str) -> None:
         processors=[
             structlog.stdlib.filter_by_level,
             *shared,
+            _exceptions_to_types,
             structlog.stdlib.PositionalArgumentsFormatter(),
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
@@ -114,6 +119,7 @@ def configure_logging(level: str) -> None:
         ],
     )
     handler = _CurrentStderrHandler()
+    handler.addFilter(_StdlibRecordFilter())
     handler.setFormatter(formatter)
 
     # The root logger gets exactly one handler, ours: any other (a library calling
@@ -121,10 +127,12 @@ def configure_logging(level: str) -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level)
-    # captureWarnings(True) is a no-op if it thinks it already ran, even when something has
-    # since restored the original hook; resetting first makes reconfiguration reliable.
-    logging.captureWarnings(False)
-    logging.captureWarnings(True)
+    # Exceptions nobody catches, and warnings, go through the same pipeline: Python's own
+    # handlers would print the message and source lines to stderr.
+    sys.excepthook = _log_uncaught_exception
+    threading.excepthook = _log_uncaught_thread_exception
+    sys.unraisablehook = _log_unraisable_exception
+    warnings.showwarning = _log_warning
     # uvicorn installs its own handlers and levels before the app factory runs.
     for name in ("uvicorn", "uvicorn.error"):
         uvicorn_logger = logging.getLogger(name)
@@ -150,6 +158,104 @@ class _CurrentStderrHandler(logging.StreamHandler[TextIO]):
     def emit(self, record: logging.LogRecord) -> None:
         self.stream = sys.stderr
         super().emit(record)
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802 - stdlib name
+        """One fixed line instead of logging's own dump of the traceback and arguments."""
+        line = {"event": "log_emit_failed", "logger": record.name, "level": "error"}
+        sys.stderr.write(json.dumps(line) + "\n")
+
+
+_TRACEBACK_TEXT = "Traceback (most recent call last)"
+
+
+class _StdlibRecordFilter(logging.Filter):
+    """Keep exception text out of library (non-structlog) records.
+
+    - exceptions passed as the message or a format argument become their type name;
+    - a record carrying exc_info keeps only the first line of its message (asyncio, for one,
+      puts the exception's repr in the lines after it);
+    - a message that is itself a formatted traceback (uvicorn's lifespan failures) is
+      replaced: the exception is logged separately with its type and frames.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, dict):  # structlog's own records: handled by processors
+            return True
+        if isinstance(record.msg, BaseException):
+            record.msg = exception_type_name(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(_type_if_exception(arg) for arg in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: _type_if_exception(arg) for key, arg in record.args.items()}
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - bad format arguments: handleError reports it
+            return True
+        if _TRACEBACK_TEXT in message:
+            message = "traceback_text_suppressed"
+        elif record.exc_info:
+            message = message.split("\n", 1)[0]
+        else:
+            return True
+        record.msg, record.args = message, ()
+        return True
+
+
+def _type_if_exception(value: object) -> object:
+    return exception_type_name(value) if isinstance(value, BaseException) else value
+
+
+def _exceptions_to_types(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
+    """structlog: an exception as the event or a %-format argument becomes its type name."""
+    if isinstance(event_dict.get("event"), BaseException):
+        event_dict["event"] = exception_type_name(event_dict["event"])
+    args = event_dict.get("positional_args")
+    if isinstance(args, tuple):
+        event_dict["positional_args"] = tuple(_type_if_exception(arg) for arg in args)
+    return event_dict
+
+
+def _log_uncaught_exception(
+    exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
+) -> None:
+    structlog.get_logger("gize_api.uncaught").error(
+        "uncaught_exception", exc_info=(exc_type, exc, tb)
+    )
+
+
+def _log_uncaught_thread_exception(args: threading.ExceptHookArgs) -> None:
+    if args.exc_type is SystemExit:
+        return
+    structlog.get_logger("gize_api.uncaught").error(
+        "uncaught_thread_exception",
+        thread=args.thread.name if args.thread is not None else None,
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+def _log_unraisable_exception(unraisable: "sys.UnraisableHookArgs") -> None:
+    # err_msg and object can describe the data involved; only the exception is logged.
+    structlog.get_logger("gize_api.uncaught").error(
+        "unraisable_exception",
+        exc_info=(unraisable.exc_type, unraisable.exc_value, unraisable.exc_traceback),
+    )
+
+
+def _log_warning(
+    message: Warning | str,
+    category: type[Warning],
+    filename: str,
+    lineno: int,
+    file: TextIO | None = None,
+    line: str | None = None,
+) -> None:
+    """Category and location only: like an exception message, a warning's text and source
+    line can carry data, and `file:line` is enough to find it."""
+    structlog.get_logger("py.warnings").warning(
+        "python_warning",
+        category=category.__name__,
+        location=f"{_short_path(filename)}:{lineno}",
+    )
 
 
 class AccessLogMiddleware:
@@ -216,7 +322,7 @@ def _format_exception(_: WrappedLogger, __: str, event_dict: EventDict) -> Event
     exc = _exception_from(event_dict.pop("exc_info", None))
     if exc is None:
         return event_dict
-    event_dict["exception_type"] = _type_name(exc)
+    event_dict["exception_type"] = exception_type_name(exc)
     chain = [exc]
     while len(chain) < MAX_CHAIN:
         cause = chain[-1].__cause__ or (
@@ -225,7 +331,7 @@ def _format_exception(_: WrappedLogger, __: str, event_dict: EventDict) -> Event
         if cause is None or cause in chain:
             break
         chain.append(cause)
-    event_dict["exception_chain"] = [_type_name(item) for item in chain]
+    event_dict["exception_chain"] = [exception_type_name(item) for item in chain]
     # Root cause first, as Python prints it: where the failure started comes first.
     frames = [frame for item in reversed(chain) for frame in _frames(item.__traceback__)]
     event_dict["exception_frames"] = frames[-MAX_FRAMES:]
@@ -241,11 +347,6 @@ def _exception_from(exc_info: object) -> BaseException | None:
         value = exc_info[1]
         return value if isinstance(value, BaseException) else None
     return None
-
-
-def _type_name(exc: BaseException) -> str:
-    cls = type(exc)
-    return cls.__name__ if cls.__module__ == "builtins" else f"{cls.__module__}.{cls.__name__}"
 
 
 def _frames(tb: TracebackType | None) -> list[str]:

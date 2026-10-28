@@ -18,7 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from gize_api.core.request_id import current_request_id
 from gize_api.core.sentry import report_exception
@@ -205,6 +205,37 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(Exception, _unhandled_error)
+
+
+class LastResortGuard:
+    """Catch an error escaping our own middleware (a bug), just inside the tracing layer.
+
+    It is logged as type and frames, answered with a generic 500 if nothing was sent yet,
+    and never re-raised: otherwise the server, and the tracing layer around it, would record
+    the exception's message and stack text.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception as exc:
+            logger.error("unhandled_error_outside_handlers", exc_info=exc)
+            if not started:
+                await problem_response(ErrorCode.INTERNAL_ERROR)(scope, receive, send)
 
 
 class HandledErrorGuard:

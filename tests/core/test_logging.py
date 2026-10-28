@@ -5,7 +5,6 @@ import json
 import logging
 import time
 import uuid
-import warnings
 from typing import Any
 
 import httpx
@@ -200,17 +199,6 @@ def test_chatty_libraries_are_quiet_below_warning(
     logging.getLogger(name).info("HTTP Request: GET https://sms.example/send?key=abc&to=0911")
     logging.getLogger(name).warning("%s warning", name)
     assert [line["event"] for line in _lines(capsys)] == [f"{name} warning"]
-
-
-def test_python_warnings_go_through_the_pipeline(capsys: pytest.CaptureFixture[str]) -> None:
-    # pytest intercepts warnings itself, so the two halves are checked separately: warnings
-    # are routed to logging, and the py.warnings logger is scrubbed like any other.
-    configure_logging("INFO")
-    assert warnings.showwarning.__module__ == "logging"
-    logging.getLogger("py.warnings").warning("UserWarning: calling 0911223344 is deprecated")
-    (line,) = _lines(capsys)
-    assert line["logger"] == "py.warnings"
-    assert "0911223344" not in line["event"]
 
 
 # --- secrets and personal data: end to end ----------------------------------------------
@@ -843,3 +831,42 @@ def test_exception_chain_is_bounded(capsys: pytest.CaptureFixture[str]) -> None:
         "TypeError",
         "ValueError",
     ]
+
+
+def test_emails_in_text_are_redacted() -> None:
+    assert scrub_text("Abebe's email is abebe.k+gize@example.com.") == (
+        "Abebe's email is [REDACTED]."
+    )
+
+
+def test_large_containers_are_not_copied_whole() -> None:
+    @dataclasses.dataclass
+    class Big:
+        rows: list[int]
+
+    huge = Big(rows=list(range(2_000_000)))
+    started = time.monotonic()
+    scrubbed = scrub_value("big", huge)
+    assert time.monotonic() - started < 0.2
+    assert scrubbed["rows"][-1] == "[+1999950 more]"
+    big_set = set(range(5_000_000))
+    started = time.monotonic()
+    assert len(scrub_value("s", big_set)) == 51
+    assert time.monotonic() - started < 0.2
+
+
+def test_common_scalar_types_become_text() -> None:
+    import datetime as dt
+    import enum
+    from decimal import Decimal
+    from pathlib import PurePosixPath
+
+    class Status(enum.Enum):
+        ACTIVE = "active"
+
+    rider_id = uuid.UUID("8f2a0b1c-0903-5564-90bf-0911223344aa")
+    assert scrub_value("status", Status.ACTIVE) == "active"
+    assert scrub_value("rider_id", rider_id) == str(rider_id)
+    assert scrub_value("on", dt.date(2026, 10, 28)) == "2026-10-28"
+    assert scrub_value("price", Decimal("1200")) == "1200"
+    assert scrub_value("path", PurePosixPath("/tmp/x")) == "/tmp/x"  # noqa: S108 - a value

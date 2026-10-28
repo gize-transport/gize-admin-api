@@ -15,7 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
 from gize_api.core.config import Environment, Settings, load_settings
-from gize_api.core.errors import HandledErrorGuard, install_exception_handlers
+from gize_api.core.errors import HandledErrorGuard, LastResortGuard, install_exception_handlers
 from gize_api.core.logging import AccessLogMiddleware, configure_logging
 from gize_api.core.middleware import (
     BodySizeLimitMiddleware,
@@ -43,7 +43,8 @@ class GizeAPI(FastAPI):
 
     Middleware added with `add_middleware` runs inside Starlette's ServerErrorMiddleware, so
     it never sees the 500 for an unhandled error. Wrapping the built stack does. From the
-    outside in: tracing (when configured) -> security headers -> request ID -> access log ->
+    outside in: tracing (when configured) -> last-resort guard -> security headers ->
+    request ID -> access log ->
     CORS guard -> CORS -> handled-error guard -> ServerErrorMiddleware -> `add_middleware`
     layers -> routes. So
     every response, including a 500, has the request ID and nosniff, is readable by allowed
@@ -66,6 +67,7 @@ class GizeAPI(FastAPI):
         )
         app = CORSGuardMiddleware(app, allowed_origins=self.cors_allowed_origins)
         app = SecurityHeadersMiddleware(RequestIdMiddleware(AccessLogMiddleware(app)))
+        app = LastResortGuard(app)
         if self.telemetry is not None:
             app = self.telemetry.wrap(app, self.routes)
         return app
@@ -113,17 +115,25 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
     async def lifespan(app: GizeAPI) -> AsyncIterator[None]:
         # No connection is made here: the API starts while Redis is down, and readiness
         # (GZ-007) reports it.
-        redis = Redis.from_url(
-            settings.redis_url.get_secret_value(),
-            socket_timeout=REDIS_TIMEOUT_SECONDS,
-            socket_connect_timeout=REDIS_TIMEOUT_SECONDS,
-            max_connections=REDIS_MAX_CONNECTIONS,
-            client_name=REDIS_CLIENT_NAME,
-        )
-        app.state.redis = redis
-        telemetry = app.telemetry
-        if telemetry is not None:
-            telemetry.instrument_redis(redis)
+        # A startup failure is logged here as type and frames; uvicorn's own report of it
+        # (formatted traceback text) is suppressed by the logging filter.
+        try:
+            redis = Redis.from_url(
+                settings.redis_url.get_secret_value(),
+                socket_timeout=REDIS_TIMEOUT_SECONDS,
+                socket_connect_timeout=REDIS_TIMEOUT_SECONDS,
+                max_connections=REDIS_MAX_CONNECTIONS,
+                client_name=REDIS_CLIENT_NAME,
+            )
+            app.state.redis = redis
+            telemetry = app.telemetry
+            if telemetry is not None:
+                telemetry.instrument_redis(redis)
+        except Exception:
+            structlog.get_logger("gize_api.startup").error(
+                "lifespan_failed", phase="startup", exc_info=True
+            )
+            raise
         try:
             yield
         finally:
