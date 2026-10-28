@@ -115,7 +115,11 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 - `ETag`/`If-Match` optional later; for now use `updated_at` checks in services where concurrent edits matter.
 - Every response carries `X-Request-ID`.
 - OpenAPI is the contract; every endpoint has a summary, documented error codes and response schemas.
-- **Session rule:** every use of a database session is inside `async with session.begin():`, one block per unit of work. Sessions are created with autobegin off, so a query outside a block fails at once. A dependency that reads (auth) uses its own short block and finishes it before the handler's service opens its own. Never hold a block open across an outbound call (SMS, HTTP).
+- **Session rule** (`core/db.py`):
+  - Every use of a database session is inside `async with session.begin():`, one block per unit of work. Sessions are created with autobegin off, so a query outside a block fails at once; `session.add()` does not, so add objects inside the block that should save them.
+  - A dependency that reads (auth) uses its own short block, finishes it before the handler's service opens its own, and hands on plain values (IDs, role), not ORM objects. Role and ownership checks belong in the service's block, next to the write they protect.
+  - Every ORM query refreshes rows the session already holds, so a later block never sees stale data.
+  - Never hold a block open across an outbound call (SMS, HTTP).
 
 ## Configuration and environments
 

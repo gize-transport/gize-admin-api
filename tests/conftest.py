@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.bootstrap import bootstrap
 from gize_api.core.config import Settings
-from gize_api.core.db import create_engine, get_session
+from gize_api.core.db import GizeSession, create_engine, get_session
 from gize_api.main import GizeAPI, create_app
 from tests.support import (
     SETTINGS_ENV_VARS,
@@ -190,6 +190,7 @@ async def db_session(
                 bind=connection,
                 expire_on_commit=False,
                 autobegin=False,  # as in production (core/db.py, the session rule)
+                sync_session_class=GizeSession,
                 join_transaction_mode="create_savepoint",
             )
             try:

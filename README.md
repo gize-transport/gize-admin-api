@@ -85,7 +85,7 @@ Accepted and known: `gize_app`, like every role, can create temporary tables, co
 
 The bootstrap resets the roles' settings (role-wide and for this database) and password expiry. It refuses to run, naming the problem, if it finds drift: a membership either way (our roles in another role, or another role in ours; the admin may keep ADMIN OPTION only), role settings for another database, `CREATE` on schema `gize` or `public` or on the database, `TRUNCATE`/`REFERENCES`/`TRIGGER`/`MAINTAIN` on a table, or an object owned by `gize_app`. After the first run, table grants belong to migrations: re-running never re-grants on existing tables. Create objects in `gize` only through migrations: anything made by hand (the dashboard) is owned by `postgres` and gets neither the default grants nor RLS.
 
-**Connection budget.** Each process opens at most `DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW` connections (10 by default). Add up every process that can run at once (API replicas, the background worker, the previous release during a deploy, a migration) and keep the total under the pooler's client limit for your compute size (shown in the Supabase dashboard's database settings).
+**Connection budget.** Each process opens at most `DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW` connections (10 by default); each API instance adds one more for its readiness check. Add up every process that can run at once (API replicas, the background worker, the previous release during a deploy, a migration) and keep the total under the pooler's client limit for your compute size (shown in the Supabase dashboard's database settings).
 
 **Setting up a Supabase project (once, by a human):**
 1. In the dashboard, keep `gize` out of the Data API's exposed schemas (Settings → API).
@@ -127,9 +127,14 @@ For the load balancer or orchestrator, without auth, never cached, not in the AP
 | `GET`/`HEAD /health/live` | the process is up (checks nothing else) | — |
 | `GET`/`HEAD /health/ready` | Postgres answers within 1 s | 503 problem+json, `Retry-After: 5` |
 
-Use `/health/live` to restart a stuck instance and `/health/ready` to route traffic. Redis is checked with every readiness check but never fails it: one shared Redis outage would otherwise take every instance out of rotation (engineering-standards.md, "Health"). Instead, a dependency that fails a check is logged at ERROR as `dependency_unavailable` (with `dependency` and the error type) and counted in `gize.dependency.unavailable`; alert on both. One result serves all probes for 1 s. Successful probes are left out of the access log.
+Use `/health/live` to restart a stuck instance and `/health/ready` to route traffic. Redis is checked alongside but never fails readiness: one shared Redis outage would otherwise take every instance out of rotation (engineering-standards.md, "Health").
 
-The image declares a Docker `HEALTHCHECK` on `/health/live` (every 10 s, 3 retries, 20 s start period); in the worker and migrate containers it reports healthy without probing.
+- The checks use one Postgres and one Redis connection of their own, never the app's pools, so a busy instance at peak still reads as ready.
+- A probe waits at most 1 s, even when the server hangs on an open connection, and one result serves all probes for 1 s.
+- An outage is logged at ERROR as `dependency_unavailable` (with `dependency` and the error type) when it starts and once a minute while it lasts, and `dependency_recovered` when it ends. Every failed check is counted in `gize.dependency.unavailable`; alert on it.
+- Successful probes are left out of the access log and traces, and counted in `gize.health.probes` (by endpoint and status).
+
+The image declares a Docker `HEALTHCHECK` on `/health/live` (every 10 s, 3 retries, 20 s start period). It reports healthy without probing only when it finds a worker or migration process in the container; otherwise it probes, including under an init process (`docker run --init`, ECS).
 
 ## Continuous integration
 

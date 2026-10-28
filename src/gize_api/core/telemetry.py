@@ -223,6 +223,16 @@ class Telemetry:
             1, {"dependency": dependency, "error.type": type(error).__name__}
         )
 
+    def record_health_probe(self, endpoint: str, status: int) -> None:
+        """Count a probe (`live` or `ready`): probes are neither traced nor access-logged."""
+        self._health_probes.add(1, {"endpoint": endpoint, "status": status})
+
+    @functools.cached_property
+    def _health_probes(self) -> Counter:
+        return self.meter_provider.get_meter("gize_api.health").create_counter(
+            "gize.health.probes", description="Requests to /health/live and /health/ready"
+        )
+
     @functools.cached_property
     def _dependency_unavailable(self) -> Counter:
         return self.meter_provider.get_meter("gize_api.health").create_counter(

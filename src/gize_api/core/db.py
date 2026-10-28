@@ -7,8 +7,12 @@ transactions; a database that is down, slow, saturated or asking for a retry bec
 SERVICE_UNAVAILABLE with Retry-After (core/errors.py).
 
 The session rule: every use of a session is inside `async with session.begin():`, one block
-per unit of work. Autobegin is off, so a query outside a block fails at once. A dependency
-that reads (auth) uses its own short block, finished before the service opens its own.
+per unit of work. Autobegin is off, so a query outside a block fails at once (but
+`session.add()` does not: add objects inside the block that should save them). A dependency
+that reads (auth) uses its own short block, finished before the service opens its own, and
+hands on plain values (IDs, role), not ORM objects. Every ORM query refreshes rows the
+session already holds (GizeSession), so a later block never sees stale data; role and
+ownership checks still belong in the service's block, next to the write they protect.
 Never hold a block open across an outbound call (SMS, HTTP).
 
 Connect directly or through Supabase's session-mode pooler (port 5432). Transaction mode
@@ -25,9 +29,11 @@ from typing import Literal
 
 import sqlalchemy.exc
 from fastapi import Request
+from sqlalchemy import event
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
+from sqlalchemy.orm import ORMExecuteState, Session
 
 from gize_api.core.config import Settings, database_ssl_mode
 
@@ -63,12 +69,14 @@ def async_url(url: str) -> URL:
     return parsed.difference_update_query(["ssl"])
 
 
-def create_engine(settings: Settings) -> AsyncEngine:
-    """The app's engine. No connection is made until first use."""
+def create_engine(
+    settings: Settings, *, pool_size: int | None = None, max_overflow: int | None = None
+) -> AsyncEngine:
+    """The app's engine (pool from settings unless given). No connection until first use."""
     return _create_async_engine(
         async_url(settings.database_url.get_secret_value()),
-        pool_size=settings.database_pool_size,
-        max_overflow=settings.database_max_overflow,
+        pool_size=settings.database_pool_size if pool_size is None else pool_size,
+        max_overflow=settings.database_max_overflow if max_overflow is None else max_overflow,
         pool_timeout=POOL_TIMEOUT_SECONDS,
         pool_recycle=POOL_RECYCLE_SECONDS,
         pool_pre_ping=True,
@@ -77,9 +85,26 @@ def create_engine(settings: Settings) -> AsyncEngine:
     )
 
 
+class GizeSession(Session):
+    """The ORM session for the app: every ORM query refreshes rows it already holds.
+
+    A request's dependency and handler share one session; without this, a row loaded in the
+    dependency's block (a staff member's role) would be served from the session's cache in
+    the service's block, even after another request changed it.
+    """
+
+
+@event.listens_for(GizeSession, "do_orm_execute")
+def _refresh_loaded_rows(state: ORMExecuteState) -> None:
+    if state.is_select and not state.is_column_load and not state.is_relationship_load:
+        state.update_execution_options(populate_existing=True)
+
+
 def create_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    """Sessions without autobegin: see the session rule above."""
-    return async_sessionmaker(engine, expire_on_commit=False, autobegin=False)
+    """Sessions without autobegin that re-read rows: see the session rule above."""
+    return async_sessionmaker(
+        engine, expire_on_commit=False, autobegin=False, sync_session_class=GizeSession
+    )
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:

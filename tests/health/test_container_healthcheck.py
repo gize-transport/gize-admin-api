@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from gize_api.healthcheck import is_api_process, main
+from gize_api.healthcheck import main, runs_without_http
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,23 +36,53 @@ def server() -> Iterator[tuple[str, type[_Handler]]]:
         httpd.server_close()
 
 
-def _cmdline(tmp_path: Path, *args: str) -> Path:
-    path = tmp_path / "cmdline"
-    path.write_bytes(b"\0".join(arg.encode() for arg in args) + b"\0")
-    return path
+def _cmdline(tmp_path: Path, *processes: tuple[str, ...]) -> Path:
+    """A fake /proc with one numbered directory per process."""
+    proc = tmp_path / "proc"
+    for pid, args in enumerate(processes, start=1):
+        (proc / str(pid)).mkdir(parents=True, exist_ok=True)
+        (proc / str(pid) / "cmdline").write_bytes(b"\0".join(a.encode() for a in args) + b"\0")
+    (proc / "self").mkdir(parents=True, exist_ok=True)  # not a process directory
+    return proc
 
 
-def test_recognises_the_api_process(tmp_path: Path) -> None:
-    api = _cmdline(tmp_path, "/opt/venv/bin/python3", "/opt/venv/bin/uvicorn", "--factory")
-    assert is_api_process(api)
-    worker = _cmdline(tmp_path, "/opt/venv/bin/python3", "/opt/venv/bin/arq", "x")
-    assert not is_api_process(worker)
-    assert is_api_process(tmp_path / "missing")  # unknown: probe rather than assume
+@pytest.mark.parametrize(
+    ("processes", "skip"),
+    [
+        ([("/opt/venv/bin/python3", "/opt/venv/bin/uvicorn", "--factory")], False),
+        ([("/sbin/docker-init", "--", "/usr/local/bin/entrypoint.sh", "api")], False),
+        (
+            [
+                ("/sbin/docker-init", "--", "entrypoint.sh", "worker"),
+                ("python3", "/opt/venv/bin/arq", "x"),
+            ],
+            True,
+        ),
+        ([("python3", "/opt/venv/bin/alembic", "upgrade", "head")], True),
+        ([], False),  # nothing readable: probe rather than assume
+    ],
+)
+def test_probes_unless_a_worker_or_migration_is_found(
+    tmp_path: Path, processes: list[tuple[str, ...]], skip: bool
+) -> None:
+    """Under an init process (docker --init, ECS) PID 1 is not the app: look at every process."""
+    assert runs_without_http(_cmdline(tmp_path, *processes)) is skip
+
+
+def test_missing_proc_means_probe(tmp_path: Path) -> None:
+    assert runs_without_http(tmp_path / "no-proc") is False
+
+
+def test_unreadable_processes_are_skipped(tmp_path: Path) -> None:
+    """A process can end, or belong to another user, between listing and reading."""
+    proc = _cmdline(tmp_path, ("python3", "/opt/venv/bin/arq", "x"))
+    (proc / "7" / "cmdline").mkdir(parents=True)  # reading it fails (not a file)
+    assert runs_without_http(proc) is True
 
 
 def test_healthy_when_live_answers(tmp_path: Path, server: tuple[str, type[_Handler]]) -> None:
     url, _ = server
-    assert main(_cmdline(tmp_path, "uvicorn"), url=url) == 0
+    assert main(_cmdline(tmp_path, ("uvicorn",)), url=url) == 0
 
 
 def test_unhealthy_when_live_fails_or_nothing_listens(
@@ -60,13 +90,13 @@ def test_unhealthy_when_live_fails_or_nothing_listens(
 ) -> None:
     url, handler = server
     handler.status = 500
-    assert main(_cmdline(tmp_path, "uvicorn"), url=url) == 1
-    assert main(_cmdline(tmp_path, "uvicorn"), url="http://127.0.0.1:1/health/live") == 1
-    assert main(_cmdline(tmp_path, "uvicorn"), url=blackhole_url, timeout=0.2) == 1
+    assert main(_cmdline(tmp_path, ("uvicorn",)), url=url) == 1
+    assert main(_cmdline(tmp_path, ("uvicorn",)), url="http://127.0.0.1:1/health/live") == 1
+    assert main(_cmdline(tmp_path, ("uvicorn",)), url=blackhole_url, timeout=0.2) == 1
 
 
 def test_other_containers_are_healthy_without_probing(tmp_path: Path) -> None:
-    assert main(_cmdline(tmp_path, "arq"), url="http://127.0.0.1:1/never") == 0
+    assert main(_cmdline(tmp_path, ("arq",)), url="http://127.0.0.1:1/never") == 0
 
 
 def test_dockerfile_declares_the_healthcheck() -> None:

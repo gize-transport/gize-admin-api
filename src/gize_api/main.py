@@ -134,7 +134,8 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             app.state.engine = engine
             app.state.sessionmaker = create_sessionmaker(engine)
             telemetry = app.telemetry
-            app.state.readiness = Readiness(engine, redis, telemetry)
+            readiness = Readiness.for_settings(settings, telemetry)
+            app.state.readiness = readiness
             if telemetry is not None:
                 telemetry.instrument_redis(redis)
                 telemetry.instrument_database(engine)
@@ -153,6 +154,12 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
                 structlog.get_logger("gize_api.startup").warning(
                     "database_dispose_failed", exc_info=True
+                )
+            try:
+                await readiness.close()
+            except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
+                structlog.get_logger("gize_api.startup").warning(
+                    "readiness_close_failed", exc_info=True
                 )
             try:
                 if telemetry is not None:
