@@ -15,6 +15,7 @@ EXPECTED_CHECKS = {
     "lint": "Lint, types, dependency audit",
     "secrets": "Secret scan (gitleaks)",
     "test": "Tests and coverage gates",
+    "migrations": "Migrations (upgrade, downgrade, upgrade)",
     "docker": "Docker image build",
 }
 
@@ -62,7 +63,8 @@ def test_ci_service_images_match_docker_compose() -> None:
     compose = (ROOT / "docker-compose.yml").read_text()
     for image in ("postgres", "redis"):
         pattern = rf"image: ({image}:[^\s@]+@sha256:[0-9a-f]{{64}})"
-        assert _one(pattern, CI) == _one(pattern, compose)
+        expected = _one(pattern, compose)
+        assert set(re.findall(pattern, CI)) == {expected}
 
 
 def test_ci_python_matches_docker_image() -> None:

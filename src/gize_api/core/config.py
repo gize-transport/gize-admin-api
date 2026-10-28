@@ -8,7 +8,7 @@ a malformed URL can carry a password.
 import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
-from urllib.parse import SplitResult, unquote, urlsplit
+from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -35,6 +35,8 @@ class Settings(BaseSettings):
 
     app_env: Environment
     redis_url: SecretStr
+    # As the least-privileged gize_app role; migrations use MIGRATOR_DATABASE_URL instead.
+    database_url: SecretStr
     cors_allowed_origins: Annotated[tuple[str, ...], NoDecode] = Field(default=(), max_length=20)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # Observability: each is off when unset. Production refuses to start without both unless
@@ -87,6 +89,15 @@ class Settings(BaseSettings):
             raise ValueError("must be redis://[user:password@]host[:port][/db] (or rediss://)")
         return value
 
+    @field_validator("database_url")
+    @classmethod
+    def _database_url_shape(cls, value: SecretStr) -> SecretStr:
+        if not _is_database_url(value.get_secret_value()):
+            raise ValueError(
+                "must be postgresql://user:password@host[:port]/database[?ssl=require|verify-full]"
+            )
+        return value
+
     @field_validator("sentry_dsn")
     @classmethod
     def _sentry_dsn_shape(cls, value: SecretStr | None) -> SecretStr | None:
@@ -135,6 +146,14 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _database_tls_outside_local(self) -> Self:
+        if self.app_env in {Environment.STAGING, Environment.PRODUCTION} and (
+            self.database_ssl not in {"require", "verify-full"}
+        ):
+            raise ValueError("database_url must set ssl=require or ssl=verify-full outside local")
+        return self
+
+    @model_validator(mode="after")
     def _https_otlp_outside_local(self) -> Self:
         endpoint = self.otel_exporter_otlp_endpoint
         if (
@@ -152,6 +171,12 @@ class Settings(BaseSettings):
         ):
             raise ValueError("cors_allowed_origins must use https in staging and production")
         return self
+
+    @property
+    def database_ssl(self) -> str | None:
+        """The `ssl` option from DATABASE_URL (`require`, `verify-full`), or None."""
+        query = parse_qs(urlsplit(self.database_url.get_secret_value()).query)
+        return query.get("ssl", [None])[0]
 
     def otlp_headers(self) -> dict[str, str] | None:
         """OTLP exporter headers (e.g. Grafana Cloud auth), or None."""
@@ -172,6 +197,23 @@ class Settings(BaseSettings):
     def docs_enabled(self) -> bool:
         """Interactive docs and the schema endpoint are served only where staff test."""
         return self.app_env in {Environment.LOCAL, Environment.STAGING}
+
+
+_DATABASE_SCHEMES = frozenset({"postgresql", "postgres", "postgresql+asyncpg"})
+_DATABASE_SSL_MODES = frozenset({"require", "verify-full"})
+_DATABASE_NAME = re.compile(r"/[A-Za-z0-9_-]{1,63}")
+
+
+def _is_database_url(url: str) -> bool:
+    parts = _safe_split(url)
+    if parts is None or parts.scheme not in _DATABASE_SCHEMES or parts.fragment:
+        return False
+    if not parts.hostname or not parts.username or not _DATABASE_NAME.fullmatch(parts.path):
+        return False
+    query = parse_qs(parts.query, keep_blank_values=True)
+    if set(query) - {"ssl"}:
+        return False
+    return all(mode in _DATABASE_SSL_MODES for mode in query.get("ssl", []))
 
 
 _REDIS_DB_PATH = re.compile(r"(/\d{0,2})?")

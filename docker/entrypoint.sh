@@ -6,7 +6,7 @@
 set -eu
 
 if [ "$#" -gt 1 ]; then
-  echo "usage: entrypoint.sh [api|worker]" >&2
+  echo "usage: entrypoint.sh [api|worker|migrate]" >&2
   exit 64
 fi
 
@@ -26,8 +26,12 @@ case "${1:-api}" in
   worker)
     exec arq gize_api.worker.WorkerSettings
     ;;
+  migrate)
+    # The release step: runs as gize_migrator (MIGRATOR_DATABASE_URL), before the new API starts.
+    exec alembic upgrade head
+    ;;
   *)
-    echo "usage: entrypoint.sh [api|worker]" >&2
+    echo "usage: entrypoint.sh [api|worker|migrate]" >&2
     exit 64
     ;;
 esac

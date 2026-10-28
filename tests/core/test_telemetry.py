@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 import httpx
 import pytest
+import sqlalchemy.exc
 from fastapi import FastAPI
 from opentelemetry import trace
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
@@ -27,7 +28,7 @@ from gize_api.core.telemetry import (
     configure_telemetry,
 )
 from gize_api.main import GizeAPI, create_app
-from tests.support import SettingsFactory
+from tests.support import DatabaseUrls, SettingsFactory
 
 PHONE = "0911223344"
 SENSITIVE = (PHONE, "phone=", "10.9.8.7", "evil-host.example", "Mozilla/5.0 (Secret Phone)")
@@ -378,6 +379,7 @@ from gize_api.core.config import Settings
 from gize_api.core.telemetry import configure_telemetry
 
 settings = Settings(app_env="test", redis_url="redis://127.0.0.1:1/0",
+                    database_url="postgresql://gize_app:x@127.0.0.1:1/gize",
                     otel_exporter_otlp_endpoint="{blackhole_url}")
 telemetry = configure_telemetry(settings)
 with telemetry.tracer_provider.get_tracer("t").start_as_current_span("pending"):
@@ -469,3 +471,85 @@ async def test_failing_shutdown_step_is_logged_and_the_rest_still_run(
     assert '"telemetry_shutdown_step_failed"' in err
     assert '"trace_shutdown"' in err
     assert "exporter broke" not in err
+
+
+async def test_database_statements_traced_and_measured_without_text_leaks(
+    make_settings: SettingsFactory,
+    spans: InMemorySpanExporter,
+    metrics: InMemoryMetricReader,
+    database: DatabaseUrls,
+) -> None:
+    from sqlalchemy import bindparam, text
+
+    app = _app(make_settings, database_url=database.app)
+    app.telemetry = configure_telemetry(make_settings(), span_exporter=spans, metric_reader=metrics)
+    async with app.router.lifespan_context(app), app.state.sessionmaker() as session:
+        await session.execute(text("SELECT :v").bindparams(bindparam("v", "0911223344")))
+        with pytest.raises(sqlalchemy.exc.DBAPIError):
+            await session.execute(text("SELECT * FROM gize.no_such_table WHERE x = '0911223344'"))
+    finished = [s for s in spans.get_finished_spans() if s.kind == trace.SpanKind.CLIENT]
+    assert [s.name for s in finished] == ["SELECT", "SELECT"]
+    ok, failed = finished
+    assert (ok.attributes or {})["db.system.name"] == "postgresql"
+    assert "0911223344" not in str(ok.attributes)  # parameters are never recorded
+    assert failed.status.status_code == trace.StatusCode.ERROR
+    assert failed.status.description is None  # no Postgres message text
+    assert (failed.attributes or {})["error.type"]
+    data = metrics.get_metrics_data()
+    assert data is not None
+    points = [
+        dict(point.attributes or {})
+        for resource in data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == "db.client.operation.duration"
+        for point in metric.data.data_points
+    ]
+    assert {p["outcome"] for p in points} == {"ok", "error"}
+
+
+def test_unknown_statements_are_named_other() -> None:
+    from gize_api.core.telemetry import _database_operation
+
+    assert _database_operation("  select 1") == "SELECT"
+    assert _database_operation("VACUUM x") == "OTHER"
+    assert _database_operation("") == "OTHER"
+
+
+async def test_errors_before_a_statement_runs_are_handled(
+    make_settings: SettingsFactory, spans: InMemorySpanExporter, database: DatabaseUrls
+) -> None:
+    from sqlalchemy import text
+
+    app = _app(make_settings, database_url=database.app)
+    app.telemetry = configure_telemetry(make_settings(), span_exporter=spans)
+    async with app.router.lifespan_context(app), app.state.sessionmaker() as session:
+        with pytest.raises(sqlalchemy.exc.StatementError, match="bind parameter"):
+            await session.execute(text("SELECT :missing"))
+    unreachable = _app(make_settings)  # connecting fails: no execution context at all
+    unreachable.telemetry = configure_telemetry(make_settings(), span_exporter=spans)
+    async with (
+        unreachable.router.lifespan_context(unreachable),
+        unreachable.state.sessionmaker() as session,
+    ):
+        with pytest.raises(OSError, match="Connect call failed"):
+            await session.execute(text("SELECT 1"))
+
+
+async def test_a_statement_span_is_never_finished_twice(
+    make_settings: SettingsFactory, spans: InMemorySpanExporter
+) -> None:
+    from types import SimpleNamespace
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    telemetry = configure_telemetry(make_settings(), span_exporter=spans)
+    assert telemetry is not None
+    engine = create_async_engine("postgresql+asyncpg://u:p@127.0.0.1:1/x")
+    telemetry.instrument_database(engine)
+    already_finished = SimpleNamespace(_gize_db=None)
+    engine.sync_engine.dialect.dispatch.handle_error(
+        SimpleNamespace(execution_context=already_finished, original_exception=ValueError())
+    )
+    assert spans.get_finished_spans() == ()
+    await engine.dispose()

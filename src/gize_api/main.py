@@ -15,6 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
 from gize_api.core.config import Environment, Settings, load_settings
+from gize_api.core.db import create_engine, create_sessionmaker
 from gize_api.core.errors import HandledErrorGuard, LastResortGuard, install_exception_handlers
 from gize_api.core.logging import AccessLogMiddleware, configure_logging
 from gize_api.core.middleware import (
@@ -126,9 +127,13 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
                 client_name=REDIS_CLIENT_NAME,
             )
             app.state.redis = redis
+            engine = create_engine(settings)
+            app.state.engine = engine
+            app.state.sessionmaker = create_sessionmaker(engine)
             telemetry = app.telemetry
             if telemetry is not None:
                 telemetry.instrument_redis(redis)
+                telemetry.instrument_database(engine)
         except Exception:
             structlog.get_logger("gize_api.startup").error(
                 "lifespan_failed", phase="startup", exc_info=True
@@ -138,7 +143,13 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             yield
         finally:
             # Each step runs even if an earlier one fails.
-            del app.state.redis
+            del app.state.redis, app.state.engine, app.state.sessionmaker
+            try:
+                await engine.dispose()
+            except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
+                structlog.get_logger("gize_api.startup").warning(
+                    "database_dispose_failed", exc_info=True
+                )
             try:
                 if telemetry is not None:
                     telemetry.uninstrument_redis(redis)

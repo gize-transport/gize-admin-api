@@ -1,15 +1,29 @@
 """Shared fixtures."""
 
+import asyncio
 import socket
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import pytest
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
+from gize_api.core.bootstrap import bootstrap
 from gize_api.core.config import Settings
-from tests.support import SETTINGS_ENV_VARS, UNREACHABLE_REDIS_URL, SettingsFactory
+from gize_api.core.db import async_url
+from tests.support import (
+    SETTINGS_ENV_VARS,
+    UNREACHABLE_DATABASE_URL,
+    UNREACHABLE_REDIS_URL,
+    DatabaseUrls,
+    SettingsFactory,
+    database_urls,
+    run_migrations,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -20,6 +34,7 @@ class ServiceUrls(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
 
     test_redis_url: str | None = None
+    test_admin_database_url: str | None = None
 
 
 @pytest.fixture
@@ -37,6 +52,7 @@ def make_settings() -> SettingsFactory:
         values: dict[str, Any] = {
             "app_env": "test",
             "redis_url": UNREACHABLE_REDIS_URL,
+            "database_url": UNREACHABLE_DATABASE_URL,
             "cors_allowed_origins": ("https://admin.example.com",),
             "log_level": "INFO",
             # Production refuses to start without Sentry/OTLP; tests opt in explicitly.
@@ -67,3 +83,66 @@ def blackhole_url() -> Iterator[str]:
         yield f"http://127.0.0.1:{listener.getsockname()[1]}"
     finally:
         listener.close()
+
+
+def _admin_url() -> str:
+    url = ServiceUrls().test_admin_database_url
+    if not url:
+        pytest.fail(
+            "TEST_ADMIN_DATABASE_URL is not set: add it to .env (see .env.example) or export it"
+        )
+    return url
+
+
+async def _recreate(admin_url: str, name: str) -> None:
+    # The database name is a fixed test constant; DDL cannot take bind parameters.
+    conn = await asyncpg.connect(admin_url, timeout=3)
+    try:
+        await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        await conn.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await conn.close()
+
+
+def _prepare(name: str, *, migrate: bool) -> DatabaseUrls:
+    admin = _admin_url()
+    urls = database_urls(admin, name)
+    asyncio.run(_recreate(admin, name))
+    asyncio.run(bootstrap(urls.admin, urls.app, urls.migrator, create_supabase_roles=True))
+    if migrate:
+        run_migrations(urls.migrator, "head")
+    return urls
+
+
+@pytest.fixture(scope="session")
+def database() -> DatabaseUrls:
+    """A fresh `gize_test` database: bootstrapped like production and migrated to head."""
+    return _prepare("gize_test", migrate=True)
+
+
+@pytest.fixture
+def scratch_database() -> DatabaseUrls:
+    """A bootstrapped but unmigrated database for migration round trips."""
+    return _prepare("gize_test_scratch", migrate=False)
+
+
+@pytest.fixture
+async def db_session(database: DatabaseUrls) -> AsyncIterator[AsyncSession]:
+    """A session as the app role inside one outer transaction, rolled back after the test.
+
+    Service code still calls `session.begin()`: with create_savepoint it runs as a savepoint.
+    """
+    engine = create_async_engine(async_url(database.app), poolclass=NullPool)
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        session = AsyncSession(
+            bind=connection,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        try:
+            yield session
+        finally:
+            await session.close()
+            await transaction.rollback()
+    await engine.dispose()

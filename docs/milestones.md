@@ -35,13 +35,13 @@ Status: done · Depends on: GZ-003
 - Acceptance: an unhandled exception returns 500 with code + request ID and no internals; the same request ID appears in the log line.
 
 ### GZ-005 · Logging, telemetry and Sentry
-Status: in review · Depends on: GZ-004
+Status: done · Depends on: GZ-004
 - structlog JSON with request ID, staff ID, path, status, duration; phone masking processor; deny-list for sensitive keys.
 - OpenTelemetry (FastAPI, SQLAlchemy, Redis, httpx instrumentation; OTLP exporter configurable; off locally). Sentry with PII scrubbing.
 - Acceptance: a test asserts tokens, OTP codes and full phone numbers never appear in captured logs.
 
 ### GZ-006 · Database foundation
-Status: todo · Depends on: GZ-003
+Status: in review · Depends on: GZ-003
 - Async engine via Supabase pooler with connect timeout 3 s and statement timeout 5 s; session dependency.
 - SQL bootstrap script (run once by a human, documented in README): schema `gize`, roles `gize_app` (DML only) and `gize_migrator` (owner), grants, revoke from `anon`/`authenticated`.
 - Alembic configured to run as `gize_migrator`; base model mixins (UUID PK, timestamps, `deleted_at`); helper that enables deny-all RLS on every new table.

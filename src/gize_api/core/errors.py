@@ -16,10 +16,12 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from gize_api.core.db import is_database_unavailable
 from gize_api.core.request_id import current_request_id
 from gize_api.core.sentry import report_exception
 
@@ -204,7 +206,22 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, _app_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
+    for database_error in (SQLAlchemyError, OSError, TimeoutError):
+        app.add_exception_handler(database_error, _database_error)
     app.add_exception_handler(Exception, _unhandled_error)
+
+
+DATABASE_RETRY_AFTER_SECONDS = "5"
+
+
+async def _database_error(request: Request, exc: Exception) -> Response:
+    """A database that is down, slow or saturated is 503; any other error stays a 500."""
+    if not is_database_unavailable(exc):
+        return await _unhandled_error(request, exc)
+    logger.error("database_unavailable", route=_route(request.scope), exc_info=exc)
+    return problem_response(
+        ErrorCode.SERVICE_UNAVAILABLE, headers={"Retry-After": DATABASE_RETRY_AFTER_SECONDS}
+    )
 
 
 class LastResortGuard:

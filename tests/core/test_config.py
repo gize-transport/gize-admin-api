@@ -8,6 +8,7 @@ from gize_api.core.config import ConfigError, Environment, Settings, load_settin
 REQUIRED = {
     "APP_ENV": "test",
     "REDIS_URL": "redis://:s3cret-redis-pass@127.0.0.1:6379/0",
+    "DATABASE_URL": "postgresql://gize_app:s3cret-db-pass@127.0.0.1:5432/gize?ssl=require",
 }
 
 
@@ -319,3 +320,63 @@ def test_otlp_headers_with_control_characters_rejected(
         load_settings()
     assert "otel_exporter_otlp_headers" in str(exc_info.value)
     assert "Evil" not in str(exc_info.value)
+
+
+# --- database (GZ-006) ------------------------------------------------------------------
+
+
+def test_database_url_is_secret(clean_env: pytest.MonkeyPatch) -> None:
+    _set(clean_env)
+    settings = load_settings()
+    assert "s3cret-db-pass" not in repr(settings)
+    assert settings.database_url.get_secret_value() == REQUIRED["DATABASE_URL"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "postgresql://gize_app:pw@db:5432/gize",
+        "postgres://gize_app:pw@db/gize",
+        "postgresql+asyncpg://gize_app.abcdef:pw@pooler.supabase.com:5432/postgres",
+        "postgresql://gize_app:pw@db:5432/gize?ssl=require",
+    ],
+)
+def test_database_url_accepted(clean_env: pytest.MonkeyPatch, value: str) -> None:
+    _set(clean_env, DATABASE_URL=value)
+    assert load_settings().database_url.get_secret_value() == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "mysql://gize_app:pw@db/gize",
+        "postgresql://db/gize",  # no user
+        "postgresql://gize_app:pw@/gize",  # no host
+        "postgresql://gize_app:pw@db:99999/gize",
+        "postgresql://gize_app:pw@db",  # no database
+        "postgresql://gize_app:pw@db/gize?sslmode=disable",  # unknown option
+        "postgresql://gize_app:pw@db/gize?ssl=bogus",
+        "postgresql://gize_app:pw@db/gize#x",
+    ],
+)
+def test_database_url_rejected_without_echo(clean_env: pytest.MonkeyPatch, value: str) -> None:
+    _set(clean_env, DATABASE_URL=value)
+    with pytest.raises(ConfigError) as exc_info:
+        load_settings()
+    assert "database_url" in str(exc_info.value)
+    assert ":pw@" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("app_env", ["staging", "production"])
+def test_database_url_requires_tls_outside_local(
+    clean_env: pytest.MonkeyPatch, app_env: str
+) -> None:
+    _set(clean_env, APP_ENV=app_env, DATABASE_URL="postgresql://gize_app:pw@db/gize")
+    with pytest.raises(ConfigError, match="database_url"):
+        load_settings()
+    _set(
+        clean_env,
+        APP_ENV=app_env,
+        DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=verify-full",
+    )
+    assert load_settings().database_ssl == "verify-full"

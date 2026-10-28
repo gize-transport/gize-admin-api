@@ -5,6 +5,8 @@ description = "Gize Transport admin and rider registration API"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.14",
+    "asyncpg>=0.30",
     "fastapi>=0.115",
     "opentelemetry-api>=1.28",
     "opentelemetry-exporter-otlp-proto-http>=1.28",
@@ -14,12 +16,14 @@ dependencies = [
     "pydantic-settings>=2.7",
     "redis>=5.2",
     "sentry-sdk>=2.18",
+    "sqlalchemy[asyncio]>=2.0.36",
     "structlog>=24.4",
     "uvicorn[standard]>=0.32",
 ]
 
 [dependency-groups]
 dev = [
+    "asyncpg-stubs>=0.30",
     "coverage[toml]>=7.6",
     "httpx>=0.28",
     "mypy>=1.13",
@@ -113,5 +117,6 @@ source = ["gize_api"]
 
 [tool.coverage.report]
 fail_under = 85
+exclude_also = ['if __name__ == "__main__":']
 show_missing = true
 skip_covered = false

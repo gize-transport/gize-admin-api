@@ -1,18 +1,28 @@
 """Shared test types and constants (import from here, not from conftest)."""
 
 import base64
+import dataclasses
 import json
 from collections.abc import Callable
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+from alembic import command
+from alembic.config import Config
 
 from gize_api.core.config import Settings
 
-# A port nothing listens on: Redis calls fail fast and nothing real is touched.
+ROOT = Path(__file__).resolve().parent.parent
+
+# Ports nothing listens on: calls fail fast and nothing real is touched.
 UNREACHABLE_REDIS_URL = "redis://127.0.0.1:1/0"
+UNREACHABLE_DATABASE_URL = "postgresql://gize_app:unused@127.0.0.1:1/gize?ssl=require"
 
 # Every variable Settings reads; cleared so the developer's shell cannot change a result.
 SETTINGS_ENV_VARS = (
     "APP_ENV",
     "REDIS_URL",
+    "DATABASE_URL",
     "CORS_ALLOWED_ORIGINS",
     "LOG_LEVEL",
     "SENTRY_DSN",
@@ -39,3 +49,44 @@ def fake_jwt(subject: str = "test") -> str:
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
     return f"{part({'alg': 'HS256', 'typ': 'JWT'})}.{part({'sub': subject})}.c2lnbmF0dXJl"
+
+
+@dataclasses.dataclass(frozen=True)
+class DatabaseUrls:
+    """Connection URLs for one test database: admin (superuser), migrator and app."""
+
+    admin: str
+    migrator: str
+    app: str
+
+
+# Passwords for the throwaway test roles only; the real ones come from the URLs in .env.
+TEST_APP_PASSWORD = "gize-app-test"  # noqa: S105 - local test role
+TEST_MIGRATOR_PASSWORD = "gize-migrator-test"  # noqa: S105 - local test role
+
+
+def database_urls(admin_url: str, database: str) -> DatabaseUrls:
+    """URLs for `database` on the server behind `admin_url` (a superuser URL)."""
+    parts = urlsplit(admin_url)
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or 5432
+
+    def url(user: str, password: str) -> str:
+        return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+
+    admin = urlunsplit(parts._replace(path=f"/{database}"))
+    return DatabaseUrls(
+        admin=admin,
+        migrator=url("gize_migrator", TEST_MIGRATOR_PASSWORD),
+        app=url("gize_app", TEST_APP_PASSWORD),
+    )
+
+
+def run_migrations(migrator_url: str, target: str, *, downgrade: bool = False) -> None:
+    """Run Alembic exactly as the release step does, against `migrator_url`."""
+    config = Config(str(ROOT / "alembic.ini"))
+    config.attributes["database_url"] = migrator_url
+    if downgrade:
+        command.downgrade(config, target)
+    else:
+        command.upgrade(config, target)

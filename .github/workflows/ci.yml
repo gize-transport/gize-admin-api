@@ -1,4 +1,4 @@
-# Runs on every pull request and every push to main. All four checks must be present and
+# Runs on every pull request and every push to main. All five checks must be present and
 # green before a PR is merged (CLAUDE.md, "Merging without branch protection"); the list is
 # pinned in tests/test_ci_config.py and README.md.
 # Third-party actions are pinned to commit SHAs; the comment names the release.
@@ -123,11 +123,58 @@ jobs:
       - name: Tests (coverage gate 85%)
         env:
           TEST_REDIS_URL: redis://127.0.0.1:6379/15
+          TEST_ADMIN_DATABASE_URL: postgresql://postgres:gize-ci-only@127.0.0.1:5432/postgres
         run: uv run --locked pytest
       - name: Services coverage gate (90%)
         run: uv run --locked python -m scripts.check_service_coverage
       - name: Coverage equals .coverage-baseline (must not drop)
         run: uv run --locked python -m scripts.check_coverage_baseline
+
+  migrations:
+    name: Migrations (upgrade, downgrade, upgrade)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      # Same image as docker-compose.yml (checked by tests/test_ci_config.py).
+      postgres:
+        image: postgres:17-trixie@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: gize-ci-only
+          POSTGRES_DB: gize
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gize"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      # Throwaway credentials for the CI service container only.
+      BOOTSTRAP_ADMIN_DATABASE_URL: postgresql://postgres:gize-ci-only@127.0.0.1:5432/gize
+      DATABASE_URL: postgresql://gize_app:gize-ci-app@127.0.0.1:5432/gize
+      MIGRATOR_DATABASE_URL: postgresql://gize_migrator:gize-ci-migrator@127.0.0.1:5432/gize
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.UV_PYTHON }}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        run: uv sync --locked
+      - name: Bootstrap roles and schema (as on Supabase)
+        run: uv run --locked python -m gize_api.core.bootstrap --create-supabase-roles
+      - name: Upgrade to head
+        run: uv run --locked alembic upgrade head
+      - name: Downgrade one step
+        run: uv run --locked alembic downgrade -1
+      - name: Upgrade to head again
+        run: uv run --locked alembic upgrade head
+      - name: Models match migrations (no pending autogenerate changes)
+        run: uv run --locked alembic check
 
   docker:
     name: Docker image build
@@ -143,3 +190,5 @@ jobs:
         run: test "$(docker run --rm --entrypoint id gize-admin-api:ci -u)" = "10001"
       - name: Package imports inside the image
         run: docker run --rm --entrypoint python gize-admin-api:ci -c "import gize_api.main"
+      - name: Migrations ship in the image
+        run: docker run --rm --entrypoint alembic gize-admin-api:ci heads

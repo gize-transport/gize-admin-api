@@ -11,7 +11,10 @@ Off unless OTEL_EXPORTER_OTLP_ENDPOINT is set (local runs and tests need nothing
 - Redis commands are traced per client, as `COMMAND ? ?`, never values.
 - Shutdown flushes within a fixed budget, off the event loop.
 
-SQLAlchemy (GZ-006) and outbound httpx (GZ-008) instrumentation join when those land.
+- Database statements are traced per engine as their operation, never with parameters or
+  error text, with per-operation duration and error metrics.
+
+Outbound httpx instrumentation (GZ-008) joins when that client lands.
 """
 
 import asyncio
@@ -34,8 +37,10 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, SpanExporter
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
-from opentelemetry.trace import Span
+from opentelemetry.trace import Span, SpanKind, Status, StatusCode
 from redis.asyncio import Redis
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.routing import BaseRoute, Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -79,6 +84,23 @@ _CLIENT_ATTRIBUTES = (
 )
 # Set only if OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_* is configured; blanked regardless.
 _CAPTURED_HEADER_PREFIXES = ("http.request.header.", "http.response.header.")
+MAX_STATEMENT_LENGTH = 1000
+_DATABASE_OPERATIONS = frozenset(
+    {
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "WITH",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "SAVEPOINT",
+        "RELEASE",
+        "SHOW",
+        "SET",
+    }
+)
 _TRACE_CONTEXT_HEADERS = frozenset({b"traceparent", b"tracestate", b"baggage"})
 
 logger = structlog.get_logger("gize_api.telemetry")
@@ -106,6 +128,66 @@ class Telemetry:
             exclude_spans=["receive", "send"],
         )
         return _DropInboundTraceContext(traced)
+
+    def instrument_database(self, engine: AsyncEngine) -> None:
+        """One CLIENT span per statement and per-operation duration and error metrics.
+
+        Written here instead of using the SQLAlchemy instrumentation package, which copies
+        the exception text (Postgres DETAIL lines carry row values) into span status. Spans
+        record the operation and the statement with its placeholders, never parameters.
+        """
+        tracer = self.tracer_provider.get_tracer("gize_api.db")
+        duration = self.meter_provider.get_meter("gize_api.db").create_histogram(
+            "db.client.operation.duration",
+            unit="s",
+            description="Duration of database statements",
+        )
+
+        def before(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy event signature
+            statement, context = args[2], args[4]
+            operation = _database_operation(statement)
+            span = tracer.start_span(
+                operation,
+                kind=SpanKind.CLIENT,
+                attributes={
+                    "db.system.name": "postgresql",
+                    "db.operation.name": operation,
+                    "db.query.text": str(statement)[:MAX_STATEMENT_LENGTH],
+                },
+            )
+            context._gize_db = (span, time.perf_counter(), operation)
+
+        def finish(context: Any, error: BaseException | None) -> None:  # noqa: ANN401
+            started = getattr(context, "_gize_db", None)
+            if started is None:
+                return
+            span, began, operation = started
+            context._gize_db = None
+            outcome = "ok" if error is None else "error"
+            if error is not None:
+                span.set_attribute("error.type", type(error).__name__)
+                span.set_status(Status(StatusCode.ERROR))  # no description: no message text
+            span.end()
+            duration.record(
+                time.perf_counter() - began,
+                {
+                    "db.system.name": "postgresql",
+                    "db.operation.name": operation,
+                    "outcome": outcome,
+                },
+            )
+
+        def after(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy event signature
+            finish(args[4], None)
+
+        def on_error(exception_context: Any) -> None:  # noqa: ANN401 - SQLAlchemy event
+            if exception_context.execution_context is not None:
+                finish(exception_context.execution_context, exception_context.original_exception)
+
+        sync_engine = engine.sync_engine
+        event.listen(sync_engine, "before_cursor_execute", before)
+        event.listen(sync_engine, "after_cursor_execute", after)
+        event.listen(sync_engine, "handle_error", on_error)
 
     def instrument_redis(self, client: Redis) -> None:
         RedisInstrumentor.instrument_client(client, tracer_provider=self.tracer_provider)
@@ -217,6 +299,13 @@ def configure_telemetry(
         shutdown_on_exit=False,
     )
     return Telemetry(tracer_provider=tracer_provider, meter_provider=meter_provider)
+
+
+def _database_operation(statement: object) -> str:
+    """The statement's first keyword from a fixed list (bounded span names and labels)."""
+    words = str(statement).lstrip().split(None, 1)
+    keyword = words[0].upper() if words else ""
+    return keyword if keyword in _DATABASE_OPERATIONS else "OTHER"
 
 
 def _resolve(future: "asyncio.Future[None]") -> None:
