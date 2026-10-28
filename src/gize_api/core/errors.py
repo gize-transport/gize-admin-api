@@ -21,7 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from gize_api.core.db import is_database_unavailable
+from gize_api.core.db import database_sqlstate, is_database_unavailable
 from gize_api.core.request_id import current_request_id
 from gize_api.core.sentry import report_exception
 
@@ -215,10 +215,19 @@ DATABASE_RETRY_AFTER_SECONDS = "5"
 
 
 async def _database_error(request: Request, exc: Exception) -> Response:
-    """A database that is down, slow or saturated is 503; any other error stays a 500."""
+    """A database that is down, slow, saturated or asking for a retry is 503; any other
+    error stays a 500. The SQLSTATE (a code, never message text) says which."""
     if not is_database_unavailable(exc):
         return await _unhandled_error(request, exc)
-    logger.error("database_unavailable", route=_route(request.scope), exc_info=exc)
+    logger.error(
+        "database_unavailable",
+        route=_route(request.scope),
+        sqlstate=database_sqlstate(exc),
+        exc_info=exc,
+    )
+    telemetry = getattr(request.app, "telemetry", None)
+    if telemetry is not None:
+        telemetry.record_database_unavailable(exc)
     return problem_response(
         ErrorCode.SERVICE_UNAVAILABLE, headers={"Retry-After": DATABASE_RETRY_AFTER_SECONDS}
     )

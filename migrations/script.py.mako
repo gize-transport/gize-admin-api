@@ -5,7 +5,9 @@ Revises: ${down_revision | comma,n}
 Create Date: ${create_date}
 
 Expand/contract: additive and backward-compatible with the deployed code. Every new table
-calls enable_row_level_security(op, "<table>"). downgrade() must undo upgrade() exactly.
+calls enable_row_level_security(op, "<table>"). downgrade() must undo upgrade() exactly,
+except that it never widens a privilege (say so in a comment). Unused imports are removed
+by ruff when the file is written (alembic.ini post_write_hooks).
 """
 
 from collections.abc import Sequence

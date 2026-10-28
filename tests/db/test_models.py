@@ -7,12 +7,13 @@ from typing import cast
 
 import asyncpg
 import pytest
-from sqlalchemy import String, Table, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import String, Table, event, select
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gize_api.core.models import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 from gize_api.core.rls import row_level_security_statements
+from tests.factories import Factory
 from tests.support import DatabaseUrls
 
 
@@ -60,15 +61,48 @@ async def test_app_role_reads_and_writes_under_row_level_security(
 
 
 @pytest.mark.usefixtures("widgets_table")
-async def test_updated_at_moves_on_update(db_session: AsyncSession) -> None:
+async def test_every_update_sets_updated_at(db_session: AsyncSession) -> None:
+    """`now()` is constant inside the test transaction, so check the statement itself."""
     async with db_session.begin():
         widget = Widget(label="before")
         db_session.add(widget)
-    created = widget.updated_at
-    async with db_session.begin():
-        widget.label = "after"
-    await db_session.refresh(widget)
-    assert widget.updated_at >= created
+    statements: list[str] = []
+
+    def capture(*args: object) -> None:
+        statements.append(str(args[2]))
+
+    bind = db_session.bind
+    assert isinstance(bind, AsyncConnection)
+    sync_engine = bind.sync_engine
+    event.listen(sync_engine, "before_cursor_execute", capture)
+    try:
+        async with db_session.begin():
+            widget.label = "after"
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", capture)
+    (update,) = [statement for statement in statements if statement.startswith("UPDATE")]
+    assert "updated_at=now()" in update
+
+
+class WidgetFactory(Factory[Widget]):
+    model = Widget
+
+    def defaults(self, sequence: int) -> dict[str, object]:
+        return {"label": f"widget-{sequence}"}
+
+
+@pytest.mark.usefixtures("widgets_table")
+async def test_factory_creates_valid_rows_with_overrides(db_session: AsyncSession) -> None:
+    factory = WidgetFactory()
+    first = await factory.create(db_session)
+    second = await factory.create(db_session, label="chosen")
+    assert isinstance(first.id, uuid.UUID)  # flushed: server defaults are loaded
+    assert first.label != second.label
+    assert second.label == "chosen"
+    many = await factory.create_batch(db_session, 3)
+    assert len({widget.label for widget in many}) == 3
+    with pytest.raises(TypeError):
+        await factory.create(db_session, no_such_column="x")
 
 
 @pytest.mark.usefixtures("widgets_table")
@@ -88,20 +122,28 @@ async def test_each_test_starts_clean(db_session: AsyncSession) -> None:
     assert rows == []
 
 
+@pytest.mark.parametrize(
+    ("role", "rows_seen"), [("anon", 0), ("authenticated", 0), ("service_role", 1)]
+)
 @pytest.mark.usefixtures("widgets_table")
-async def test_supabase_roles_are_denied_rows_even_with_a_grant(database: DatabaseUrls) -> None:
-    """Defence in depth: RLS has no policy for API roles, so a stray grant still exposes nothing."""
+async def test_what_a_stray_grant_to_a_supabase_role_would_expose(
+    database: DatabaseUrls, role: str, rows_seen: int
+) -> None:
+    """RLS has no policy for API roles, so a stray grant exposes no rows to anon or
+    authenticated. service_role bypasses RLS on Supabase: for it, having no access to the
+    schema (test_privileges) is the only barrier."""
     admin = await asyncpg.connect(database.admin, timeout=3)
     try:
         await admin.execute("INSERT INTO gize.test_widgets (label) VALUES ('secret')")
-        await admin.execute("GRANT USAGE ON SCHEMA gize TO authenticated")
-        await admin.execute("GRANT SELECT ON gize.test_widgets TO authenticated")
-        await admin.execute("SET ROLE authenticated")
-        assert await admin.fetch("SELECT * FROM gize.test_widgets") == []
+        # `role` is a fixed test constant; DDL cannot take bind parameters.
+        await admin.execute(f"GRANT USAGE ON SCHEMA gize TO {role}")
+        await admin.execute(f"GRANT SELECT ON gize.test_widgets TO {role}")
+        await admin.execute(f"SET ROLE {role}")
+        assert len(await admin.fetch("SELECT * FROM gize.test_widgets")) == rows_seen
     finally:
         await admin.execute("RESET ROLE")
-        await admin.execute("REVOKE SELECT ON gize.test_widgets FROM authenticated")
-        await admin.execute("REVOKE USAGE ON SCHEMA gize FROM authenticated")
+        await admin.execute(f"REVOKE SELECT ON gize.test_widgets FROM {role}")  # noqa: S608
+        await admin.execute(f"REVOKE USAGE ON SCHEMA gize FROM {role}")
         await admin.execute("DELETE FROM gize.test_widgets")
         await admin.close()
 

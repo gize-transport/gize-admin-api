@@ -83,7 +83,7 @@ known-first-party = ["gize_api", "scripts", "tests"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests", "scripts"]
+files = ["src", "tests", "scripts", "migrations"]
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
 warn_unreachable = true

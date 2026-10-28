@@ -148,8 +148,10 @@ jobs:
           --health-cmd "pg_isready -U postgres -d gize"
           --health-interval 2s --health-timeout 3s --health-retries 30
     env:
-      # Throwaway credentials for the CI service container only.
-      BOOTSTRAP_ADMIN_DATABASE_URL: postgresql://postgres:gize-ci-only@127.0.0.1:5432/gize
+      APP_ENV: test
+      # Throwaway credentials for the CI service container only. As on Supabase, the
+      # bootstrap admin is not a superuser: it has CREATEROLE and owns the database.
+      BOOTSTRAP_ADMIN_DATABASE_URL: postgresql://supa_admin:gize-ci-admin@127.0.0.1:5432/gize
       DATABASE_URL: postgresql://gize_app:gize-ci-app@127.0.0.1:5432/gize
       MIGRATOR_DATABASE_URL: postgresql://gize_migrator:gize-ci-migrator@127.0.0.1:5432/gize
     steps:
@@ -165,8 +167,21 @@ jobs:
           enable-cache: true
       - name: Install (fails if uv.lock is out of date with pyproject.toml)
         run: uv sync --locked
-      - name: Bootstrap roles and schema (as on Supabase)
-        run: uv run --locked python -m gize_api.core.bootstrap --create-supabase-roles
+      - name: Make the server look like Supabase (API roles, a non-superuser admin)
+        env:
+          PGPASSWORD: gize-ci-only
+        run: |
+          psql --host 127.0.0.1 --username postgres --dbname gize --set ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE anon NOLOGIN;
+          CREATE ROLE authenticated NOLOGIN;
+          CREATE ROLE service_role NOLOGIN BYPASSRLS;
+          CREATE ROLE supa_admin LOGIN CREATEROLE NOSUPERUSER PASSWORD 'gize-ci-admin';
+          ALTER DATABASE gize OWNER TO supa_admin;
+          SQL
+      - name: Bootstrap roles and schema as that admin
+        run: uv run --locked python -m gize_api.core.bootstrap
+      - name: Bootstrap again (re-runs must succeed and change nothing)
+        run: uv run --locked python -m gize_api.core.bootstrap
       - name: Upgrade to head
         run: uv run --locked alembic upgrade head
       - name: Downgrade one step

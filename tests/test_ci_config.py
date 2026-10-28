@@ -63,8 +63,9 @@ def test_ci_service_images_match_docker_compose() -> None:
     compose = (ROOT / "docker-compose.yml").read_text()
     for image in ("postgres", "redis"):
         pattern = rf"image: ({image}:[^\s@]+@sha256:[0-9a-f]{{64}})"
-        expected = _one(pattern, compose)
-        assert set(re.findall(pattern, CI)) == {expected}
+        in_compose = set(re.findall(pattern, compose))
+        assert len(in_compose) == 1, in_compose  # the dev and test servers match too
+        assert set(re.findall(pattern, CI)) == in_compose
 
 
 def test_ci_python_matches_docker_image() -> None:

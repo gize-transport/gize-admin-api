@@ -50,10 +50,12 @@ Status: in review · Depends on: GZ-003
 - `create_async_engine(..., hide_parameters=True)` so statement parameters never reach error text (from GZ-005 review).
 - OpenTelemetry SQLAlchemy instrumentation on the engine via `Telemetry` (never the global provider; statements without parameters), plus per-dependency metrics for Postgres (handed over from GZ-005).
 - Acceptance: `gize_app` cannot create or drop tables (test); `anon` cannot read `gize` tables (test).
+- Review follow-ups done here (owner-approved): `DATABASE_SSL_ROOT_CERT` with `ssl=verify-full` required in production; `DATABASE_POOL_SIZE`/`DATABASE_MAX_OVERFLOW` (5/5) and a documented connection budget; session-mode pooler only; bootstrap drift checks; a separate compose test server.
 
 ### GZ-007 · Health endpoints
 Status: todo · Depends on: GZ-006
 - `/health/live` (no dependencies) and `/health/ready` (Postgres + Redis within timeouts).
+- Settle the session pattern for handlers and dependencies (from GZ-006 review): a dependency that reads (e.g. auth) autobegins a transaction, after which a service's `session.begin()` raises. Decide one rule (e.g. services use `session.begin()` only on a fresh session, or dependencies read in their own short transaction) and test it with `app_with_db_session`.
 - Acceptance: ready returns 503 with Redis stopped; live still 200; no versions or internals exposed.
 
 ### GZ-008 · Shared building blocks
@@ -62,6 +64,7 @@ Status: todo · Depends on: GZ-006
 - Idempotency: `idempotency_keys` table, dependency for POST handlers, conflict on same key + different body, Arq cleanup job (24 h).
 - `core/http.py` outbound client: timeouts, host allowlist, private-IP blocking.
 - Arq worker skeleton with graceful shutdown.
+- Never hold a database transaction across an outbound call (SMS, HTTP): `gize_app`'s idle-in-transaction timeout (10 s) equals the outbound timeout, so the connection would be killed mid-request (from GZ-006 review). Commit first, then call, or enqueue the call as a job.
 - OpenTelemetry httpx instrumentation on the outbound client only (URLs without query strings, no trace headers to third parties), plus per-host request/error/duration metrics (handed over from GZ-005). Sentry already sends no trace headers and keeps no breadcrumbs.
 - Acceptance: tests for replayed idempotent request, mismatched body (422), blocked private-IP request, worker job executes in tests.
 
@@ -164,6 +167,7 @@ Status: todo · Depends on: GZ-032
 Status: todo · Depends on: GZ-034, GZ-023
 - Assign/move a rider to a route + pickup point with plan and Saturday add-on; route row locked; never exceeds seats; rule checks (student ↔ student route, adult ↔ public route, corporate ↔ that company's route).
 - Acceptance: parallel test – two assignments for the last seat → exactly one succeeds (`ROUTE_FULL` for the other).
+- The parallel test needs committed data on two connections: `db_session` runs inside one rolled-back transaction, so add a committed-data fixture that truncates its tables afterwards (from GZ-006 review).
 
 ---
 

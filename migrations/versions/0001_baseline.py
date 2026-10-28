@@ -25,4 +25,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # The revoked grant is deliberately not restored: gize_app never needs the version table,
+    # and widening a privilege on the way down would make a rollback less safe.
     op.execute('ALTER TABLE "gize"."alembic_version" DISABLE ROW LEVEL SECURITY')

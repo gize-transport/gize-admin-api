@@ -11,14 +11,17 @@ Off unless OTEL_EXPORTER_OTLP_ENDPOINT is set (local runs and tests need nothing
 - Redis commands are traced per client, as `COMMAND ? ?`, never values.
 - Shutdown flushes within a fixed budget, off the event loop.
 
-- Database statements are traced per engine as their operation, never with parameters or
-  error text, with per-operation duration and error metrics.
+- Database statements are traced per engine as their operation and their text with every
+  literal replaced by `?`, never parameters or error text, with per-operation duration and
+  error metrics. Requests failed by an unavailable database are counted.
 
 Outbound httpx instrumentation (GZ-008) joins when that client lands.
 """
 
 import asyncio
 import contextlib
+import functools
+import re
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -30,6 +33,7 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.redis import RedisInstrumentor
+from opentelemetry.metrics import Counter
 from opentelemetry.sdk.metrics import AlwaysOffExemplarFilter, MeterProvider
 from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import View
@@ -85,6 +89,19 @@ _CLIENT_ATTRIBUTES = (
 # Set only if OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_* is configured; blanked regardless.
 _CAPTURED_HEADER_PREFIXES = ("http.request.header.", "http.response.header.")
 MAX_STATEMENT_LENGTH = 1000
+# Literal stripping looks at this much of a statement; the rest is dropped unread.
+_MAX_STATEMENT_SCAN = 4 * MAX_STATEMENT_LENGTH
+_SQL_LITERAL = re.compile(
+    r"--[^\n]*"  # line comment
+    r"|/\*.*?\*/"  # block comment
+    r"|(?<![\w$])[Ee]'(?:[^'\\]|''|\\.)*'"  # escape string: backslash escapes
+    r"|(?<![\w$])(?:[BbXx]|[Uu]&)?'(?:[^']|'')*'"  # string, bit string, Unicode string
+    r"|\$\$.*?\$\$"  # dollar-quoted string
+    r"|\$(?P<tag>[A-Za-z_]\w*)\$.*?\$(?P=tag)\$"  # tagged dollar-quoted string ($1 is not)
+    r"|'.*|\$(?:[A-Za-z_]\w*)?\$.*"  # unterminated (a truncated or broken statement): to the end
+    r"|(?<![\w$])(?:0[xXoObB][0-9A-Fa-f_]+|\d[\d_]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?",
+    re.DOTALL,
+)
 _DATABASE_OPERATIONS = frozenset(
     {
         "SELECT",
@@ -152,7 +169,7 @@ class Telemetry:
                 attributes={
                     "db.system.name": "postgresql",
                     "db.operation.name": operation,
-                    "db.query.text": str(statement)[:MAX_STATEMENT_LENGTH],
+                    "db.query.text": _statement_text(str(statement)),
                 },
             )
             context._gize_db = (span, time.perf_counter(), operation)
@@ -188,6 +205,17 @@ class Telemetry:
         event.listen(sync_engine, "before_cursor_execute", before)
         event.listen(sync_engine, "after_cursor_execute", after)
         event.listen(sync_engine, "handle_error", on_error)
+
+    def record_database_unavailable(self, error: BaseException) -> None:
+        """Count a request failed by an unavailable database (connection failures included)."""
+        self._database_unavailable.add(1, {"error.type": type(error).__name__})
+
+    @functools.cached_property
+    def _database_unavailable(self) -> Counter:
+        return self.meter_provider.get_meter("gize_api.db").create_counter(
+            "gize.db.unavailable",
+            description="Requests answered 503 because the database was unavailable",
+        )
 
     def instrument_redis(self, client: Redis) -> None:
         RedisInstrumentor.instrument_client(client, tracer_provider=self.tracer_provider)
@@ -299,6 +327,12 @@ def configure_telemetry(
         shutdown_on_exit=False,
     )
     return Telemetry(tracer_provider=tracer_provider, meter_provider=meter_provider)
+
+
+def _statement_text(statement: str) -> str:
+    """The statement with comments and literals replaced by `?` (placeholders such as `$1`
+    stay), bounded in length: values must never reach a span, even in a literal."""
+    return _SQL_LITERAL.sub("?", statement[:_MAX_STATEMENT_SCAN])[:MAX_STATEMENT_LENGTH]
 
 
 def _database_operation(statement: object) -> str:

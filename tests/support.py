@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Ports nothing listens on: calls fail fast and nothing real is touched.
 UNREACHABLE_REDIS_URL = "redis://127.0.0.1:1/0"
-UNREACHABLE_DATABASE_URL = "postgresql://gize_app:unused@127.0.0.1:1/gize?ssl=require"
+UNREACHABLE_DATABASE_URL = "postgresql://gize_app:unused@127.0.0.1:1/gize?ssl=verify-full"
 
 # Every variable Settings reads; cleared so the developer's shell cannot change a result.
 SETTINGS_ENV_VARS = (
@@ -32,6 +32,9 @@ SETTINGS_ENV_VARS = (
     "RELEASE",
     "OBSERVABILITY_REQUIRED",
     "OTEL_TRACES_SAMPLER_RATIO",
+    "DATABASE_SSL_ROOT_CERT",
+    "DATABASE_POOL_SIZE",
+    "DATABASE_MAX_OVERFLOW",
 )
 
 SettingsFactory = Callable[..., Settings]
@@ -55,6 +58,8 @@ def fake_jwt(subject: str = "test") -> str:
 class DatabaseUrls:
     """Connection URLs for one test database: admin (superuser), migrator and app."""
 
+    name: str
+
     admin: str
     migrator: str
     app: str
@@ -76,16 +81,23 @@ def database_urls(admin_url: str, database: str) -> DatabaseUrls:
 
     admin = urlunsplit(parts._replace(path=f"/{database}"))
     return DatabaseUrls(
+        name=database,
         admin=admin,
         migrator=url("gize_migrator", TEST_MIGRATOR_PASSWORD),
         app=url("gize_app", TEST_APP_PASSWORD),
     )
 
 
+def alembic_config(migrator_url: str, **attributes: object) -> Config:
+    """The release step's Alembic configuration, pointed at `migrator_url`."""
+    config = Config(str(ROOT / "alembic.ini"))
+    config.attributes.update({"database_url": migrator_url, "app_env": "test", **attributes})
+    return config
+
+
 def run_migrations(migrator_url: str, target: str, *, downgrade: bool = False) -> None:
     """Run Alembic exactly as the release step does, against `migrator_url`."""
-    config = Config(str(ROOT / "alembic.ini"))
-    config.attributes["database_url"] = migrator_url
+    config = alembic_config(migrator_url)
     if downgrade:
         command.downgrade(config, target)
     else:

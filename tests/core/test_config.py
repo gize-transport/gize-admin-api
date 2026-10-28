@@ -8,7 +8,7 @@ from gize_api.core.config import ConfigError, Environment, Settings, load_settin
 REQUIRED = {
     "APP_ENV": "test",
     "REDIS_URL": "redis://:s3cret-redis-pass@127.0.0.1:6379/0",
-    "DATABASE_URL": "postgresql://gize_app:s3cret-db-pass@127.0.0.1:5432/gize?ssl=require",
+    "DATABASE_URL": "postgresql://gize_app:s3cret-db-pass@127.0.0.1:5432/gize?ssl=verify-full",
 }
 
 
@@ -211,6 +211,7 @@ def test_observability_settings_load(clean_env: pytest.MonkeyPatch) -> None:
     _set(
         clean_env,
         APP_ENV="production",
+        DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=verify-full",
         SENTRY_DSN="https://dsnkey987@o1.ingest.sentry.io/42",
         OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp.example.com/otlp/",
         OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic c2VjcmV0, X-Scope = gize",
@@ -271,6 +272,7 @@ def test_production_starts_with_observability_configured(clean_env: pytest.Monke
     _set(
         clean_env,
         APP_ENV="production",
+        DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=verify-full",
         SENTRY_DSN="https://dsnkey987@o1.ingest.sentry.io/42",
         OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp.example.com/otlp",
     )
@@ -380,3 +382,74 @@ def test_database_url_requires_tls_outside_local(
         DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=verify-full",
     )
     assert load_settings().database_ssl == "verify-full"
+
+
+def test_production_requires_certificate_verification(clean_env: pytest.MonkeyPatch) -> None:
+    _set(
+        clean_env, APP_ENV="production", DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=require"
+    )
+    with pytest.raises(ConfigError, match="ssl=verify-full in production"):
+        load_settings()
+    _set(clean_env, APP_ENV="staging", DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=require")
+    assert load_settings().database_ssl == "require"
+
+
+def test_database_root_certificate(clean_env: pytest.MonkeyPatch) -> None:
+    import certifi
+
+    _set(
+        clean_env,
+        DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=verify-full",
+        DATABASE_SSL_ROOT_CERT=certifi.where(),
+    )
+    assert str(load_settings().database_ssl_root_cert) == certifi.where()
+    _set(clean_env, DATABASE_SSL_ROOT_CERT="/no/such/ca.crt")
+    with pytest.raises(ConfigError, match="database_ssl_root_cert"):
+        load_settings()
+    _set(
+        clean_env,
+        DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=require",
+        DATABASE_SSL_ROOT_CERT=certifi.where(),
+    )
+    with pytest.raises(ConfigError, match="needs ssl=verify-full"):
+        load_settings()
+
+
+def test_database_pool_defaults(clean_env: pytest.MonkeyPatch) -> None:
+    _set(clean_env)
+    settings = load_settings()
+    assert (settings.database_pool_size, settings.database_max_overflow) == (5, 5)
+    _set(clean_env, DATABASE_POOL_SIZE="2", DATABASE_MAX_OVERFLOW="0")
+    settings = load_settings()
+    assert (settings.database_pool_size, settings.database_max_overflow) == (2, 0)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("DATABASE_POOL_SIZE", "0"),
+        ("DATABASE_POOL_SIZE", "51"),
+        ("DATABASE_POOL_SIZE", "five"),
+        ("DATABASE_MAX_OVERFLOW", "-1"),
+        ("DATABASE_MAX_OVERFLOW", "51"),
+    ],
+)
+def test_database_pool_bounds(clean_env: pytest.MonkeyPatch, name: str, value: str) -> None:
+    _set(clean_env, **{name: value})
+    with pytest.raises(ConfigError, match=name.lower()):
+        load_settings()
+
+
+def test_env_example_loads_as_is(clean_env: pytest.MonkeyPatch) -> None:
+    """Copying .env.example gives a valid local configuration; empty values mean unset."""
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[2] / ".env.example"
+    for line in example.read_text().splitlines():
+        name, sep, value = line.partition("=")
+        if sep and not line.startswith("#"):
+            clean_env.setenv(name, value)
+    settings = load_settings()
+    assert settings.sentry_dsn is None
+    assert settings.database_ssl_root_cert is None
+    assert settings.release is None

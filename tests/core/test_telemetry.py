@@ -11,7 +11,7 @@ import pytest
 import sqlalchemy.exc
 from fastapi import FastAPI
 from opentelemetry import trace
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoint
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -494,6 +494,9 @@ async def test_database_statements_traced_and_measured_without_text_leaks(
     assert "0911223344" not in str(ok.attributes)  # parameters are never recorded
     assert failed.status.status_code == trace.StatusCode.ERROR
     assert failed.status.description is None  # no Postgres message text
+    assert "0911223344" not in str(failed.attributes)  # literals are stripped from the text
+    query = (failed.attributes or {})["db.query.text"]
+    assert query == "SELECT * FROM gize.no_such_table WHERE x = ?"
     assert (failed.attributes or {})["error.type"]
     data = metrics.get_metrics_data()
     assert data is not None
@@ -553,3 +556,63 @@ async def test_a_statement_span_is_never_finished_twice(
     )
     assert spans.get_finished_spans() == ()
     await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    [
+        ("SELECT * FROM t WHERE phone = '0911223344'", "SELECT * FROM t WHERE phone = ?"),
+        ("SELECT 'it''s', E'a\\'b', 'c'", "SELECT ?, ?, ?"),
+        ("SELECT x FROM t WHERE a = $1 AND b = $2", "SELECT x FROM t WHERE a = $1 AND b = $2"),
+        ("SELECT t1.c2 FROM t1 LIMIT 10 OFFSET 2.5e3", "SELECT t1.c2 FROM t1 LIMIT ? OFFSET ?"),
+        ("SELECT $$secret$$, $tag$more$tag$", "SELECT ?, ?"),
+        ('SELECT "quoted ident" FROM t', 'SELECT "quoted ident" FROM t'),
+        ("SELECT 1 -- note 0911223344\nFROM t /* 0911223344 */", "SELECT ? ?\nFROM t ?"),
+        ("SELECT 'unterminated 0911223344", "SELECT ?"),
+        ("SELECT X'1F', B'101', U&'d\\0061'", "SELECT ?, ?, ?"),
+    ],
+)
+def test_statement_literals_are_stripped(statement: str, expected: str) -> None:
+    from gize_api.core.telemetry import _statement_text
+
+    assert _statement_text(statement) == expected
+
+
+def test_statement_text_is_bounded() -> None:
+    from gize_api.core.telemetry import MAX_STATEMENT_LENGTH, _statement_text
+
+    text = _statement_text("SELECT " + "'x', " * 100_000 + "1")
+    assert len(text) <= MAX_STATEMENT_LENGTH
+    assert "x" not in text
+
+
+async def test_unavailable_database_is_counted(
+    make_settings: SettingsFactory, metrics: InMemoryMetricReader, spans: InMemorySpanExporter
+) -> None:
+    from fastapi import Depends
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from gize_api.core.db import get_session
+
+    app = _app(make_settings)  # an unreachable database
+    app.telemetry = configure_telemetry(make_settings(), span_exporter=spans, metric_reader=metrics)
+
+    @app.get("/_test/db")
+    async def db(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
+        await session.execute(text("SELECT 1"))
+
+    async with app.router.lifespan_context(app), _client(app) as client:
+        assert (await client.get("/_test/db")).status_code == 503
+    data = metrics.get_metrics_data()
+    assert data is not None
+    points = [
+        (dict(point.attributes or {}), point.value)
+        for resource in data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == "gize.db.unavailable"
+        for point in metric.data.data_points
+        if isinstance(point, NumberDataPoint)
+    ]
+    assert points == [({"error.type": "ConnectionRefusedError"}, 1)]

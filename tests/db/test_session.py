@@ -2,6 +2,7 @@
 
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -236,3 +237,124 @@ async def test_a_killed_connection_is_unavailable(database: DatabaseUrls) -> Non
     finally:
         await admin.close()
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("sqlstate", "unavailable"),
+    [
+        ("40P01", True),  # deadlock: retry later
+        ("40001", True),  # serialization failure: retry later
+        ("53200", True),  # out of memory
+        ("53300", True),  # too many connections
+        ("53100", True),  # disk full
+        ("XX000", False),  # an internal error from a statement is a bug report
+        ("23505", False),  # unique violation: the caller's problem, never a 503
+    ],
+)
+async def test_classifying_errors_by_sqlstate(
+    database: DatabaseUrls, sqlstate: str, unavailable: bool
+) -> None:
+    import sqlalchemy.exc
+
+    from gize_api.core.db import is_database_unavailable
+
+    engine = create_engine_for(database.app)
+    try:
+        async with engine.connect() as conn:
+            with pytest.raises(sqlalchemy.exc.DBAPIError) as raised:
+                await conn.execute(
+                    text(f"DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '{sqlstate}'; END $$")
+                )
+        assert is_database_unavailable(raised.value) is unavailable
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        lambda url: url.replace("gize-app-test", "wrong-password"),  # e.g. a rotated password
+        lambda url: url.rsplit("/", 1)[0] + "/no_such_database",
+    ],
+)
+async def test_errors_while_connecting_are_unavailable(
+    database: DatabaseUrls, broken: Callable[[str], str]
+) -> None:
+    """Whatever the server says while a connection is being opened (a pooler at its client
+    limit included), no statement ran: the database is unavailable, not the code wrong."""
+    import sqlalchemy.exc
+
+    from gize_api.core.db import is_database_unavailable
+
+    engine = create_engine_for(broken(database.app))
+    try:
+        with pytest.raises(sqlalchemy.exc.DBAPIError) as raised:
+            async with engine.connect():
+                pass
+        assert is_database_unavailable(raised.value)
+    finally:
+        await engine.dispose()
+
+
+async def test_engine_pool_follows_settings(make_settings: SettingsFactory) -> None:
+    engine = create_engine(make_settings(database_pool_size=2, database_max_overflow=1))
+    try:
+        pool = engine.sync_engine.pool
+        assert isinstance(pool, QueuePool)
+        assert (pool.size(), pool._max_overflow) == (2, 1)
+    finally:
+        await engine.dispose()
+
+
+def test_verify_full_engine_uses_the_root_certificate(make_settings: SettingsFactory) -> None:
+    import ssl
+
+    import certifi
+
+    from gize_api.core.db import _connect_args
+
+    settings = make_settings(
+        database_url="postgresql://gize_app:pw@db.example.com/postgres?ssl=verify-full",
+        database_ssl_root_cert=certifi.where(),
+    )
+    context = _connect_args(settings)["ssl"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.get_ca_certs()
+
+
+async def test_db_session_uses_the_apps_connection_settings(db_session: AsyncSession) -> None:
+    assert await db_session.scalar(text("SHOW application_name")) == "gize-api"
+    assert await db_session.scalar(text("SELECT current_user")) == "gize_app"
+
+
+async def test_app_with_db_session_serves_requests_from_the_test_transaction(
+    app_with_db_session: FastAPI, db_session: AsyncSession
+) -> None:
+    @app_with_db_session.get("/_test/marker")
+    async def marker(session: AsyncSession = Depends(get_session)) -> dict[str, str]:  # noqa: B008
+        return {"value": str(await session.scalar(text("SELECT current_setting('gize.marker')")))}
+
+    await db_session.execute(text("SELECT set_config('gize.marker', 'from-the-test', true)"))
+    async with _client(app_with_db_session) as client:
+        response = await client.get("/_test/marker")
+    assert response.json() == {"value": "from-the-test"}
+
+
+async def test_unavailable_database_is_logged_with_its_sqlstate(
+    make_settings: SettingsFactory,
+    database: DatabaseUrls,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app = create_app(make_settings(database_url=database.app))
+
+    @app.get("/_test/deadlock")
+    async def deadlock(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
+        await session.execute(text("DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '40P01'; END $$"))
+
+    async with app.router.lifespan_context(app), _client(app) as client:
+        response = await client.get("/_test/deadlock")
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "5"
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    (line,) = [entry for entry in lines if entry["event"] == "database_unavailable"]
+    assert line["sqlstate"] == "40P01"
