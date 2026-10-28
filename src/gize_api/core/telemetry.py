@@ -27,7 +27,7 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.redis import RedisInstrumentor
-from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics import AlwaysOffExemplarFilter, MeterProvider
 from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import View
 from opentelemetry.sdk.resources import Resource
@@ -138,13 +138,24 @@ class Telemetry:
             logger.warning("telemetry_shutdown_timed_out", budget_seconds=budget_seconds)
 
     def _shutdown_until(self, deadline: float) -> None:
+        """Flush what time allows, then always shut both providers down; never raise."""
+
         def remaining_ms() -> int:
             return max(0, int((deadline - time.monotonic()) * 1000))
 
-        self.tracer_provider.force_flush(timeout_millis=remaining_ms())
-        self.meter_provider.force_flush(timeout_millis=remaining_ms())
-        self.tracer_provider.shutdown()
-        self.meter_provider.shutdown(timeout_millis=remaining_ms())
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("trace_flush", lambda: self.tracer_provider.force_flush(remaining_ms())),
+            ("metric_flush", lambda: self.meter_provider.force_flush(remaining_ms())),
+            ("trace_shutdown", self.tracer_provider.shutdown),
+            ("metric_shutdown", lambda: self.meter_provider.shutdown(max(1, remaining_ms()))),
+        ]
+        for name, step in steps:
+            if name.endswith("_flush") and remaining_ms() == 0:
+                continue
+            try:
+                step()
+            except Exception:
+                logger.warning("telemetry_shutdown_step_failed", step=name, exc_info=True)
 
 
 def configure_telemetry(
@@ -199,6 +210,8 @@ def configure_telemetry(
         )
     meter_provider = MeterProvider(
         resource=resource,
+        # Exemplars would carry the request's raw attributes (Host) that the View removes.
+        exemplar_filter=AlwaysOffExemplarFilter(),
         metric_readers=readers,
         views=[View(instrument_name="http.server.*", attribute_keys=set(_METRIC_ATTRIBUTES))],
         shutdown_on_exit=False,

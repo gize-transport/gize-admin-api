@@ -152,8 +152,10 @@ async def test_unhandled_exception_log_line_shows_request_id_and_route(
     assert line["request_id"] == "req-abc-12345"
     assert line["route"] == "/_test/crash"
     assert line["level"] == "error"
-    assert "RuntimeError" in line["exception"]
-    assert "hunter2" not in line["exception"]  # password=… scrubbed from the traceback
+    assert line["exception_type"] == "RuntimeError"
+    assert any(frame.endswith(" in crash") for frame in line["exception_frames"])
+    assert "exception" not in line
+    assert "hunter2" not in json.dumps(line)  # the message is never logged
 
 
 async def test_unhandled_exception_logged_once_and_never_escapes_to_the_server(

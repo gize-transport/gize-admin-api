@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import logging
+import time
 import uuid
 import warnings
 from typing import Any
@@ -144,7 +145,8 @@ async def test_unhandled_error_logged_as_json_with_request_id(
     assert error["level"] == "error"
     assert error["request_id"] == response.headers[REQUEST_ID_HEADER]
     assert error["route"] == "/_test/crash"
-    assert "RuntimeError" in error["exception"]
+    assert error["exception_type"] == "RuntimeError"
+    assert "exception" not in error
 
 
 def test_trace_id_on_lines_inside_a_span(capsys: pytest.CaptureFixture[str]) -> None:
@@ -583,16 +585,66 @@ def test_more_phone_formats(text: str, expected: str) -> None:
     assert mask_phone_numbers(text) == expected
 
 
-def test_exception_keeps_the_tail_of_long_tracebacks(capsys: pytest.CaptureFixture[str]) -> None:
+def test_exceptions_are_logged_as_type_and_frames_never_text(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     configure_logging("INFO")
 
+    def lookup() -> None:
+        raise KeyError(f"rider Abebe Kebede {PHONE} otp {OTP}")
+
     try:
-        raise ValueError("context " * 1500 + "the real cause 0911223344")
+        try:
+            lookup()
+        except KeyError as exc:
+            raise RuntimeError(f"wrapped {LOCAL_PHONE} children={['Liya', 'Sara']}") from exc
+    except RuntimeError:
+        structlog.get_logger("gize_api.test").exception("failed")
+        logging.getLogger("some.library").exception("library failed")
+    output = capsys.readouterr().err
+    lines = [json.loads(line) for line in output.splitlines() if line.strip()]
+    assert len(lines) == 2  # one JSON line each: no traceback text appended
+    for line in lines:
+        assert line["exception_type"] == "RuntimeError"
+        assert line["exception_chain"] == ["RuntimeError", "KeyError"]
+        assert any(frame.endswith(" in lookup") for frame in line["exception_frames"])
+        assert all(":" in frame for frame in line["exception_frames"])
+    for leak in ("Abebe", "Kebede", PHONE, LOCAL_PHONE, OTP, "Liya", "Sara", "raise "):
+        assert leak not in output, leak
+
+
+@pytest.mark.parametrize("exc_info", [True, "instance", "tuple"])
+def test_every_exc_info_form_is_formatted(
+    capsys: pytest.CaptureFixture[str], exc_info: object
+) -> None:
+    configure_logging("INFO")
+    try:
+        raise ValueError(f"secret {PHONE}")
+    except ValueError as exc:
+        value = {"instance": exc, "tuple": (type(exc), exc, exc.__traceback__)}.get(
+            str(exc_info), True
+        )
+        structlog.get_logger("gize_api.test").error("failed", exc_info=value)
+    (line,) = _lines(capsys)
+    assert line["exception_type"] == "ValueError"
+    assert PHONE not in json.dumps(line)
+
+
+def test_frames_are_bounded_and_paths_short(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging("INFO")
+
+    def deep(n: int) -> None:
+        if n == 0:
+            raise ValueError("x")
+        deep(n - 1)
+
+    try:
+        deep(100)
     except ValueError:
         structlog.get_logger("gize_api.test").exception("failed")
     (line,) = _lines(capsys)
-    assert line["exception"].startswith("[TRUNCATED]…")
-    assert line["exception"].rstrip().endswith("the real cause 09••••3344")  # the tail is kept
+    assert len(line["exception_frames"]) <= 30
+    assert all(not frame.startswith("/") for frame in line["exception_frames"])
 
 
 async def test_unknown_methods_are_logged_as_other(
@@ -625,3 +677,169 @@ def test_assignment_edge_cases(text: str, expected: str) -> None:
 
 def test_fractional_number_under_a_phone_key_is_redacted() -> None:
     assert scrub_value("phone", 911223344.5) == REDACTED
+
+
+# --- third review: structured fields and library lines ----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "leaks"),
+    [
+        ("children=['Liya', 'Sara'] seats=2", ["Liya", "Sara"]),
+        ("{'names': ('Abebe', 'Liya')}", ["Abebe", "Liya"]),
+        ("{'guardian': {'first': 'Almaz'}}", ["Almaz"]),
+        ("password=['hunter2']", ["hunter2"]),
+        ("{'input': 'Abebe Kebede', 'loc': ('body',)}", ["Abebe", "Kebede"]),
+        ('{"name": "Abebe \\"Abi\\" Kebede"}', ["Abi", "Kebede"]),
+        ("to=%2B251911223344&text=Your%20code%20is%20482913", ["911223344", "482913"]),
+        ("text=Your+code+is+482913", ["482913"]),
+        ("{'body': 'line1\\n0911223344'}", ["0911223344"]),
+        ("482913 is your Gize code", ["482913"]),
+        ("code is: 482913", ["482913"]),
+        ("code was 482913", ["482913"]),
+        ("one-time password 482913", ["482913"]),
+        ("OTPs 482913", ["482913"]),
+        ("code: 482-913", ["482-913"]),
+        ("codes 482913, 112233", ["482913", "112233"]),
+        ("የማረጋገጫ ኮድ 482913", ["482913"]),
+        ("phone=911223344", ["911223344"]),
+        ('{"phone":911223344}', ["911223344"]),
+        ("0 911 223 344", ["911 223 344"]),
+        ("[(b'cookie', b'sid=1'), (b'x-api-key', b'k123')]", ["sid=1", "k123"]),
+        ("('apikey', 'zz9')", ["zz9"]),
+    ],
+)
+def test_third_review_text_leaks_closed(text: str, leaks: list[str]) -> None:
+    scrubbed = scrub_text(text)
+    for leak in leaks:
+        assert leak not in scrubbed, (text, scrubbed)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "route_code=1203",
+        "route code 1203",
+        "error_code=1045",
+        "table_name=riders column_name=phone constraint_name=uq_route_code route_name=Bole",
+        "Authorization: Bearer x",
+    ],
+)
+def test_third_review_no_over_redaction_or_corruption(text: str) -> None:
+    scrubbed = scrub_text(text)
+    if text.startswith("Authorization"):
+        assert scrubbed == "Authorization: [REDACTED]"
+    else:
+        assert scrubbed == text
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("input", "Abebe Kebede", REDACTED),
+        ("input_value", "Abebe", REDACTED),
+        ("home_area", "Bole", REDACTED),
+        ("destination_area", "Piassa", REDACTED),
+        ("first", "Abebe", REDACTED),
+        ("last", "Kebede", REDACTED),
+        ("family", "Kebede", REDACTED),
+        ("route_code", "1203", "1203"),
+        ("table_name", "riders", "riders"),
+        (
+            "headers",
+            [(b"cookie", b"sid=1"), (b"accept", b"*/*")],
+            [["cookie", REDACTED], ["accept", "*/*"]],
+        ),
+        pytest.param("big", 10**5000, "[INT]", id="huge-int"),
+    ],
+)
+def test_third_review_value_cases(key: str, value: object, expected: object) -> None:
+    assert scrub_value(key, value) == expected
+
+
+def test_validation_errors_logged_structured_are_scrubbed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("INFO")
+    try:
+        RiderModel.model_validate({"full_name": 5, "phone": PHONE, "seats": "Almaz Tesfaye"})
+    except Exception as exc:  # noqa: BLE001 - pydantic.ValidationError
+        structlog.get_logger("gize_api.test").warning("invalid", errors=exc.errors())  # type: ignore[attr-defined]
+    output = capsys.readouterr().err
+    assert "Almaz" not in output
+    assert PHONE not in output
+
+
+def test_truncated_text_never_keeps_a_partial_token() -> None:
+    scrubbed = scrub_text("x" * (MAX_TEXT_LENGTH - 6) + " +251911223344 tail")
+    assert "51911223344" not in scrubbed
+    assert "1122" not in scrubbed
+
+
+def test_scrubbing_has_a_per_event_budget(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging("INFO")
+    nested = [[["pw." * 1000 for _ in range(50)] for _ in range(50)] for _ in range(50)]
+    started = time.monotonic()
+    structlog.get_logger("gize_api.test").info("big", payload=nested, rows=nested)
+    assert time.monotonic() - started < 2.0
+    (line,) = _lines(capsys)
+    assert "[TRUNCATED]" in json.dumps(line)
+
+
+def test_hostile_text_is_fast() -> None:
+    started = time.monotonic()
+    for hostile in ("pw." * 2000, "password=" * 500, "a:" * 3000, "{" * 4000, "'" * 4000):
+        scrub_text(hostile)
+    assert time.monotonic() - started < 1.0
+
+
+def test_security_event_never_raises(capsys: pytest.CaptureFixture[str]) -> None:
+    class Exploding:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    configure_logging("INFO")
+    log_security_event("token_rejected", value=Exploding())  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("trailing password=", "trailing password="),  # key at the very end: no value
+        ("password='hunter2", "password=[REDACTED]"),  # unclosed quote at the end of text
+        ("children=[['Liya'], {'n': ('Sara',)}] ok", "children=[REDACTED] ok"),  # nested
+    ],
+)
+def test_value_span_edges(text: str, expected: str) -> None:
+    assert scrub_text(text) == expected
+
+
+def test_exception_chain_is_bounded(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging("INFO")
+    try:
+        try:
+            try:
+                try:
+                    try:
+                        try:
+                            raise KeyError("a")
+                        except KeyError as e:
+                            raise ValueError("b") from e
+                    except ValueError as e:
+                        raise TypeError("c") from e
+                except TypeError as e:
+                    raise LookupError("d") from e
+            except LookupError as e:
+                raise OSError("e") from e
+        except OSError as e:
+            raise RuntimeError("f") from e
+    except RuntimeError:
+        structlog.get_logger("gize_api.test").exception("failed")
+    (line,) = _lines(capsys)
+    assert line["exception_chain"] == [
+        "RuntimeError",
+        "OSError",
+        "LookupError",
+        "TypeError",
+        "ValueError",
+    ]

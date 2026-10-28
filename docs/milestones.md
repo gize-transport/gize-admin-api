@@ -47,6 +47,7 @@ Status: todo · Depends on: GZ-003
 - Alembic configured to run as `gize_migrator`; base model mixins (UUID PK, timestamps, `deleted_at`); helper that enables deny-all RLS on every new table.
 - Test fixtures: real Postgres, migrations applied once, transaction rollback per test, factories.
 - CI migration check job (moved from GZ-002): `alembic upgrade head → downgrade -1 → upgrade head`.
+- `create_async_engine(..., hide_parameters=True)` so statement parameters never reach error text (from GZ-005 review).
 - OpenTelemetry SQLAlchemy instrumentation on the engine via `Telemetry` (never the global provider; statements without parameters), plus per-dependency metrics for Postgres (handed over from GZ-005).
 - Acceptance: `gize_app` cannot create or drop tables (test); `anon` cannot read `gize` tables (test).
 

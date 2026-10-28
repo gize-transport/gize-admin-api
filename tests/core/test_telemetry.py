@@ -18,6 +18,7 @@ from opentelemetry.trace import INVALID_SPAN
 from redis.asyncio import Redis
 from starlette.types import Message, Receive, Scope, Send
 
+from gize_api.core.logging import configure_logging
 from gize_api.core.request_id import REQUEST_ID_HEADER
 from gize_api.core.telemetry import (
     _DropInboundTraceContext,
@@ -419,3 +420,52 @@ async def test_resolving_a_finished_shutdown_future_is_harmless() -> None:
     _resolve(future)
     _resolve(future)  # a second resolution (late thread) must not raise
     assert future.done()
+
+
+async def test_shutdown_survives_a_hung_collector_with_no_budget(
+    make_settings: SettingsFactory, blackhole_url: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    telemetry = configure_telemetry(make_settings(otel_exporter_otlp_endpoint=blackhole_url))
+    assert telemetry is not None
+    telemetry.meter_provider.get_meter("t").create_counter("c").add(1)
+    await telemetry.shutdown(budget_seconds=0.0)  # every step out of time: none may raise
+    await asyncio.sleep(0)  # let the shutdown thread's completion callback run
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_metrics_carry_no_exemplars(make_settings: SettingsFactory) -> None:
+    telemetry = configure_telemetry(make_settings(), metric_reader=InMemoryMetricReader())
+    assert telemetry is not None
+    assert type(telemetry.meter_provider._sdk_config.exemplar_filter).__name__ == (
+        "AlwaysOffExemplarFilter"
+    )
+
+
+async def test_failing_shutdown_step_is_logged_and_the_rest_still_run(
+    make_settings: SettingsFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("INFO")
+    telemetry = configure_telemetry(make_settings(), span_exporter=InMemorySpanExporter())
+    assert telemetry is not None
+    shut_down: list[str] = []
+
+    def failing_trace_shutdown() -> None:
+        raise RuntimeError("exporter broke")
+
+    monkeypatch.setattr(telemetry.tracer_provider, "shutdown", failing_trace_shutdown)
+    original = telemetry.meter_provider.shutdown
+
+    def recording_metric_shutdown(timeout_millis: float = 0) -> None:
+        shut_down.append("metrics")
+        original(timeout_millis)
+
+    monkeypatch.setattr(telemetry.meter_provider, "shutdown", recording_metric_shutdown)
+    await telemetry.shutdown(budget_seconds=1.0)
+    await asyncio.sleep(0)
+    assert shut_down == ["metrics"]
+    err = capsys.readouterr().err
+    assert '"telemetry_shutdown_step_failed"' in err
+    assert '"trace_shutdown"' in err
+    assert "exporter broke" not in err

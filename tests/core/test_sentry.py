@@ -93,6 +93,11 @@ async def test_unhandled_error_reaches_sentry_scrubbed_with_request_id(
     assert event["environment"] == "test"
     assert event["release"] == "2026.10.27-abc123"
     assert event["sdk"]["name"].startswith("sentry.python")  # metadata left intact
+    (exception,) = event["exception"]["values"]
+    assert exception["type"] == "RuntimeError"
+    assert "value" not in exception  # the message is never sent
+    for frame in exception["stacktrace"]["frames"]:
+        assert not {"context_line", "pre_context", "post_context", "vars"} & set(frame)
     for secret in (PHONE, "0911223344", TOKEN, "911223344"):
         assert secret not in serialized
 
