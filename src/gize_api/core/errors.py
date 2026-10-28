@@ -21,7 +21,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from gize_api.core.db import database_sqlstate, is_database_unavailable
+from gize_api.core.db import (
+    database_sqlstate,
+    is_database_misconfigured,
+    is_database_unavailable,
+)
 from gize_api.core.request_id import current_request_id
 from gize_api.core.sentry import report_exception
 
@@ -219,12 +223,17 @@ async def _database_error(request: Request, exc: Exception) -> Response:
     error stays a 500. The SQLSTATE (a code, never message text) says which."""
     if not is_database_unavailable(exc):
         return await _unhandled_error(request, exc)
+    route = _route(request.scope)
+    misconfigured = is_database_misconfigured(exc)
     logger.error(
         "database_unavailable",
-        route=_route(request.scope),
+        route=route,
         sqlstate=database_sqlstate(exc),
+        misconfigured=misconfigured,
         exc_info=exc,
     )
+    if misconfigured:  # an outage passes; a wrong password or certificate needs a human
+        report_exception(exc, request_id=current_request_id(), route=route)
     telemetry = getattr(request.app, "telemetry", None)
     if telemetry is not None:
         telemetry.record_database_unavailable(exc)

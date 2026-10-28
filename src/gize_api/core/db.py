@@ -16,6 +16,7 @@ import traceback
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import FrameType
+from typing import Literal
 
 import sqlalchemy.exc
 from fastapi import Request
@@ -42,6 +43,12 @@ _UNAVAILABLE_SQLSTATE_PREFIXES = ("08", "53", "57P")
 _UNAVAILABLE_SQLSTATES = frozenset({"57014", "55P03", "40001", "40P01"})
 # Driver modules whose frames mean the error happened while opening a connection.
 _CONNECTING_MODULES = ("asyncpg.connect_utils",)
+# Where network failures are raised. An OS or timeout error raised anywhere else (app code
+# run inside the ORM, e.g. a validator) is a bug, even though SQLAlchemy frames surround it.
+_NETWORK_MODULES = ("asyncio.", "asyncpg.", "socket", "ssl", "uvloop")
+# Server answers that will not fix themselves: wrong password or role (28), no such
+# database (3D000). Still 503 for the client, but reported for a human to fix.
+_MISCONFIGURED_SQLSTATE_PREFIXES = ("28", "3D000")
 _MAX_CHAINED_ERRORS = 10
 
 
@@ -91,10 +98,19 @@ def is_database_unavailable(exc: BaseException) -> bool:
         return sqlstate in _UNAVAILABLE_SQLSTATES or sqlstate.startswith(
             _UNAVAILABLE_SQLSTATE_PREFIXES
         )
-    # Connecting raises plain OS and timeout errors; only count those from the driver.
-    return isinstance(exc, (OSError, TimeoutError)) and _raised_from(
-        exc, ("sqlalchemy.", "asyncpg.")
+    # Network failures surface as plain OS and timeout errors; count only those raised by
+    # the network stack or the driver themselves.
+    return isinstance(exc, (OSError, TimeoutError)) and any(
+        _raise_site(error).startswith(_NETWORK_MODULES) for error in _chain(exc)
     )
+
+
+def is_database_misconfigured(exc: BaseException) -> bool:
+    """True for unavailability that needs a human: credentials, database name, TLS trust."""
+    sqlstate = database_sqlstate(exc) or ""
+    if sqlstate.startswith(_MISCONFIGURED_SQLSTATE_PREFIXES):
+        return True
+    return any(isinstance(error, ssl.SSLCertVerificationError) for error in _chain(exc))
 
 
 def database_sqlstate(exc: BaseException) -> str | None:
@@ -106,19 +122,30 @@ def database_sqlstate(exc: BaseException) -> str | None:
 
 def _raised_from(exc: BaseException, modules: tuple[str, ...]) -> bool:
     """True if a frame of `exc` or the errors it wraps belongs to one of `modules`."""
-    for frame in _frames(exc):
-        if str(frame.f_globals.get("__name__", "")).startswith(modules):
-            return True
-    return False
+    return any(
+        _module(frame).startswith(modules)
+        for error in _chain(exc)
+        for frame, _ in traceback.walk_tb(error.__traceback__)
+    )
 
 
-def _frames(exc: BaseException) -> Iterator[FrameType]:
+def _raise_site(exc: BaseException) -> str:
+    """The module of the innermost frame: where `exc` was raised."""
+    frames = list(traceback.walk_tb(exc.__traceback__))
+    return _module(frames[-1][0]) if frames else ""
+
+
+def _module(frame: FrameType) -> str:
+    return str(frame.f_globals.get("__name__", ""))
+
+
+def _chain(exc: BaseException) -> Iterator[BaseException]:
+    """`exc` and the errors it wraps (cause or context), bounded."""
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen and len(seen) < _MAX_CHAINED_ERRORS:
         seen.add(id(current))
-        for frame, _ in traceback.walk_tb(current.__traceback__):
-            yield frame
+        yield current
         current = current.__cause__ or current.__context__
 
 
@@ -149,9 +176,17 @@ def ssl_connect_argument(url: str, root_cert: Path | None = None) -> dict[str, o
     `verify-full` checks the certificate chain (against `root_cert` alone when given,
     otherwise the system CAs) and the host name; `require` encrypts without checking.
     """
+    argument = ssl_argument(url, root_cert)
+    return {} if argument is None else {"ssl": argument}
+
+
+def ssl_argument(
+    url: str, root_cert: Path | None = None
+) -> ssl.SSLContext | Literal["require"] | None:
+    """The value of asyncpg's `ssl` argument for the URL (see ssl_connect_argument)."""
     mode = database_ssl_mode(url)
     if mode == "verify-full":
-        return {"ssl": ssl.create_default_context(cafile=root_cert)}
+        return ssl.create_default_context(cafile=root_cert)
     if mode == "require":
-        return {"ssl": "require"}
-    return {}
+        return "require"
+    return None

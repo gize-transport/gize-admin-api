@@ -358,3 +358,62 @@ async def test_unavailable_database_is_logged_with_its_sqlstate(
     lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
     (line,) = [entry for entry in lines if entry["event"] == "database_unavailable"]
     assert line["sqlstate"] == "40P01"
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError("app"), TimeoutError("app")])
+async def test_app_errors_inside_the_orm_are_not_unavailable(error: Exception) -> None:
+    """ORM callbacks run inside SQLAlchemy's greenlet: their own errors are bugs (500)."""
+    from sqlalchemy.util import greenlet_spawn
+
+    from gize_api.core.db import is_database_unavailable
+
+    def app_code() -> None:
+        raise error
+
+    with pytest.raises(type(error)) as raised:
+        await greenlet_spawn(app_code)
+    assert not is_database_unavailable(raised.value)
+
+
+async def test_a_hung_server_timeout_is_unavailable(database: DatabaseUrls) -> None:
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from gize_api.core.db import async_url, is_database_unavailable
+
+    engine = create_async_engine(
+        async_url(database.app), poolclass=NullPool, connect_args={"command_timeout": 0.2}
+    )
+    try:
+        async with engine.connect() as conn:
+            with pytest.raises(TimeoutError) as raised:
+                await conn.execute(text("SELECT pg_sleep(2)"))
+        assert is_database_unavailable(raised.value)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize(("broken", "reported"), [("password", True), ("statement", False)])
+async def test_misconfiguration_is_reported_to_sentry_but_outages_are_not(
+    make_settings: SettingsFactory,
+    database: DatabaseUrls,
+    monkeypatch: pytest.MonkeyPatch,
+    broken: str,
+    reported: bool,
+) -> None:
+    """A wrong password or database name will not fix itself: someone must be told."""
+    reports: list[str] = []
+    monkeypatch.setattr(
+        "gize_api.core.errors.report_exception",
+        lambda exc, **_: reports.append(type(exc).__name__),
+    )
+    url = database.app.replace("gize-app-test", "wrong") if broken == "password" else database.app
+    app = create_app(make_settings(database_url=url))
+
+    @app.get("/_test/db")
+    async def db(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
+        await session.execute(text("DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '57014'; END $$"))
+
+    async with app.router.lifespan_context(app), _client(app) as client:
+        assert (await client.get("/_test/db")).status_code == 503
+    assert bool(reports) is reported

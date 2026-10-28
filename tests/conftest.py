@@ -2,15 +2,12 @@
 
 import asyncio
 import contextlib
-import fcntl
 import os
 import secrets
 import socket
-import tempfile
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import asyncpg
 import pytest
@@ -28,7 +25,9 @@ from tests.support import (
     DatabaseUrls,
     SettingsFactory,
     database_urls,
+    hold_server_lock,
     run_migrations,
+    server_lock_path,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -107,14 +106,8 @@ def _test_server_lock() -> Iterator[None]:
     Roles, their memberships and settings are server-wide, so database tests of two runs
     would see each other's changes; a second run waits here until the first has finished.
     """
-    server = urlsplit(_admin_url()).netloc.rsplit("@", 1)[-1].replace(":", "_")
-    path = Path(tempfile.gettempdir()) / f"gize-test-postgres-{server}.lock"
-    with path.open("w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    with hold_server_lock(server_lock_path(_admin_url())):
+        yield
 
 
 async def _create_and_bootstrap(admin_url: str, urls: DatabaseUrls) -> None:

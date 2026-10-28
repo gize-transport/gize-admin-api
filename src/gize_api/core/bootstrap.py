@@ -4,8 +4,10 @@
 
 Reads BOOTSTRAP_ADMIN_DATABASE_URL (the `postgres` role), DATABASE_URL (gize_app) and
 MIGRATOR_DATABASE_URL (gize_migrator); role passwords are taken from the last two, so they
-can never disagree. `--create-supabase-roles` creates stand-ins for Supabase's `anon`,
-`authenticated` and `service_role` (local and test databases only).
+can never disagree. The admin connection to any server but this machine must use
+`ssl=verify-full`, against DATABASE_SSL_ROOT_CERT when set. `--create-supabase-roles`
+creates stand-ins for Supabase's `anon`, `authenticated` and `service_role` (local and
+test databases only).
 
 Result:
 - `gize_migrator` owns schema `gize` and runs migrations. Through default privileges,
@@ -18,9 +20,11 @@ Result:
 - Role settings: gize_app statement 5 s, lock 3 s, idle in transaction 10 s, search_path
   `gize`; gize_migrator lock 5 s, statement 5 min.
 
-Re-running checks for drift and stops, naming it, rather than accepting it: memberships,
-CREATE on the schema or database, TRUNCATE/REFERENCES/TRIGGER/MAINTAIN on a table, or
-objects owned by gize_app.
+Re-running resets the roles' settings (role-wide and for this database) and checks for
+drift, stopping and naming it rather than accepting it: memberships either way (our roles
+in others, or others in ours), settings for other databases, CREATE on schemas `gize` and
+`public` or the database, TRUNCATE/REFERENCES/TRIGGER/MAINTAIN on a table, or objects
+owned by gize_app.
 
 The admin is made a member of gize_migrator only for the run (to create the schema for it
 and set its default privileges); the membership is revoked at the end. Postgres 16+ leaves
@@ -39,10 +43,16 @@ import hashlib
 import hmac
 import os
 import secrets
+import ssl
 import sys
-from urllib.parse import unquote, urlsplit
+from pathlib import Path
+from typing import Literal
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import asyncpg
+
+from gize_api.core.config import database_ssl_mode, is_database_url
+from gize_api.core.db import ssl_argument
 
 APP_ROLE = "gize_app"
 MIGRATOR_ROLE = "gize_migrator"
@@ -67,7 +77,11 @@ _ROLE_SETTINGS = {
     MIGRATOR_ROLE: {"lock_timeout": "5s", "statement_timeout": "5min"},
 }
 # Table privileges beyond data access; gize_app must hold none of them on any object.
-_FORBIDDEN_TABLE_PRIVILEGES = ("TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN")
+_FORBIDDEN_TABLE_PRIVILEGES = ("TRUNCATE", "REFERENCES", "TRIGGER")
+_MAINTAIN_SINCE_VERSION = 170000  # the MAINTAIN privilege exists from Postgres 17
+# Schemas where gize_app must not create anything.
+_NO_CREATE_SCHEMAS = (SCHEMA, "public")
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _FORBIDDEN_ATTRIBUTES = (
     "rolsuper",
     "rolcreatedb",
@@ -102,14 +116,20 @@ def scram_verifier(password: str) -> str:
 
 
 async def bootstrap(
-    admin_url: str, app_url: str, migrator_url: str, *, create_supabase_roles: bool
+    admin_url: str,
+    app_url: str,
+    migrator_url: str,
+    *,
+    create_supabase_roles: bool,
+    ssl_root_cert: Path | None = None,
 ) -> None:
     """Create or update roles, schema and grants in the database `admin_url` points at."""
     passwords = {
         APP_ROLE: _password(app_url, APP_ROLE, "DATABASE_URL"),
         MIGRATOR_ROLE: _password(migrator_url, MIGRATOR_ROLE, "MIGRATOR_DATABASE_URL"),
     }
-    conn = await asyncpg.connect(admin_url, timeout=10)
+    dsn, ssl_argument = _admin_connection_arguments(admin_url, ssl_root_cert)
+    conn = await asyncpg.connect(dsn, timeout=10, ssl=ssl_argument)
     try:
         await conn.execute(f"SET lock_timeout = {_quote(ADMIN_LOCK_TIMEOUT)}")
         await conn.execute(f"SET statement_timeout = {_quote(ADMIN_STATEMENT_TIMEOUT)}")
@@ -123,11 +143,12 @@ async def bootstrap(
                 await _create_role(conn, role, login=True)
                 await _set_password(conn, role, password)
                 await _check_attributes(conn, role)
-                await conn.execute(f'ALTER ROLE "{role}" RESET ALL')  # only ours remain
+                await _reset_settings(conn, role)
                 for name, value in _ROLE_SETTINGS[role].items():
                     await conn.execute(f'ALTER ROLE "{role}" SET {name} = {_quote(value)}')
             await conn.execute(f'ALTER ROLE "{APP_ROLE}" NOINHERIT')
             await _grant_schema(conn)
+            await _check_members(conn)
             await _check_app_privileges(conn)
     except asyncpg.exceptions.LockNotAvailableError:
         raise BootstrapError(
@@ -135,6 +156,28 @@ async def bootstrap(
         ) from None
     finally:
         await conn.close()
+
+
+def _admin_connection_arguments(
+    url: str, ssl_root_cert: Path | None
+) -> tuple[str, ssl.SSLContext | Literal["require"] | None]:
+    """asyncpg's DSN (without our `ssl` option) and `ssl` argument for the admin URL.
+
+    The admin can create roles and rewrite grants: off this machine, its session must be
+    verified (`ssl=verify-full`), never merely encrypted or left to asyncpg's default.
+    """
+    if not is_database_url(url):
+        raise BootstrapError(
+            "BOOTSTRAP_ADMIN_DATABASE_URL must be"
+            " postgresql://user:password@host[:port]/database[?ssl=verify-full]"
+        )
+    parts = urlsplit(url)
+    mode = database_ssl_mode(url)
+    if parts.hostname not in _LOOPBACK_HOSTS and mode != "verify-full":
+        raise BootstrapError(
+            "BOOTSTRAP_ADMIN_DATABASE_URL must set ssl=verify-full off this machine"
+        )
+    return urlunsplit(parts._replace(query="")), ssl_argument(url, ssl_root_cert)
 
 
 def _password(url: str, expected_role: str, variable: str) -> str:
@@ -179,10 +222,58 @@ async def _check_attributes(conn: asyncpg.Connection, role: str) -> None:
         raise BootstrapError(f"{role} must not be a member of {names}; fix it by hand first")
 
 
+async def _reset_settings(conn: asyncpg.Connection, role: str) -> None:
+    """Drop the role's settings, role-wide and for this database (those take precedence; a
+    role may set its own), and refuse settings for other databases on the server."""
+    database = await conn.fetchval("SELECT format('%I', current_database())")
+    await conn.execute(f'ALTER ROLE "{role}" RESET ALL')
+    await conn.execute(f'ALTER ROLE "{role}" IN DATABASE {database} RESET ALL')
+    other = await conn.fetchval(
+        "SELECT d.datname FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase"
+        " WHERE s.setrole = $1::regrole AND d.datname <> current_database() LIMIT 1",
+        role,
+    )
+    if other is not None:
+        raise BootstrapError(
+            f"{role} has settings for another database ({other}); remove them with"
+            f" ALTER ROLE {role} IN DATABASE <name> RESET ALL"
+        )
+
+
+async def _check_members(conn: asyncpg.Connection) -> None:
+    """No role may act as ours. The admin may keep ADMIN OPTION only (Postgres 16+ gives a
+    CREATEROLE role that for roles it creates): it manages the roles without acting as them.
+    """
+    member = await conn.fetchrow(
+        "SELECT m.member::regrole::text AS member, m.roleid::regrole::text AS role"
+        " FROM pg_auth_members m WHERE m.roleid IN ($1::regrole, $2::regrole)"
+        " AND NOT (m.member = current_user::regrole AND NOT m.set_option"
+        " AND NOT m.inherit_option) ORDER BY 1, 2 LIMIT 1",
+        APP_ROLE,
+        MIGRATOR_ROLE,
+    )
+    if member is not None:
+        raise BootstrapError(
+            f"{member['member']} must not be a member of {member['role']}"
+            " (ADMIN OPTION alone is allowed for the admin); fix it by hand first"
+        )
+
+
+def _table_privileges_to_refuse(server_version: int) -> tuple[str, ...]:
+    if server_version >= _MAINTAIN_SINCE_VERSION:
+        return (*_FORBIDDEN_TABLE_PRIVILEGES, "MAINTAIN")
+    return _FORBIDDEN_TABLE_PRIVILEGES
+
+
 async def _check_app_privileges(conn: asyncpg.Connection) -> None:
     """Fail on anything that lets gize_app change structure; the run is rolled back."""
-    if await conn.fetchval("SELECT has_schema_privilege($1, $2, 'CREATE')", APP_ROLE, SCHEMA):
-        raise BootstrapError(f"{APP_ROLE} must not have CREATE on schema {SCHEMA}")
+    for schema in _NO_CREATE_SCHEMAS:
+        if await conn.fetchval(
+            "SELECT to_regnamespace($2) IS NOT NULL AND has_schema_privilege($1, $2, 'CREATE')",
+            APP_ROLE,
+            schema,
+        ):
+            raise BootstrapError(f"{APP_ROLE} must not have CREATE on schema {schema}")
     if await conn.fetchval(
         "SELECT has_database_privilege($1, current_database(), 'CREATE')", APP_ROLE
     ):
@@ -205,7 +296,7 @@ async def _check_app_privileges(conn: asyncpg.Connection) -> None:
         " AND has_table_privilege($1, c.oid, p.privilege) LIMIT 1",
         APP_ROLE,
         SCHEMA,
-        list(_FORBIDDEN_TABLE_PRIVILEGES),
+        list(_table_privileges_to_refuse(int(await conn.fetchval("SHOW server_version_num")))),
     )
     if extra is not None:
         raise BootstrapError(f"{APP_ROLE} must not have {extra['privilege']} on {extra['name']}")
@@ -267,6 +358,9 @@ def main() -> int:
                 os.environ["DATABASE_URL"],
                 os.environ["MIGRATOR_DATABASE_URL"],
                 create_supabase_roles=args.create_supabase_roles,
+                ssl_root_cert=Path(root)
+                if (root := os.environ.get("DATABASE_SSL_ROOT_CERT"))
+                else None,
             )
         )
     except BootstrapError as exc:

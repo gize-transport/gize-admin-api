@@ -243,15 +243,14 @@ def database_tls_problem(
 ) -> str | None:
     """What is wrong with a database connection's TLS for `app_env`, or None.
 
-    `require` encrypts but accepts any certificate, so production must verify it
+    `require` encrypts but accepts any certificate, so staging and production verify it
     (`verify-full`: the certificate chains to a trusted CA and matches the host name).
+    Staging verifies too, so a certificate problem shows up there, not at launch.
     """
     if root_cert and ssl_mode != "verify-full":
         return "needs ssl=verify-full when DATABASE_SSL_ROOT_CERT is set"
-    if app_env is Environment.PRODUCTION and ssl_mode != "verify-full":
-        return "must set ssl=verify-full in production"
-    if app_env is Environment.STAGING and ssl_mode not in _DATABASE_SSL_MODES:
-        return "must set ssl=require or ssl=verify-full outside local"
+    if app_env in {Environment.STAGING, Environment.PRODUCTION} and ssl_mode != "verify-full":
+        return "must set ssl=verify-full in staging and production"
     return None
 
 

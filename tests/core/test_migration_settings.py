@@ -35,10 +35,10 @@ def _load(**environ: str) -> object:
         ),
         ({"MIGRATOR_DATABASE_URL": URL}, "set APP_ENV"),
         ({"APP_ENV": "prod", "MIGRATOR_DATABASE_URL": URL}, "set APP_ENV"),
-        ({"APP_ENV": "staging", "MIGRATOR_DATABASE_URL": URL}, "ssl=require or ssl=verify-full"),
+        ({"APP_ENV": "staging", "MIGRATOR_DATABASE_URL": URL}, "ssl=verify-full in staging"),
         (
             {"APP_ENV": "production", "MIGRATOR_DATABASE_URL": URL + "?ssl=require"},
-            "ssl=verify-full in production",
+            "ssl=verify-full in staging and production",
         ),
         (
             {

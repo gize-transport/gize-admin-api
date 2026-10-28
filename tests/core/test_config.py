@@ -384,14 +384,14 @@ def test_database_url_requires_tls_outside_local(
     assert load_settings().database_ssl == "verify-full"
 
 
-def test_production_requires_certificate_verification(clean_env: pytest.MonkeyPatch) -> None:
-    _set(
-        clean_env, APP_ENV="production", DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=require"
-    )
-    with pytest.raises(ConfigError, match="ssl=verify-full in production"):
+@pytest.mark.parametrize("app_env", ["staging", "production"])
+def test_certificate_verification_outside_local(
+    clean_env: pytest.MonkeyPatch, app_env: str
+) -> None:
+    """Staging verifies like production, so a certificate problem shows up before launch."""
+    _set(clean_env, APP_ENV=app_env, DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=require")
+    with pytest.raises(ConfigError, match="ssl=verify-full in staging and production"):
         load_settings()
-    _set(clean_env, APP_ENV="staging", DATABASE_URL="postgresql://gize_app:pw@db/gize?ssl=require")
-    assert load_settings().database_ssl == "require"
 
 
 def test_database_root_certificate(clean_env: pytest.MonkeyPatch) -> None:

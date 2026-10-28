@@ -1,12 +1,19 @@
 """Shared test types and constants (import from here, not from conftest)."""
 
 import base64
+import contextlib
 import dataclasses
+import fcntl
 import json
-from collections.abc import Callable
+import socket
+import sys
+import tempfile
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+import pytest
 from alembic import command
 from alembic.config import Config
 
@@ -102,3 +109,41 @@ def run_migrations(migrator_url: str, target: str, *, downgrade: bool = False) -
         command.downgrade(config, target)
     else:
         command.upgrade(config, target)
+
+
+TEST_SERVER_LOCK_TIMEOUT_SECONDS = 600.0
+
+
+def server_lock_path(admin_url: str) -> Path:
+    """One lock file per test server, whatever name the URL gives the host."""
+    parts = urlsplit(admin_url)
+    host = socket.gethostbyname(parts.hostname or "127.0.0.1")
+    return Path(tempfile.gettempdir()) / f"gize-test-postgres-{host}_{parts.port or 5432}.lock"
+
+
+@contextlib.contextmanager
+def hold_server_lock(
+    path: Path, timeout_seconds: float = TEST_SERVER_LOCK_TIMEOUT_SECONDS
+) -> Iterator[None]:
+    """Hold the lock, waiting for another run to finish (bounded, and saying so)."""
+    with path.open("w") as lock_file:
+        deadline = time.monotonic() + timeout_seconds
+        announced = False
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    pytest.fail(
+                        f"another test run has held {path} for {timeout_seconds:.0f} s;"
+                        " wait for it to finish or stop it"
+                    )
+                if not announced:
+                    print(f"waiting for another test run to release {path}", file=sys.__stderr__)
+                    announced = True
+                time.sleep(0.2)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)

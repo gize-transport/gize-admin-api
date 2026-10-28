@@ -100,7 +100,7 @@ def test_migration_settings_are_validated(scratch_database: DatabaseUrls) -> Non
     with pytest.raises(SystemExit, match="must connect as gize_migrator"):
         run_migrations(scratch_database.app, "head")
     config = alembic_config(scratch_database.migrator, app_env="staging")
-    with pytest.raises(SystemExit, match="ssl=require"):
+    with pytest.raises(SystemExit, match="ssl=verify-full"):
         command.upgrade(config, "head")
 
 

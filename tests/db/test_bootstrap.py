@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 from collections.abc import AsyncIterator
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import asyncpg
@@ -142,6 +143,26 @@ async def _bootstrap(database: DatabaseUrls, admin_url: str | None = None) -> No
             "GRANT pg_read_all_data TO gize_migrator",
             "REVOKE pg_read_all_data FROM gize_migrator",
             "gize_migrator must not be a member of pg_read_all_data",
+        ),
+        (
+            "GRANT gize_migrator TO authenticated",
+            "REVOKE gize_migrator FROM authenticated",
+            "authenticated must not be a member of gize_migrator",
+        ),
+        (
+            "GRANT gize_app TO anon",
+            "REVOKE gize_app FROM anon",
+            "anon must not be a member of gize_app",
+        ),
+        (
+            "GRANT CREATE ON SCHEMA public TO gize_app",
+            "REVOKE CREATE ON SCHEMA public FROM gize_app",
+            "gize_app must not have CREATE on schema public",
+        ),
+        (
+            "ALTER ROLE gize_app IN DATABASE postgres SET work_mem = '64MB'",
+            "ALTER ROLE gize_app IN DATABASE postgres RESET ALL",
+            "gize_app has settings for another database",
         ),
         (
             "GRANT CREATE ON SCHEMA gize TO gize_app",
@@ -315,3 +336,60 @@ async def test_rerun_replaces_changed_role_settings(database: DatabaseUrls) -> N
         "search_path=gize",
         "statement_timeout=5s",
     ]
+
+
+async def test_rerun_replaces_settings_for_this_database(database: DatabaseUrls) -> None:
+    """Per-database role settings win over role-wide ones, and a role may set its own."""
+    app = await asyncpg.connect(database.app, timeout=3)
+    try:
+        await app.execute(
+            f'ALTER ROLE gize_app IN DATABASE "{database.name}" SET search_path = public, gize'
+        )
+    finally:
+        await app.close()
+    await _bootstrap(database)
+    app = await asyncpg.connect(database.app, timeout=3)
+    try:
+        assert await app.fetchval("SHOW search_path") == "gize"
+    finally:
+        await app.close()
+
+
+@pytest.mark.parametrize("host", ["db.example.com", "10.0.0.5"])
+async def test_admin_connection_to_a_remote_server_must_verify_tls(
+    database: DatabaseUrls, host: str
+) -> None:
+    remote = f"postgresql://postgres:pw@{host}:5432/postgres"
+    for url in (remote, remote + "?ssl=require"):
+        with pytest.raises(BootstrapError, match="ssl=verify-full"):
+            await bootstrap(url, database.app, database.migrator, create_supabase_roles=False)
+
+
+def test_admin_connect_arguments() -> None:
+    import ssl
+
+    import certifi
+
+    from gize_api.core.bootstrap import _admin_connection_arguments
+
+    dsn, ssl_argument = _admin_connection_arguments(
+        "postgresql://postgres:pw@db.example.com/postgres?ssl=verify-full", Path(certifi.where())
+    )
+    assert dsn == "postgresql://postgres:pw@db.example.com/postgres"
+    assert isinstance(ssl_argument, ssl.SSLContext)
+    assert ssl_argument.get_ca_certs()
+    assert _admin_connection_arguments("postgresql://p:pw@localhost/x", None) == (
+        "postgresql://p:pw@localhost/x",
+        None,
+    )
+    with pytest.raises(BootstrapError, match="must be postgresql://"):
+        _admin_connection_arguments("mysql://p:pw@localhost/x", None)
+
+
+async def test_drift_check_works_before_postgres_17(
+    database: DatabaseUrls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gize_api.core import bootstrap as module
+
+    assert module._table_privileges_to_refuse(160004) == ("TRUNCATE", "REFERENCES", "TRIGGER")
+    assert "MAINTAIN" in module._table_privileges_to_refuse(170011)
