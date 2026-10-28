@@ -112,7 +112,11 @@ addopts = [
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # Arq 0.28 closes its Redis pool with redis-py's deprecated close(); not our call.
+    "ignore:Call to deprecated close:DeprecationWarning:arq.worker",
+]
 xfail_strict = true
 
 [tool.coverage.run]

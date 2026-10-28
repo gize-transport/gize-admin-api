@@ -8,9 +8,9 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 import structlog
+from arq.connections import ArqRedis
 from fastapi import FastAPI
 from fastapi.telemetry import TelemetryConfig
-from redis.asyncio import Redis
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
@@ -122,7 +122,7 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
         # A startup failure is logged here as type and frames; uvicorn's own report of it
         # (formatted traceback text) is suppressed by the logging filter.
         try:
-            redis = Redis.from_url(
+            redis = ArqRedis.from_url(  # a Redis client that can also enqueue jobs
                 settings.redis_url.get_secret_value(),
                 socket_timeout=REDIS_TIMEOUT_SECONDS,
                 socket_connect_timeout=REDIS_TIMEOUT_SECONDS,

@@ -37,7 +37,7 @@ import httpx
 import structlog
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
-from gize_api.core.db import database_transaction_open
+from gize_api.core.db import OpenTransactionError, database_transaction_open
 from gize_api.core.telemetry import Telemetry
 
 CONNECT_TIMEOUT_SECONDS = 3.0
@@ -49,6 +49,18 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 RETRY_STATUSES = frozenset({502, 503, 504})
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
+
+__all__ = [
+    "BlockedDestinationError",
+    "OpenTransactionError",
+    "OutboundClient",
+    "OutboundError",
+    "OutboundResponse",
+    "OutboundTimeoutError",
+    "OutboundUnavailableError",
+    "ResponseTooLargeError",
+    "is_public_address",
+]
 
 logger = structlog.get_logger("gize_api.http")
 
@@ -71,10 +83,6 @@ class OutboundUnavailableError(OutboundError):
 
 class ResponseTooLargeError(OutboundError):
     """The response exceeded MAX_RESPONSE_BYTES."""
-
-
-class OpenTransactionError(RuntimeError):
-    """A programming error: an outside call was made inside a database transaction."""
 
 
 @dataclass(frozen=True)

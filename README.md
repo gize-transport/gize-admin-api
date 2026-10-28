@@ -29,16 +29,17 @@ uv run pytest                         # tests + coverage gate
 | Install / update the environment | `uv sync` |
 | Start / stop local services | `docker compose up -d --wait` / `docker compose down` |
 | Run the API locally | `uv run --env-file .env uvicorn --factory gize_api.main:create_app --reload` |
+| Run the background worker locally | `uv run --env-file .env python -m gize_api.worker` |
 | Tests with coverage (85% overall) | `uv run pytest` |
 | Services coverage gate (90%), after tests | `uv run python -m scripts.check_service_coverage` |
 | Lint, format check, types | `uv run ruff check . && uv run ruff format --check . && uv run mypy` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
 | Coverage must not drop, after tests | `uv run python -m scripts.check_coverage_baseline` (`--update` raises the baseline) |
 | Apply / undo migrations | `uv run --env-file .env alembic upgrade head` / `… alembic downgrade -1` |
-| New migration | `uv run --env-file .env alembic revision --autogenerate --rev-id 0002 -m "short name"` |
+| New migration | `uv run --env-file .env alembic revision --autogenerate --rev-id 0003 -m "short name"` |
 | Dependency audit | `uv export --frozen --all-groups --no-emit-project --format requirements-txt \| uv run pip-audit --strict --disable-pip --require-hashes -r /dev/stdin` |
 
-Commands for the background worker and the OpenAPI export are added by the tickets that introduce them (GZ-008, GZ-015).
+The OpenAPI export command arrives with GZ-015.
 
 ## Configuration
 
@@ -113,10 +114,21 @@ docker build -t gize-admin-api .
 docker run --rm -p 8000:8000 -e APP_ENV=local \
   -e REDIS_URL=redis://host.docker.internal:6379/0 gize-admin-api   # api (default)
 # On Linux, also pass --add-host=host.docker.internal:host-gateway
-docker run --rm gize-admin-api worker                # Arq worker (from GZ-008)
+docker run --rm -e APP_ENV=local -e DATABASE_URL=… \
+  -e REDIS_URL=redis://host.docker.internal:6379/0 gize-admin-api worker   # background worker
 ```
 
+The worker runs as `python -m gize_api.worker`, never Arq's own CLI, which would replace the JSON logging with plain text that prints job arguments. On SIGTERM it stops taking jobs, gives running ones 25 s and re-queues the rest.
+
 The container runs as an unprivileged user (uid 10001). The API finishes in-flight requests for up to 30 s after SIGTERM, so give the container a stop timeout of at least 35 s on whichever host runs it (Docker's default is 10 s: `docker stop -t 35`, or `stop_grace_period: 35s` in Compose).
+
+## Building blocks for features
+
+- **Lists:** `core/pagination.py`. `?limit=&cursor=` (limit 1–100, default 25), `{items, next_cursor}`; ordered by `(created_at, id)`, so list tables need an index on those two columns. A tampered cursor is `422 INVALID_CURSOR`.
+- **Side-effecting POSTs:** `core/idempotency.py`. The `Idempotency-Key` header (a UUID) is required (`428 IDEMPOTENCY_KEY_REQUIRED`). The service claims the key and records the response inside its own transaction block, so a retry replays the stored response with `Idempotent-Replayed: true`. The same key with a different body is `422 IDEMPOTENCY_KEY_MISMATCH`; while the first request is still running it is `409 IDEMPOTENCY_IN_PROGRESS`. Keys live 24 h; the worker deletes expired ones hourly.
+- **Calling outside services:** `core/http.py` `OutboundClient`, never `httpx` directly. It allows https only, to the hosts the integration allows, at public addresses only (checked, then connected to). The whole call takes at most 10 s; responses are capped at 1 MB; only safe methods are retried; no trace headers are sent.
+- **Background jobs:** `core/jobs.py` `enqueue(pool, "job_name", *ids, job_id=…)`, after the transaction commits. A repeated job ID is refused for 24 h. Jobs take IDs, never personal data.
+- **Never** call out or enqueue inside `async with session.begin():`: both raise `OpenTransactionError`.
 
 ## Health checks
 

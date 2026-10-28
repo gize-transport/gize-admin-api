@@ -24,7 +24,8 @@ case "${1:-api}" in
       --timeout-graceful-shutdown 30
     ;;
   worker)
-    exec arq gize_api.worker.WorkerSettings
+    # Our own runner, not Arq's CLI (which would replace the JSON logging).
+    exec python -m gize_api.worker
     ;;
   migrate)
     # The release step: runs as gize_migrator (MIGRATOR_DATABASE_URL), before the new API starts.

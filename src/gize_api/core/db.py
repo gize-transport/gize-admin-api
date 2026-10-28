@@ -109,6 +109,10 @@ _open_transactions: contextvars.ContextVar[int] = contextvars.ContextVar(
 )
 
 
+class OpenTransactionError(RuntimeError):
+    """A programming error: an outside call or enqueue inside a database transaction."""
+
+
 def database_transaction_open() -> bool:
     """True inside `async with session.begin():` (any GizeSession) in the current context."""
     return _open_transactions.get() > 0

@@ -235,6 +235,16 @@ class Telemetry:
             description="Duration of calls to outside services",
         )
 
+    def record_job(self, job: str, outcome: str, seconds: float) -> None:
+        """One run of a background job: name, outcome and duration."""
+        self._job_duration.record(seconds, {"job": job, "outcome": outcome})
+
+    @functools.cached_property
+    def _job_duration(self) -> Histogram:
+        return self.meter_provider.get_meter("gize_api.worker").create_histogram(
+            "gize.job.duration", unit="s", description="Duration of background jobs by outcome"
+        )
+
     def record_health_probe(self, endpoint: str, status: int) -> None:
         """Count a probe (`live` or `ready`): probes are neither traced nor access-logged."""
         self._health_probes.add(1, {"endpoint": endpoint, "status": status})

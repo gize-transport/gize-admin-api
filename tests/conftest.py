@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from gize_api.core.bootstrap import bootstrap
 from gize_api.core.config import Settings
 from gize_api.core.db import GizeSession, create_engine, create_sessionmaker, get_session
+from gize_api.core.rls import row_level_security_statements
 from gize_api.main import GizeAPI, create_app
 from tests.support import (
     SETTINGS_ENV_VARS,
@@ -242,3 +243,24 @@ async def committed_sessionmaker(
                 await migrator.execute(f"TRUNCATE {names}")  # names quoted by format('%I')
         finally:
             await migrator.close()
+
+
+@pytest.fixture
+async def widgets_table(database: DatabaseUrls) -> AsyncIterator[None]:
+    """The table for the test-only Widget model (tests/db/widgets.py)."""
+    conn = await asyncpg.connect(database.migrator, timeout=3)
+    try:
+        await conn.execute(
+            "CREATE TABLE gize.test_widgets ("
+            " id uuid PRIMARY KEY DEFAULT gen_random_uuid(),"
+            " label varchar(50) NOT NULL,"
+            " created_at timestamptz NOT NULL DEFAULT now(),"
+            " updated_at timestamptz NOT NULL DEFAULT now(),"
+            " deleted_at timestamptz)"
+        )
+        for statement in row_level_security_statements("test_widgets"):
+            await conn.execute(statement)
+        yield
+    finally:
+        await conn.execute("DROP TABLE IF EXISTS gize.test_widgets")
+        await conn.close()

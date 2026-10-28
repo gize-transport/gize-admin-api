@@ -15,7 +15,8 @@ from pathlib import Path
 LIVE_URL = "http://127.0.0.1:8000/health/live"
 TIMEOUT_SECONDS = 2.0
 _PROC = Path("/proc")
-_COMMANDS_WITHOUT_HTTP = frozenset({"arq", "alembic"})  # the worker and migrate commands
+# The worker (`python -m gize_api.worker`, or Arq's CLI) and migrate commands.
+_COMMANDS_WITHOUT_HTTP = frozenset({"gize_api.worker", "arq", "alembic"})
 
 
 def runs_without_http(proc: Path = _PROC) -> bool:

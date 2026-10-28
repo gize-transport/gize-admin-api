@@ -59,6 +59,7 @@ def _cmdline(tmp_path: Path, *processes: tuple[str, ...]) -> Path:
             True,
         ),
         ([("python3", "/opt/venv/bin/alembic", "upgrade", "head")], True),
+        ([("python", "-m", "gize_api.worker")], True),  # the image's worker command
         ([], False),  # nothing readable: probe rather than assume
     ],
 )
