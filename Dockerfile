@@ -36,6 +36,9 @@ COPY migrations ./migrations
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 USER 10001:10001
 EXPOSE 8000
+# Liveness of the API process (/health/live); a no-op in worker and migrate containers.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["python", "-m", "gize_api.healthcheck"]
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["api"]

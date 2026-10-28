@@ -56,7 +56,8 @@ async def test_app_role_reads_and_writes_under_row_level_security(
     assert widget.created_at.tzinfo is not None
     assert widget.updated_at >= widget.created_at
     assert widget.deleted_at is None
-    rows = (await db_session.execute(select(Widget))).scalars().all()
+    async with db_session.begin():
+        rows = (await db_session.execute(select(Widget))).scalars().all()
     assert [row.label for row in rows] == ["first"]
 
 
@@ -94,12 +95,13 @@ class WidgetFactory(Factory[Widget]):
 @pytest.mark.usefixtures("widgets_table")
 async def test_factory_creates_valid_rows_with_overrides(db_session: AsyncSession) -> None:
     factory = WidgetFactory()
-    first = await factory.create(db_session)
-    second = await factory.create(db_session, label="chosen")
+    async with db_session.begin():
+        first = await factory.create(db_session)
+        second = await factory.create(db_session, label="chosen")
+        many = await factory.create_batch(db_session, 3)
     assert isinstance(first.id, uuid.UUID)  # flushed: server defaults are loaded
     assert first.label != second.label
     assert second.label == "chosen"
-    many = await factory.create_batch(db_session, 3)
     assert len({widget.label for widget in many}) == 3
     with pytest.raises(TypeError):
         await factory.create(db_session, no_such_column="x")
@@ -112,13 +114,16 @@ async def test_soft_delete_filter(db_session: AsyncSession) -> None:
         db_session.add_all([kept, gone])
     async with db_session.begin():
         gone.deleted_at = datetime.now(UTC)
-    rows = (await db_session.execute(select(Widget).where(Widget.not_deleted()))).scalars().all()
+    async with db_session.begin():
+        query = select(Widget).where(Widget.not_deleted())
+        rows = (await db_session.execute(query)).scalars().all()
     assert [row.label for row in rows] == ["kept"]
 
 
 @pytest.mark.usefixtures("widgets_table")
 async def test_each_test_starts_clean(db_session: AsyncSession) -> None:
-    rows = (await db_session.execute(select(Widget))).scalars().all()
+    async with db_session.begin():
+        rows = (await db_session.execute(select(Widget))).scalars().all()
     assert rows == []
 
 

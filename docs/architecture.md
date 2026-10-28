@@ -107,7 +107,7 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 
 ## API conventions
 
-- All routes under `/v1/`. Plural nouns: `/v1/routes`, `/v1/routes/{id}/pickup-points`.
+- All routes under `/v1/`, except `/health/live` and `/health/ready` (for the load balancer; not in the OpenAPI contract). Plural nouns: `/v1/routes`, `/v1/routes/{id}/pickup-points`.
 - JSON, snake_case. Times in responses ISO 8601 UTC; the client converts to Africa/Addis_Ababa.
 - Errors: RFC 9457 `application/problem+json` with `type`, `title`, `status`, `code` (stable machine code, e.g. `ROUTE_FULL`), `request_id`. Validation errors list field names and reasons only.
 - Lists: cursor pagination – `?limit=25&cursor=…` (max 100); response `{ "items": [...], "next_cursor": "…" | null }`. Stable ordering (`created_at, id`).
@@ -115,6 +115,11 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 - `ETag`/`If-Match` optional later; for now use `updated_at` checks in services where concurrent edits matter.
 - Every response carries `X-Request-ID`.
 - OpenAPI is the contract; every endpoint has a summary, documented error codes and response schemas.
+- **Session rule** (`core/db.py`):
+  - Every use of a database session is inside `async with session.begin():`, one block per unit of work. Sessions are created with autobegin off, so a query outside a block fails at once; `session.add()` does not, so add objects inside the block that should save them.
+  - A dependency that reads (auth) uses its own short block, finishes it before the handler's service opens its own, and hands on plain values (IDs, role), not ORM objects. Role and ownership checks belong in the service's block, next to the write they protect.
+  - Every ORM query and `session.get()` refreshes rows the session already holds, so a later block never sees stale data (except inside `no_autoflush`, where a refresh would overwrite unsaved edits).
+  - Never hold a block open across an outbound call (SMS, HTTP).
 
 ## Configuration and environments
 

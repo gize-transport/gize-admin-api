@@ -8,7 +8,8 @@ Each domain model gets a subclass naming the model and its defaults:
         def defaults(self, sequence: int) -> dict[str, object]:
             return {"phone": f"+2519{sequence:08d}"}
 
-Rows are flushed (so server defaults such as `id` are loaded), never committed: inside
+Call `create` inside `async with session.begin():` (the session rule, core/db.py). Rows are
+flushed (so server defaults such as `id` are loaded), never committed by the factory: inside
 `db_session` they disappear with the test's transaction.
 """
 

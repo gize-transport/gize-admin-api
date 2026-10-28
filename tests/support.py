@@ -1,5 +1,6 @@
 """Shared test types and constants (import from here, not from conftest)."""
 
+import asyncio
 import base64
 import contextlib
 import dataclasses
@@ -150,3 +151,51 @@ def hold_server_lock(
             yield
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+class StallableProxy:
+    """A TCP proxy in front of a real server that can freeze mid-stream (a hung peer).
+
+    Unlike a listener that never answers, it lets connections open and work first, so
+    tests can reproduce a server that hangs on an already-established connection.
+    """
+
+    def __init__(self, host: str, port: int) -> None:
+        self._target = (host, port)
+        self._flowing = asyncio.Event()
+        self._flowing.set()
+        self._server: asyncio.Server | None = None
+        self._writers: list[asyncio.StreamWriter] = []
+
+    async def start(self) -> int:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        port: int = self._server.sockets[0].getsockname()[1]
+        return port
+
+    def freeze(self) -> None:
+        self._flowing.clear()
+
+    async def close(self) -> None:
+        self._flowing.set()
+        for writer in self._writers:
+            writer.close()
+        if self._server is not None:
+            self._server.close()
+
+    async def _handle(
+        self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
+    ) -> None:
+        await self._flowing.wait()
+        server_reader, server_writer = await asyncio.open_connection(*self._target)
+        self._writers += [client_writer, server_writer]
+        await asyncio.gather(
+            self._pump(client_reader, server_writer), self._pump(server_reader, client_writer)
+        )
+
+    async def _pump(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        with contextlib.suppress(OSError):
+            while data := await reader.read(65536):
+                await self._flowing.wait()
+                writer.write(data)
+                await writer.drain()
+        writer.close()
