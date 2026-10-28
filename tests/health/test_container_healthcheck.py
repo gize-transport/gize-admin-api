@@ -75,9 +75,12 @@ def test_missing_proc_means_probe(tmp_path: Path) -> None:
 
 def test_unreadable_processes_are_skipped(tmp_path: Path) -> None:
     """A process can end, or belong to another user, between listing and reading."""
-    proc = _cmdline(tmp_path, ("python3", "/opt/venv/bin/arq", "x"))
+    proc = _cmdline(tmp_path, ("python3", "/opt/venv/bin/uvicorn"))
     (proc / "7" / "cmdline").mkdir(parents=True)  # reading it fails (not a file)
-    assert runs_without_http(proc) is True
+    assert runs_without_http(proc) is False  # every entry was looked at; none is a worker
+    (proc / "8").mkdir()
+    (proc / "8" / "cmdline").write_bytes(b"python3\0/opt/venv/bin/arq\0")
+    assert runs_without_http(proc) is True  # whatever order the entries are listed in
 
 
 def test_healthy_when_live_answers(tmp_path: Path, server: tuple[str, type[_Handler]]) -> None:
