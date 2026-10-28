@@ -217,6 +217,19 @@ class Telemetry:
             description="Requests answered 503 because the database was unavailable",
         )
 
+    def record_dependency_unavailable(self, dependency: str, error: BaseException) -> None:
+        """Count a failed readiness check of `dependency` (a fixed name: postgres, redis)."""
+        self._dependency_unavailable.add(
+            1, {"dependency": dependency, "error.type": type(error).__name__}
+        )
+
+    @functools.cached_property
+    def _dependency_unavailable(self) -> Counter:
+        return self.meter_provider.get_meter("gize_api.health").create_counter(
+            "gize.dependency.unavailable",
+            description="Readiness checks that found a dependency unavailable",
+        )
+
     def instrument_redis(self, client: Redis) -> None:
         RedisInstrumentor.instrument_client(client, tracer_provider=self.tracer_provider)
 

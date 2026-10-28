@@ -118,6 +118,19 @@ docker run --rm gize-admin-api worker                # Arq worker (from GZ-008)
 
 The container runs as an unprivileged user (uid 10001). The API finishes in-flight requests for up to 30 s after SIGTERM, so give the container a stop timeout of at least 35 s on whichever host runs it (Docker's default is 10 s: `docker stop -t 35`, or `stop_grace_period: 35s` in Compose).
 
+## Health checks
+
+For the load balancer or orchestrator, without auth, never cached, not in the API schema:
+
+| Endpoint | 200 when | Otherwise |
+| --- | --- | --- |
+| `GET`/`HEAD /health/live` | the process is up (checks nothing else) | — |
+| `GET`/`HEAD /health/ready` | Postgres answers within 1 s | 503 problem+json, `Retry-After: 5` |
+
+Use `/health/live` to restart a stuck instance and `/health/ready` to route traffic. Redis is checked with every readiness check but never fails it: one shared Redis outage would otherwise take every instance out of rotation (engineering-standards.md, "Health"). Instead, a dependency that fails a check is logged at ERROR as `dependency_unavailable` (with `dependency` and the error type) and counted in `gize.dependency.unavailable`; alert on both. One result serves all probes for 1 s. Successful probes are left out of the access log.
+
+The image declares a Docker `HEALTHCHECK` on `/health/live` (every 10 s, 3 retries, 20 s start period); in the worker and migrate containers it reports healthy without probing.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`:

@@ -26,6 +26,8 @@ from gize_api.core.middleware import (
 from gize_api.core.request_id import RequestIdMiddleware
 from gize_api.core.sentry import configure_sentry
 from gize_api.core.telemetry import Telemetry, configure_telemetry
+from gize_api.health.readiness import Readiness
+from gize_api.health.router import router as health_router
 
 MAX_BODY_BYTES = 1024 * 1024
 
@@ -108,14 +110,15 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     app.cors_allowed_origins = settings.cors_allowed_origins
     install_exception_handlers(app)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
+    app.include_router(health_router)
     return app
 
 
 def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
     async def lifespan(app: GizeAPI) -> AsyncIterator[None]:
-        # No connection is made here: the API starts while Redis is down, and readiness
-        # (GZ-007) reports it.
+        # No connection is made here: the API starts while Postgres or Redis is down, and
+        # /health/ready reports it.
         # A startup failure is logged here as type and frames; uvicorn's own report of it
         # (formatted traceback text) is suppressed by the logging filter.
         try:
@@ -131,6 +134,7 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             app.state.engine = engine
             app.state.sessionmaker = create_sessionmaker(engine)
             telemetry = app.telemetry
+            app.state.readiness = Readiness(engine, redis, telemetry)
             if telemetry is not None:
                 telemetry.instrument_redis(redis)
                 telemetry.instrument_database(engine)
@@ -143,7 +147,7 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             yield
         finally:
             # Each step runs even if an earlier one fails.
-            del app.state.redis, app.state.engine, app.state.sessionmaker
+            del app.state.redis, app.state.engine, app.state.sessionmaker, app.state.readiness
             try:
                 await engine.dispose()
             except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged

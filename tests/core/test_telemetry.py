@@ -484,9 +484,12 @@ async def test_database_statements_traced_and_measured_without_text_leaks(
     app = _app(make_settings, database_url=database.app)
     app.telemetry = configure_telemetry(make_settings(), span_exporter=spans, metric_reader=metrics)
     async with app.router.lifespan_context(app), app.state.sessionmaker() as session:
-        await session.execute(text("SELECT :v").bindparams(bindparam("v", "0911223344")))
+        async with session.begin():
+            await session.execute(text("SELECT :v").bindparams(bindparam("v", "0911223344")))
+        failing = text("SELECT * FROM gize.no_such_table WHERE x = '0911223344'")
         with pytest.raises(sqlalchemy.exc.DBAPIError):
-            await session.execute(text("SELECT * FROM gize.no_such_table WHERE x = '0911223344'"))
+            async with session.begin():
+                await session.execute(failing)
     finished = [s for s in spans.get_finished_spans() if s.kind == trace.SpanKind.CLIENT]
     assert [s.name for s in finished] == ["SELECT", "SELECT"]
     ok, failed = finished
@@ -528,7 +531,8 @@ async def test_errors_before_a_statement_runs_are_handled(
     app.telemetry = configure_telemetry(make_settings(), span_exporter=spans)
     async with app.router.lifespan_context(app), app.state.sessionmaker() as session:
         with pytest.raises(sqlalchemy.exc.StatementError, match="bind parameter"):
-            await session.execute(text("SELECT :missing"))
+            async with session.begin():
+                await session.execute(text("SELECT :missing"))
     unreachable = _app(make_settings)  # connecting fails: no execution context at all
     unreachable.telemetry = configure_telemetry(make_settings(), span_exporter=spans)
     async with (
@@ -536,7 +540,8 @@ async def test_errors_before_a_statement_runs_are_handled(
         unreachable.state.sessionmaker() as session,
     ):
         with pytest.raises(OSError, match="Connect call failed"):
-            await session.execute(text("SELECT 1"))
+            async with session.begin():
+                await session.execute(text("SELECT 1"))
 
 
 async def test_a_statement_span_is_never_finished_twice(
@@ -600,7 +605,8 @@ async def test_unavailable_database_is_counted(
 
     @app.get("/_test/db")
     async def db(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
-        await session.execute(text("SELECT 1"))
+        async with session.begin():
+            await session.execute(text("SELECT 1"))
 
     async with app.router.lifespan_context(app), _client(app) as client:
         assert (await client.get("/_test/db")).status_code == 503

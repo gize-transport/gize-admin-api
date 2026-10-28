@@ -33,12 +33,14 @@ def _app(make_settings: SettingsFactory, database_url: str) -> FastAPI:
 
     @app.get("/_test/now")
     async def now(session: AsyncSession = Depends(get_session)) -> dict[str, str]:  # noqa: B008
-        value = await session.scalar(select(func.now()))
+        async with session.begin():
+            value = await session.scalar(select(func.now()))
         return {"now": str(value)}
 
     @app.get("/_test/slow")
     async def slow(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
-        await session.execute(select(func.pg_sleep(30)))
+        async with session.begin():
+            await session.execute(select(func.pg_sleep(30)))
 
     return app
 
@@ -121,7 +123,7 @@ async def test_lifespan_disposes_the_engine(
     app = _app(make_settings, database.app)
     async with app.router.lifespan_context(app):
         engine = app.state.engine
-        async with app.state.sessionmaker() as session:
+        async with app.state.sessionmaker() as session, session.begin():
             await session.scalar(select(func.now()))
         assert engine.pool.checkedin() == 1
     assert not hasattr(app.state, "engine")
@@ -190,7 +192,8 @@ async def test_other_database_errors_stay_500(
 
     @app.get("/_test/bad-sql")
     async def bad_sql(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
-        await session.execute(text("SELECT * FROM gize.no_such_table"))
+        async with session.begin():
+            await session.execute(text("SELECT * FROM gize.no_such_table"))
 
     @app.get("/_test/other-oserror")
     async def other_oserror() -> None:
@@ -324,8 +327,9 @@ def test_verify_full_engine_uses_the_root_certificate(make_settings: SettingsFac
 
 
 async def test_db_session_uses_the_apps_connection_settings(db_session: AsyncSession) -> None:
-    assert await db_session.scalar(text("SHOW application_name")) == "gize-api"
-    assert await db_session.scalar(text("SELECT current_user")) == "gize_app"
+    async with db_session.begin():
+        assert await db_session.scalar(text("SHOW application_name")) == "gize-api"
+        assert await db_session.scalar(text("SELECT current_user")) == "gize_app"
 
 
 async def test_app_with_db_session_serves_requests_from_the_test_transaction(
@@ -333,9 +337,12 @@ async def test_app_with_db_session_serves_requests_from_the_test_transaction(
 ) -> None:
     @app_with_db_session.get("/_test/marker")
     async def marker(session: AsyncSession = Depends(get_session)) -> dict[str, str]:  # noqa: B008
-        return {"value": str(await session.scalar(text("SELECT current_setting('gize.marker')")))}
+        async with session.begin():
+            value = await session.scalar(text("SELECT current_setting('gize.marker')"))
+        return {"value": str(value)}
 
-    await db_session.execute(text("SELECT set_config('gize.marker', 'from-the-test', true)"))
+    async with db_session.begin():
+        await db_session.execute(text("SELECT set_config('gize.marker', 'from-the-test', true)"))
     async with _client(app_with_db_session) as client:
         response = await client.get("/_test/marker")
     assert response.json() == {"value": "from-the-test"}
@@ -350,7 +357,10 @@ async def test_unavailable_database_is_logged_with_its_sqlstate(
 
     @app.get("/_test/deadlock")
     async def deadlock(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
-        await session.execute(text("DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '40P01'; END $$"))
+        async with session.begin():
+            await session.execute(
+                text("DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '40P01'; END $$")
+            )
 
     async with app.router.lifespan_context(app), _client(app) as client:
         response = await client.get("/_test/deadlock")
@@ -414,7 +424,10 @@ async def test_misconfiguration_is_reported_to_sentry_but_outages_are_not(
 
     @app.get("/_test/db")
     async def db(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
-        await session.execute(text("DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '57014'; END $$"))
+        async with session.begin():
+            await session.execute(
+                text("DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '57014'; END $$")
+            )
 
     async with app.router.lifespan_context(app), _client(app) as client:
         for _ in range(3):  # a sustained misconfiguration is reported once, not per request

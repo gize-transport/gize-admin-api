@@ -258,8 +258,14 @@ def _log_warning(
     )
 
 
+# Load-balancer probes, every few seconds per instance: logged only when they fail.
+QUIET_ROUTES = frozenset({"/health/live", "/health/ready"})
+
+
 class AccessLogMiddleware:
     """One `request` line per HTTP request: method, route template, status, duration.
+
+    Successful health probes (QUIET_ROUTES) are not logged; failed ones are.
 
     The route template (`/v1/riders/{rider_id}`) is logged, never the raw path or query.
     5xx lines are errors. The staff ID set during the request appears here, and is cleared
@@ -287,14 +293,16 @@ class AccessLogMiddleware:
         try:
             await self.app(scope, receive, send_and_record)
         finally:
-            log = self.logger.error if status >= 500 else self.logger.info
-            log(
-                "request",
-                method=known_method(scope["method"]),
-                route=getattr(scope.get("route"), "path", "unmatched"),
-                status=status,
-                duration_ms=round((time.perf_counter() - started) * 1000, 1),
-            )
+            route = getattr(scope.get("route"), "path", "unmatched")
+            if not (route in QUIET_ROUTES and status < 400):
+                log = self.logger.error if status >= 500 else self.logger.info
+                log(
+                    "request",
+                    method=known_method(scope["method"]),
+                    route=route,
+                    status=status,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 1),
+                )
             _staff_id.reset(token)
 
 

@@ -189,6 +189,7 @@ async def db_session(
             session = AsyncSession(
                 bind=connection,
                 expire_on_commit=False,
+                autobegin=False,  # as in production (core/db.py, the session rule)
                 join_transaction_mode="create_savepoint",
             )
             try:

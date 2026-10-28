@@ -3,8 +3,13 @@
 The app connects as `gize_app` (DML only, see core/bootstrap.py). Every connection has a
 3 s connect timeout and a 5 s statement timeout; waiting for a pooled connection is capped at
 3 s. Statement parameters never appear in error text (`hide_parameters`). Services own
-transactions (`async with session.begin()`); a database that is down, slow, saturated or
-asking for a retry becomes 503 SERVICE_UNAVAILABLE with Retry-After (core/errors.py).
+transactions; a database that is down, slow, saturated or asking for a retry becomes 503
+SERVICE_UNAVAILABLE with Retry-After (core/errors.py).
+
+The session rule: every use of a session is inside `async with session.begin():`, one block
+per unit of work. Autobegin is off, so a query outside a block fails at once. A dependency
+that reads (auth) uses its own short block, finished before the service opens its own.
+Never hold a block open across an outbound call (SMS, HTTP).
 
 Connect directly or through Supabase's session-mode pooler (port 5432). Transaction mode
 (port 6543) is not supported: asyncpg and SQLAlchemy keep prepared statements per server
@@ -73,7 +78,8 @@ def create_engine(settings: Settings) -> AsyncEngine:
 
 
 def create_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(engine, expire_on_commit=False)
+    """Sessions without autobegin: see the session rule above."""
+    return async_sessionmaker(engine, expire_on_commit=False, autobegin=False)
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
