@@ -12,6 +12,9 @@ def test_one_lock_per_server_however_it_is_named() -> None:
     assert server_lock_path("postgresql://postgres:pw@localhost:5434/postgres") == (
         server_lock_path("postgresql://other:pw@127.0.0.1:5434/postgres")
     )
+    assert server_lock_path("postgresql://p:pw@[::1]:5434/x") == (
+        server_lock_path("postgresql://p:pw@127.0.0.1:5434/x")
+    )
     assert server_lock_path("postgresql://p:pw@127.0.0.1:5434/x") != (
         server_lock_path("postgresql://p:pw@127.0.0.1:5433/x")
     )

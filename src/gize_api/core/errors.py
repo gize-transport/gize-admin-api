@@ -6,6 +6,7 @@ exception text, SQL, stack traces, input values or internal IDs: those go to the
 the same request ID. Codes and reasons are part of the API contract: only ever add.
 """
 
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -216,6 +217,9 @@ def install_exception_handlers(app: FastAPI) -> None:
 
 
 DATABASE_RETRY_AFTER_SECONDS = "5"
+# A misconfigured database fails every request; report it once per interval, not each time.
+MISCONFIGURATION_REPORT_INTERVAL_SECONDS = 60.0
+_last_misconfiguration_report: dict[tuple[str, str | None], float] = {}
 
 
 async def _database_error(request: Request, exc: Exception) -> Response:
@@ -232,7 +236,8 @@ async def _database_error(request: Request, exc: Exception) -> Response:
         misconfigured=misconfigured,
         exc_info=exc,
     )
-    if misconfigured:  # an outage passes; a wrong password or certificate needs a human
+    if misconfigured and _due_for_report(type(exc).__name__, database_sqlstate(exc)):
+        # An outage passes; a wrong password or certificate needs a human.
         report_exception(exc, request_id=current_request_id(), route=route)
     telemetry = getattr(request.app, "telemetry", None)
     if telemetry is not None:
@@ -240,6 +245,15 @@ async def _database_error(request: Request, exc: Exception) -> Response:
     return problem_response(
         ErrorCode.SERVICE_UNAVAILABLE, headers={"Retry-After": DATABASE_RETRY_AFTER_SECONDS}
     )
+
+
+def _due_for_report(error_type: str, sqlstate: str | None) -> bool:
+    key, now = (error_type, sqlstate), time.monotonic()
+    last = _last_misconfiguration_report.get(key)
+    if last is not None and now - last < MISCONFIGURATION_REPORT_INTERVAL_SECONDS:
+        return False
+    _last_misconfiguration_report[key] = now
+    return True
 
 
 class LastResortGuard:

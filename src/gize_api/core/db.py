@@ -98,10 +98,13 @@ def is_database_unavailable(exc: BaseException) -> bool:
         return sqlstate in _UNAVAILABLE_SQLSTATES or sqlstate.startswith(
             _UNAVAILABLE_SQLSTATE_PREFIXES
         )
-    # Network failures surface as plain OS and timeout errors; count only those raised by
-    # the network stack or the driver themselves.
-    return isinstance(exc, (OSError, TimeoutError)) and any(
-        _raise_site(error).startswith(_NETWORK_MODULES) for error in _chain(exc)
+    # Network failures surface as plain OS and timeout errors. Count one only if the network
+    # stack or driver raised it (not app code run inside the ORM) on the way through the
+    # database driver (not an outbound call or Redis failing in the same request).
+    return (
+        isinstance(exc, (OSError, TimeoutError))
+        and any(_raise_site(error).startswith(_NETWORK_MODULES) for error in _chain(exc))
+        and _raised_from(exc, ("asyncpg.", "sqlalchemy."))
     )
 
 

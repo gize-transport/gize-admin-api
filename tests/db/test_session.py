@@ -1,5 +1,6 @@
 """GZ-006: engine settings, the session dependency, and database failures as 503."""
 
+import asyncio
 import json
 import time
 from collections.abc import Callable
@@ -403,6 +404,7 @@ async def test_misconfiguration_is_reported_to_sentry_but_outages_are_not(
 ) -> None:
     """A wrong password or database name will not fix itself: someone must be told."""
     reports: list[str] = []
+    monkeypatch.setattr("gize_api.core.errors._last_misconfiguration_report", {})
     monkeypatch.setattr(
         "gize_api.core.errors.report_exception",
         lambda exc, **_: reports.append(type(exc).__name__),
@@ -415,5 +417,19 @@ async def test_misconfiguration_is_reported_to_sentry_but_outages_are_not(
         await session.execute(text("DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = '57014'; END $$"))
 
     async with app.router.lifespan_context(app), _client(app) as client:
-        assert (await client.get("/_test/db")).status_code == 503
-    assert bool(reports) is reported
+        for _ in range(3):  # a sustained misconfiguration is reported once, not per request
+            assert (await client.get("/_test/db")).status_code == 503
+    assert len(reports) == (1 if reported else 0)
+
+
+async def test_network_errors_outside_the_database_are_not_unavailable() -> None:
+    """An outbound call (SMS gateway, Redis) failing is not the database being down."""
+    from gize_api.core.db import is_database_unavailable
+
+    with pytest.raises(ConnectionRefusedError) as refused:
+        await asyncio.open_connection("127.0.0.1", 1)
+    assert not is_database_unavailable(refused.value)
+    with pytest.raises(TimeoutError) as timed_out:
+        async with asyncio.timeout(0.01):
+            await asyncio.sleep(1)
+    assert not is_database_unavailable(timed_out.value)

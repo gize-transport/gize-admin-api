@@ -386,10 +386,43 @@ def test_admin_connect_arguments() -> None:
         _admin_connection_arguments("mysql://p:pw@localhost/x", None)
 
 
-async def test_drift_check_works_before_postgres_17(
+async def test_bootstrap_refuses_an_older_postgres(
     database: DatabaseUrls, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from gize_api.core import bootstrap as module
+    monkeypatch.setattr("gize_api.core.bootstrap.MIN_SERVER_VERSION", 990000)
+    with pytest.raises(BootstrapError, match="needs Postgres 99 or later"):
+        await _bootstrap(database)
 
-    assert module._table_privileges_to_refuse(160004) == ("TRUNCATE", "REFERENCES", "TRIGGER")
-    assert "MAINTAIN" in module._table_privileges_to_refuse(170011)
+
+def test_an_unreadable_root_certificate_is_a_bootstrap_error(tmp_path: Path) -> None:
+    from gize_api.core.bootstrap import _admin_connection_arguments
+
+    url = "postgresql://postgres:pw@db.example.com/postgres?ssl=verify-full"
+    bogus = tmp_path / "not-a-cert.pem"
+    bogus.write_text("not a certificate")
+    for path in (tmp_path / "missing.pem", bogus):
+        with pytest.raises(BootstrapError, match="DATABASE_SSL_ROOT_CERT"):
+            _admin_connection_arguments(url, path)
+
+
+async def test_admin_self_grants_are_removed(
+    database: DatabaseUrls, supabase_like_admin: DatabaseUrls
+) -> None:
+    """With createrole_self_grant = 'set, inherit', creating a role also makes its creator a
+    member that can act as it. The bootstrap removes that membership instead of failing."""
+    superuser = await _admin(database)
+    try:
+        for role in ("gize_app", "gize_migrator"):
+            await superuser.execute(
+                f"GRANT {role} TO gize_test_admin WITH INHERIT TRUE, SET TRUE"
+                " GRANTED BY gize_test_admin"
+            )
+        urls = supabase_like_admin
+        await bootstrap(urls.admin, urls.app, urls.migrator, create_supabase_roles=False)
+        acting = await superuser.fetch(
+            "SELECT roleid::regrole::text FROM pg_auth_members"
+            " WHERE member = 'gize_test_admin'::regrole AND (set_option OR inherit_option)"
+        )
+    finally:
+        await superuser.close()
+    assert acting == []

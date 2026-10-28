@@ -4,6 +4,7 @@ import base64
 import contextlib
 import dataclasses
 import fcntl
+import ipaddress
 import json
 import socket
 import sys
@@ -117,8 +118,10 @@ TEST_SERVER_LOCK_TIMEOUT_SECONDS = 600.0
 def server_lock_path(admin_url: str) -> Path:
     """One lock file per test server, whatever name the URL gives the host."""
     parts = urlsplit(admin_url)
-    host = socket.gethostbyname(parts.hostname or "127.0.0.1")
-    return Path(tempfile.gettempdir()) / f"gize-test-postgres-{host}_{parts.port or 5432}.lock"
+    port = parts.port or 5432
+    address = ipaddress.ip_address(socket.getaddrinfo(parts.hostname or "::1", port)[0][4][0])
+    safe_host = "loopback" if address.is_loopback else str(address).replace(":", "-")
+    return Path(tempfile.gettempdir()) / f"gize-test-postgres-{safe_host}_{port}.lock"
 
 
 @contextlib.contextmanager

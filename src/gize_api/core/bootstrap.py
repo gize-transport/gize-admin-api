@@ -77,8 +77,9 @@ _ROLE_SETTINGS = {
     MIGRATOR_ROLE: {"lock_timeout": "5s", "statement_timeout": "5min"},
 }
 # Table privileges beyond data access; gize_app must hold none of them on any object.
-_FORBIDDEN_TABLE_PRIVILEGES = ("TRUNCATE", "REFERENCES", "TRIGGER")
-_MAINTAIN_SINCE_VERSION = 170000  # the MAINTAIN privilege exists from Postgres 17
+_FORBIDDEN_TABLE_PRIVILEGES = ("TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN")
+# Postgres 17, as on Supabase: the checks use MAINTAIN and membership options (16+).
+MIN_SERVER_VERSION = 170000
 # Schemas where gize_app must not create anything.
 _NO_CREATE_SCHEMAS = (SCHEMA, "public")
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -133,6 +134,9 @@ async def bootstrap(
     try:
         await conn.execute(f"SET lock_timeout = {_quote(ADMIN_LOCK_TIMEOUT)}")
         await conn.execute(f"SET statement_timeout = {_quote(ADMIN_STATEMENT_TIMEOUT)}")
+        version = int(await conn.fetchval("SHOW server_version_num"))
+        if version < MIN_SERVER_VERSION:
+            raise BootstrapError(f"needs Postgres {MIN_SERVER_VERSION // 10000} or later")
         async with conn.transaction():
             if create_supabase_roles:
                 for role in SUPABASE_API_ROLES:
@@ -141,6 +145,9 @@ async def bootstrap(
                         await conn.execute(f'ALTER ROLE "{role}" BYPASSRLS')
             for role, password in passwords.items():
                 await _create_role(conn, role, login=True)
+                # With createrole_self_grant set, creating a role also lets its creator act
+                # as it; keep only ADMIN OPTION (another grantor's), which manages it.
+                await conn.execute(f'REVOKE "{role}" FROM CURRENT_USER')
                 await _set_password(conn, role, password)
                 await _check_attributes(conn, role)
                 await _reset_settings(conn, role)
@@ -177,7 +184,11 @@ def _admin_connection_arguments(
         raise BootstrapError(
             "BOOTSTRAP_ADMIN_DATABASE_URL must set ssl=verify-full off this machine"
         )
-    return urlunsplit(parts._replace(query="")), ssl_argument(url, ssl_root_cert)
+    try:
+        argument = ssl_argument(url, ssl_root_cert)
+    except (OSError, ssl.SSLError):
+        raise BootstrapError("DATABASE_SSL_ROOT_CERT must be a readable CA certificate") from None
+    return urlunsplit(parts._replace(query="")), argument
 
 
 def _password(url: str, expected_role: str, variable: str) -> str:
@@ -259,12 +270,6 @@ async def _check_members(conn: asyncpg.Connection) -> None:
         )
 
 
-def _table_privileges_to_refuse(server_version: int) -> tuple[str, ...]:
-    if server_version >= _MAINTAIN_SINCE_VERSION:
-        return (*_FORBIDDEN_TABLE_PRIVILEGES, "MAINTAIN")
-    return _FORBIDDEN_TABLE_PRIVILEGES
-
-
 async def _check_app_privileges(conn: asyncpg.Connection) -> None:
     """Fail on anything that lets gize_app change structure; the run is rolled back."""
     for schema in _NO_CREATE_SCHEMAS:
@@ -296,7 +301,7 @@ async def _check_app_privileges(conn: asyncpg.Connection) -> None:
         " AND has_table_privilege($1, c.oid, p.privilege) LIMIT 1",
         APP_ROLE,
         SCHEMA,
-        list(_table_privileges_to_refuse(int(await conn.fetchval("SHOW server_version_num")))),
+        list(_FORBIDDEN_TABLE_PRIVILEGES),
     )
     if extra is not None:
         raise BootstrapError(f"{APP_ROLE} must not have {extra['privilege']} on {extra['name']}")
