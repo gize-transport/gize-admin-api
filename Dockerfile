@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
-# One image, two commands: `api` (default) and `worker`. See docker/entrypoint.sh.
+# One image, three commands: `api` (default), `worker` and `migrate`. See docker/entrypoint.sh.
 
 # Keep the patch release in step with UV_PYTHON in .github/workflows/ci.yml.
 ARG PYTHON_IMAGE=python:3.12.16-slim-trixie@sha256:962f801b08c870ac2a51b72bf02dae38c9a4162319e5e882ec244e198188d54e
@@ -30,6 +30,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN groupadd --system --gid 10001 gize \
     && useradd --system --uid 10001 --gid gize --no-create-home --shell /usr/sbin/nologin gize
 COPY --from=builder /opt/venv /opt/venv
+WORKDIR /app
+COPY alembic.ini ./
+COPY migrations ./migrations
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 USER 10001:10001
 EXPOSE 8000

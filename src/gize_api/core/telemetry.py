@@ -11,11 +11,17 @@ Off unless OTEL_EXPORTER_OTLP_ENDPOINT is set (local runs and tests need nothing
 - Redis commands are traced per client, as `COMMAND ? ?`, never values.
 - Shutdown flushes within a fixed budget, off the event loop.
 
-SQLAlchemy (GZ-006) and outbound httpx (GZ-008) instrumentation join when those land.
+- Database statements are traced per engine as their operation and their text with every
+  literal replaced by `?`, never parameters or error text, with per-operation duration and
+  error metrics. Requests failed by an unavailable database are counted.
+
+Outbound httpx instrumentation (GZ-008) joins when that client lands.
 """
 
 import asyncio
 import contextlib
+import functools
+import re
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -27,6 +33,7 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.redis import RedisInstrumentor
+from opentelemetry.metrics import Counter
 from opentelemetry.sdk.metrics import AlwaysOffExemplarFilter, MeterProvider
 from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import View
@@ -34,8 +41,10 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, SpanExporter
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
-from opentelemetry.trace import Span
+from opentelemetry.trace import Span, SpanKind, Status, StatusCode
 from redis.asyncio import Redis
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.routing import BaseRoute, Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -79,6 +88,36 @@ _CLIENT_ATTRIBUTES = (
 )
 # Set only if OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_* is configured; blanked regardless.
 _CAPTURED_HEADER_PREFIXES = ("http.request.header.", "http.response.header.")
+MAX_STATEMENT_LENGTH = 1000
+# Literal stripping looks at this much of a statement; the rest is dropped unread.
+_MAX_STATEMENT_SCAN = 4 * MAX_STATEMENT_LENGTH
+_SQL_LITERAL = re.compile(
+    r"--[^\n]*"  # line comment
+    r"|/\*.*?\*/"  # block comment
+    r"|(?<![\w$])[Ee]'(?:[^'\\]|''|\\.)*'"  # escape string: backslash escapes
+    r"|(?<![\w$])(?:[BbXx]|[Uu]&)?'(?:[^']|'')*'"  # string, bit string, Unicode string
+    r"|\$\$.*?\$\$"  # dollar-quoted string
+    r"|\$(?P<tag>[A-Za-z_]\w*)\$.*?\$(?P=tag)\$"  # tagged dollar-quoted string ($1 is not)
+    r"|'.*|\$(?:[A-Za-z_]\w*)?\$.*"  # unterminated (a truncated or broken statement): to the end
+    r"|(?<![\w$])(?:0[xXoObB][0-9A-Fa-f_]+|\d[\d_]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?",
+    re.DOTALL,
+)
+_DATABASE_OPERATIONS = frozenset(
+    {
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "WITH",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "SAVEPOINT",
+        "RELEASE",
+        "SHOW",
+        "SET",
+    }
+)
 _TRACE_CONTEXT_HEADERS = frozenset({b"traceparent", b"tracestate", b"baggage"})
 
 logger = structlog.get_logger("gize_api.telemetry")
@@ -106,6 +145,77 @@ class Telemetry:
             exclude_spans=["receive", "send"],
         )
         return _DropInboundTraceContext(traced)
+
+    def instrument_database(self, engine: AsyncEngine) -> None:
+        """One CLIENT span per statement and per-operation duration and error metrics.
+
+        Written here instead of using the SQLAlchemy instrumentation package, which copies
+        the exception text (Postgres DETAIL lines carry row values) into span status. Spans
+        record the operation and the statement with its placeholders, never parameters.
+        """
+        tracer = self.tracer_provider.get_tracer("gize_api.db")
+        duration = self.meter_provider.get_meter("gize_api.db").create_histogram(
+            "db.client.operation.duration",
+            unit="s",
+            description="Duration of database statements",
+        )
+
+        def before(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy event signature
+            statement, context = args[2], args[4]
+            operation = _database_operation(statement)
+            span = tracer.start_span(
+                operation,
+                kind=SpanKind.CLIENT,
+                attributes={
+                    "db.system.name": "postgresql",
+                    "db.operation.name": operation,
+                    "db.query.text": _statement_text(str(statement)),
+                },
+            )
+            context._gize_db = (span, time.perf_counter(), operation)
+
+        def finish(context: Any, error: BaseException | None) -> None:  # noqa: ANN401
+            started = getattr(context, "_gize_db", None)
+            if started is None:
+                return
+            span, began, operation = started
+            context._gize_db = None
+            outcome = "ok" if error is None else "error"
+            if error is not None:
+                span.set_attribute("error.type", type(error).__name__)
+                span.set_status(Status(StatusCode.ERROR))  # no description: no message text
+            span.end()
+            duration.record(
+                time.perf_counter() - began,
+                {
+                    "db.system.name": "postgresql",
+                    "db.operation.name": operation,
+                    "outcome": outcome,
+                },
+            )
+
+        def after(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy event signature
+            finish(args[4], None)
+
+        def on_error(exception_context: Any) -> None:  # noqa: ANN401 - SQLAlchemy event
+            if exception_context.execution_context is not None:
+                finish(exception_context.execution_context, exception_context.original_exception)
+
+        sync_engine = engine.sync_engine
+        event.listen(sync_engine, "before_cursor_execute", before)
+        event.listen(sync_engine, "after_cursor_execute", after)
+        event.listen(sync_engine, "handle_error", on_error)
+
+    def record_database_unavailable(self, error: BaseException) -> None:
+        """Count a request failed by an unavailable database (connection failures included)."""
+        self._database_unavailable.add(1, {"error.type": type(error).__name__})
+
+    @functools.cached_property
+    def _database_unavailable(self) -> Counter:
+        return self.meter_provider.get_meter("gize_api.db").create_counter(
+            "gize.db.unavailable",
+            description="Requests answered 503 because the database was unavailable",
+        )
 
     def instrument_redis(self, client: Redis) -> None:
         RedisInstrumentor.instrument_client(client, tracer_provider=self.tracer_provider)
@@ -217,6 +327,19 @@ def configure_telemetry(
         shutdown_on_exit=False,
     )
     return Telemetry(tracer_provider=tracer_provider, meter_provider=meter_provider)
+
+
+def _statement_text(statement: str) -> str:
+    """The statement with comments and literals replaced by `?` (placeholders such as `$1`
+    stay), bounded in length: values must never reach a span, even in a literal."""
+    return _SQL_LITERAL.sub("?", statement[:_MAX_STATEMENT_SCAN])[:MAX_STATEMENT_LENGTH]
+
+
+def _database_operation(statement: object) -> str:
+    """The statement's first keyword from a fixed list (bounded span names and labels)."""
+    words = str(statement).lstrip().split(None, 1)
+    keyword = words[0].upper() if words else ""
+    return keyword if keyword in _DATABASE_OPERATIONS else "OTHER"
 
 
 def _resolve(future: "asyncio.Future[None]") -> None:

@@ -43,10 +43,15 @@ api (routers)  →  services (business rules)  →  repositories (data access)  
 ```
 src/gize_api/
   main.py                 # app factory, middleware, routers, lifespan (startup/shutdown)
+  models.py               # imports every domain models.py, so Alembic sees the whole schema
   worker.py               # Arq WorkerSettings
   core/
     config.py             # pydantic-settings; all env vars; fails fast on missing secrets
-    db.py                 # async engine, session dependency, timeouts
+    db.py                 # async engine, session dependency, timeouts, 503 classification
+    models.py             # declarative Base (schema gize), UUID/timestamp/soft-delete mixins
+    rls.py                # enable_row_level_security(op, table) for migrations
+    bootstrap.py          # one-off roles/schema/grants script, run by a human
+    migrations.py         # migration settings, engine, lock (used by migrations/env.py)
     security.py           # JWT verification (Supabase JWKS), current_staff dependency, role guards
     errors.py             # exception types → RFC 9457 problem+json responses
     logging.py            # structlog JSON, request context, PII masking
@@ -62,7 +67,8 @@ src/gize_api/
   integrations/sms.py     # SmsSender protocol + FakeSmsSender + real gateway adapter later
 migrations/               # Alembic (env.py runs as gize_migrator)
 tests/
-  conftest.py             # real Postgres (docker), per-test transaction rollback, factories, auth helpers
+  conftest.py             # real Postgres (compose test server), per-test transaction rollback, auth helpers
+  factories.py            # Factory[Model] test data helpers
   <domain>/test_*.py
 docker-compose.yml        # postgres, redis (local; CI runs the same images as job services)
 Dockerfile                # multi-stage, non-root user, healthcheck
@@ -118,7 +124,7 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 | Staging | Second free Supabase project | Managed or container Redis | Real integrations in test mode |
 | Production | Main Supabase project | Managed Redis | Host TBD |
 
-All configuration via environment variables loaded by `core/config.py`; app refuses to start if a required secret is missing. `.env.example` lists every variable with a dummy value. Connect through Supabase's connection pooler (the direct database host is IPv6-only).
+All configuration via environment variables loaded by `core/config.py`; app refuses to start if a required secret is missing. `.env.example` lists every variable with a dummy value. Connect through Supabase's session-mode connection pooler, port 5432 (the direct database host is IPv6-only); transaction mode is not supported. Production verifies the database certificate (`ssl=verify-full`, `DATABASE_SSL_ROOT_CERT`).
 
 ## Deployment
 

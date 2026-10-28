@@ -4,5 +4,7 @@
 !uv.lock
 !README.md
 !src/
+!alembic.ini
+!migrations/
 !docker/
 **/__pycache__

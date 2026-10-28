@@ -16,7 +16,9 @@ Start with [`CLAUDE.md`](CLAUDE.md) and the documents in [`docs/`](docs/). [`doc
 git config core.hooksPath .githooks   # pre-commit checks + blocks direct pushes to main
 cp .env.example .env                  # local settings (placeholders only)
 uv sync                               # create .venv from uv.lock
-docker compose up -d --wait           # Postgres 17 + Redis 7.4 on 127.0.0.1
+docker compose up -d --wait           # Postgres 17 (dev + test servers) + Redis 7.4 on 127.0.0.1
+uv run --env-file .env python -m gize_api.core.bootstrap --create-supabase-roles
+uv run --env-file .env alembic upgrade head
 uv run pytest                         # tests + coverage gate
 ```
 
@@ -32,9 +34,11 @@ uv run pytest                         # tests + coverage gate
 | Lint, format check, types | `uv run ruff check . && uv run ruff format --check . && uv run mypy` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
 | Coverage must not drop, after tests | `uv run python -m scripts.check_coverage_baseline` (`--update` raises the baseline) |
+| Apply / undo migrations | `uv run --env-file .env alembic upgrade head` / `… alembic downgrade -1` |
+| New migration | `uv run --env-file .env alembic revision --autogenerate --rev-id 0002 -m "short name"` |
 | Dependency audit | `uv export --frozen --all-groups --no-emit-project --format requirements-txt \| uv run pip-audit --strict --disable-pip --require-hashes -r /dev/stdin` |
 
-Commands for migrations, the background worker and the OpenAPI export are added by the tickets that introduce them (GZ-006, GZ-008, GZ-015).
+Commands for the background worker and the OpenAPI export are added by the tickets that introduce them (GZ-008, GZ-015).
 
 ## Configuration
 
@@ -53,13 +57,50 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `OBSERVABILITY_REQUIRED` | no | `true` by default: production refuses to start without `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT`. `false` opts out (startup still warns). |
 | `OTEL_SERVICE_NAME` | no | `gize-admin-api` by default. |
 | `RELEASE` | no | Build identifier (e.g. git SHA) for Sentry and traces. |
+| `DATABASE_URL` | yes, secret | Postgres as `gize_app`. `ssl=verify-full` in staging and production (staging verifies too, so a certificate problem shows up before launch). Direct connection or session-mode pooler (port 5432); transaction mode (6543) is not supported. |
+| `DATABASE_SSL_ROOT_CERT` | production (Supabase) | Path to the CA certificate (PEM) the database certificate must chain to, with `ssl=verify-full`. For Supabase, the certificate from the project's database settings (SSL configuration), mounted into the container. Unset: system CAs. |
+| `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW` | no | Connections per process, 5 and 5 by default (1–50, 0–50). See the connection budget below. |
+| `MIGRATOR_DATABASE_URL` | migrations, secret | Postgres as `gize_migrator`; used by Alembic and the image's `migrate` command, never by the API. Same TLS rules as `DATABASE_URL` (by `APP_ENV`, with `DATABASE_SSL_ROOT_CERT`); direct or session-mode connection only. |
+| `BOOTSTRAP_ADMIN_DATABASE_URL` | bootstrap only, secret | The `postgres` role, for the one-off bootstrap. |
+| `TEST_ADMIN_DATABASE_URL` | tests only | A superuser on the compose **test** server (`postgres-test`, port 5433), never the development one: tests set the role passwords to test values. Tests create and drop their own databases. |
 | `TEST_REDIS_URL` | tests only | Redis the test suite uses (CI sets it; locally read from `.env`). Tests fail, never skip, without it. |
+
+## Database
+
+Postgres (Supabase in staging and production), schema `gize`, two roles:
+
+| Role | Can | Used by |
+| --- | --- | --- |
+| `gize_migrator` | owns schema `gize`: create, alter, drop | Alembic (`MIGRATOR_DATABASE_URL`, the image's `migrate` command) |
+| `gize_app` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` on data tables; nothing else (no DDL, no `TRUNCATE`, no migration table) | the API (`DATABASE_URL`) |
+
+Neither role is superuser, creates roles or databases, bypasses row-level security, is a member of another role, or has an expiring password. `gize_app` has role-level settings: statement timeout 5 s, lock 3 s, idle in transaction 10 s, `search_path` `gize`.
+
+What keeps Supabase's API roles out:
+- **No access to the schema.** `anon`, `authenticated`, `service_role` and PUBLIC have no `USAGE` on `gize`, and no one but `gize_app` may execute new functions. This is the guarantee for all three.
+- **Row-level security** on every table, with a single policy for `gize_app`: a mistaken grant to `anon` or `authenticated` still exposes no rows. It does **not** stop `service_role`, which bypasses RLS on Supabase (the local stand-in does too).
+- Views must be created `WITH (security_invoker = true)`, or they would read tables as their owner and skip RLS (a test checks).
+
+Accepted and known: `gize_app`, like every role, can create temporary tables, connect to other databases on the server and change its own session settings and password, because Supabase's own services need those privileges for PUBLIC. It cannot change any table, role or schema.
+
+The bootstrap resets the roles' settings (role-wide and for this database) and password expiry. It refuses to run, naming the problem, if it finds drift: a membership either way (our roles in another role, or another role in ours; the admin may keep ADMIN OPTION only), role settings for another database, `CREATE` on schema `gize` or `public` or on the database, `TRUNCATE`/`REFERENCES`/`TRIGGER`/`MAINTAIN` on a table, or an object owned by `gize_app`. After the first run, table grants belong to migrations: re-running never re-grants on existing tables. Create objects in `gize` only through migrations: anything made by hand (the dashboard) is owned by `postgres` and gets neither the default grants nor RLS.
+
+**Connection budget.** Each process opens at most `DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW` connections (10 by default). Add up every process that can run at once (API replicas, the background worker, the previous release during a deploy, a migration) and keep the total under the pooler's client limit for your compute size (shown in the Supabase dashboard's database settings).
+
+**Setting up a Supabase project (once, by a human):**
+1. In the dashboard, keep `gize` out of the Data API's exposed schemas (Settings → API).
+2. Download the project's CA certificate (database settings → SSL configuration) and make it available to the API and the release step as a file; set `DATABASE_SSL_ROOT_CERT` to its path.
+3. Choose passwords for `gize_app` and `gize_migrator` and write the two URLs (Supavisor session pooler, port 5432; usernames `gize_app.<project-ref>` and `gize_migrator.<project-ref>`; append `?ssl=verify-full`) into the host's secret store.
+4. Run the bootstrap from a trusted machine with `BOOTSTRAP_ADMIN_DATABASE_URL` set to the `postgres` connection string: `uv run python -m gize_api.core.bootstrap` (no `--create-supabase-roles`: Supabase has them). Off your own machine the admin connection must use `?ssl=verify-full`, and `DATABASE_SSL_ROOT_CERT` must point at the downloaded certificate: this session can create roles and rewrite grants, so it is never left unverified. It needs Postgres 17 or later. It is safe to run again; passwords are sent as SCRAM verifiers, never in plain text. If the project sets `createrole_self_grant`, the admin's automatic membership in the new roles is reduced to ADMIN OPTION (it can manage the roles, not act as them). It waits at most 5 s for a lock held by someone else, then stops.
+5. Release step on every deploy, before the new API version starts: `docker run … gize-admin-api migrate` with `APP_ENV`, `MIGRATOR_DATABASE_URL` and `DATABASE_SSL_ROOT_CERT`. Only one migration runs at a time: a second one stops with "another migration is running".
+
+**Migrations** are expand/contract: add columns nullable or with defaults, backfill separately, remove only in a later release. Every migration has a working `downgrade()` (CI runs upgrade → downgrade → upgrade) and every new table calls `enable_row_level_security(op, "<table>")`. Import every new `models.py` in `src/gize_api/models.py` (a test checks), so `alembic check` and `revision --autogenerate` compare all of schema `gize` and nothing else. New revision files are cleaned by ruff as they are written.
 
 ## Logs, traces and errors
 
 The API writes one JSON object per line to stderr: `timestamp`, `level`, `logger`, `event`, `request_id` and (once authenticated) `staff_id`, plus one `request` line per request with the route template, status and duration. Secrets and personal data are scrubbed before anything is written: tokens, passwords, OTPs and names become `[REDACTED]`, phone numbers become `+2519••••1234`. Use `structlog.get_logger(__name__)` and pass data as fields, never formatted into the message.
 
-With `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT` set, unhandled errors and security events go to Sentry (tagged with the request ID), and traces and metrics go to the OTLP endpoint. Production refuses to start without both unless `OBSERVABILITY_REQUIRED=false`; staging logs `observability_disabled` for each one that is unset. Log lines inside a request carry `trace_id`, and spans carry `gize.request_id`, so logs, traces and Sentry events can be matched.
+With `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT` set, unhandled errors and security events go to Sentry (tagged with the request ID), and traces and metrics go to the OTLP endpoint. Production refuses to start without both unless `OBSERVABILITY_REQUIRED=false`; staging logs `observability_disabled` for each one that is unset. Log lines inside a request carry `trace_id`, and spans carry `gize.request_id`, so logs, traces and Sentry events can be matched. A database that is down, saturated or asks for a retry answers 503 with `Retry-After` and is logged as `database_unavailable` with its SQLSTATE and counted (`gize.db.unavailable`); it goes to Sentry only when a human must act (wrong password or role, unknown database, an untrusted certificate), at most once a minute per process and kind. Network errors count only when raised on the way through the database driver: an outbound call or Redis failing is never reported as the database.
 
 Call `set_staff_id()` from the (async) auth dependency to put the staff ID on that request's log lines; call `log_security_event()` for failed auth, permission denials, rate-limit hits and OTP abuse.
 
@@ -86,9 +127,10 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
 | Lint, types, dependency audit | `uv.lock` out of date; any pre-commit hook (ruff, ruff format, mypy `--strict`, file hygiene, TODO without a ticket); `pip-audit` finds a known vulnerability in any locked dependency |
 | Secret scan (gitleaks) | gitleaks finds a secret in any commit reachable from the PR |
 | Tests and coverage gates | a failing test; total coverage < 85%; service modules < 90%; total coverage differs from `.coverage-baseline` |
+| Migrations (upgrade, downgrade, upgrade) | the bootstrap fails or changes on a second run (run as a non-superuser admin, as on Supabase), any migration fails, a downgrade cannot be undone, or models and migrations disagree (`alembic check`) |
 | Docker image build | the image does not build, does not run as uid 10001, or cannot import the app |
 
-There is no branch protection on our plan, so CLAUDE.md's merge rules are the protection. Before merging, confirm **all four checks above are listed and green** on the PR: `gh pr checks` only shows checks that ran, so a job deleted from the workflow would not show up as failing. `tests/test_ci_config.py` pins the job list, and any change under `.github/workflows/` needs an explicit reviewer look.
+There is no branch protection on our plan, so CLAUDE.md's merge rules are the protection. Before merging, confirm **all five checks above are listed and green** on the PR: `gh pr checks` only shows checks that ran, so a job deleted from the workflow would not show up as failing. `tests/test_ci_config.py` pins the job list, and any change under `.github/workflows/` needs an explicit reviewer look.
 
 **Coverage ratchet.** `.coverage-baseline` holds `main`'s total coverage. CI fails when coverage drops and also when it rises without the baseline being raised, so a later PR cannot quietly give the gain back. When coverage improves, run `uv run python -m scripts.check_coverage_baseline --update` and commit the file. Lowering it is a hand edit the PR must justify.
 

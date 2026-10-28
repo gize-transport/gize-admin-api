@@ -8,9 +8,16 @@ a malformed URL can carry a password.
 import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
-from urllib.parse import SplitResult, unquote, urlsplit
+from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 
-from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import (
+    Field,
+    FilePath,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -28,6 +35,8 @@ class ConfigError(Exception):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         case_sensitive=False,
+        # `NAME=` (as in .env.example) means unset, not an empty value to validate.
+        env_ignore_empty=True,
         extra="forbid",
         frozen=True,
         hide_input_in_errors=True,
@@ -35,6 +44,15 @@ class Settings(BaseSettings):
 
     app_env: Environment
     redis_url: SecretStr
+    # As the least-privileged gize_app role; migrations use MIGRATOR_DATABASE_URL instead.
+    database_url: SecretStr
+    # CA certificate (PEM) that the database's certificate must chain to (ssl=verify-full);
+    # Supabase's is downloaded from the project's database settings. Unset: system CAs.
+    database_ssl_root_cert: FilePath | None = None
+    # Connections per process: pool size plus overflow. Every process (API replicas, the
+    # worker, the old release during a deploy) counts against the pooler's client limit.
+    database_pool_size: int = Field(default=5, ge=1, le=50)
+    database_max_overflow: int = Field(default=5, ge=0, le=50)
     cors_allowed_origins: Annotated[tuple[str, ...], NoDecode] = Field(default=(), max_length=20)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # Observability: each is off when unset. Production refuses to start without both unless
@@ -87,6 +105,15 @@ class Settings(BaseSettings):
             raise ValueError("must be redis://[user:password@]host[:port][/db] (or rediss://)")
         return value
 
+    @field_validator("database_url")
+    @classmethod
+    def _database_url_shape(cls, value: SecretStr) -> SecretStr:
+        if not is_database_url(value.get_secret_value()):
+            raise ValueError(
+                "must be postgresql://user:password@host[:port]/database[?ssl=require|verify-full]"
+            )
+        return value
+
     @field_validator("sentry_dsn")
     @classmethod
     def _sentry_dsn_shape(cls, value: SecretStr | None) -> SecretStr | None:
@@ -135,6 +162,15 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _database_tls(self) -> Self:
+        problem = database_tls_problem(
+            self.app_env, self.database_ssl, root_cert=self.database_ssl_root_cert is not None
+        )
+        if problem is not None:
+            raise ValueError(f"database_url {problem}")
+        return self
+
+    @model_validator(mode="after")
     def _https_otlp_outside_local(self) -> Self:
         endpoint = self.otel_exporter_otlp_endpoint
         if (
@@ -152,6 +188,11 @@ class Settings(BaseSettings):
         ):
             raise ValueError("cors_allowed_origins must use https in staging and production")
         return self
+
+    @property
+    def database_ssl(self) -> str | None:
+        """The `ssl` option from DATABASE_URL (`require`, `verify-full`), or None."""
+        return database_ssl_mode(self.database_url.get_secret_value())
 
     def otlp_headers(self) -> dict[str, str] | None:
         """OTLP exporter headers (e.g. Grafana Cloud auth), or None."""
@@ -172,6 +213,45 @@ class Settings(BaseSettings):
     def docs_enabled(self) -> bool:
         """Interactive docs and the schema endpoint are served only where staff test."""
         return self.app_env in {Environment.LOCAL, Environment.STAGING}
+
+
+_DATABASE_SCHEMES = frozenset({"postgresql", "postgres", "postgresql+asyncpg"})
+_DATABASE_SSL_MODES = frozenset({"require", "verify-full"})
+_DATABASE_NAME = re.compile(r"/[A-Za-z0-9_-]{1,63}")
+
+
+def is_database_url(url: str) -> bool:
+    """postgresql://user[:password]@host[:port]/database, with at most an `ssl` option."""
+    parts = _safe_split(url)
+    if parts is None or parts.scheme not in _DATABASE_SCHEMES or parts.fragment:
+        return False
+    if not parts.hostname or not parts.username or not _DATABASE_NAME.fullmatch(parts.path):
+        return False
+    query = parse_qs(parts.query, keep_blank_values=True)
+    if set(query) - {"ssl"}:
+        return False
+    return all(mode in _DATABASE_SSL_MODES for mode in query.get("ssl", []))
+
+
+def database_ssl_mode(url: str) -> str | None:
+    """The `ssl` option of a database URL (`require`, `verify-full`), or None."""
+    return parse_qs(urlsplit(url).query).get("ssl", [None])[0]
+
+
+def database_tls_problem(
+    app_env: Environment, ssl_mode: str | None, *, root_cert: bool
+) -> str | None:
+    """What is wrong with a database connection's TLS for `app_env`, or None.
+
+    `require` encrypts but accepts any certificate, so staging and production verify it
+    (`verify-full`: the certificate chains to a trusted CA and matches the host name).
+    Staging verifies too, so a certificate problem shows up there, not at launch.
+    """
+    if root_cert and ssl_mode != "verify-full":
+        return "needs ssl=verify-full when DATABASE_SSL_ROOT_CERT is set"
+    if app_env in {Environment.STAGING, Environment.PRODUCTION} and ssl_mode != "verify-full":
+        return "must set ssl=verify-full in staging and production"
+    return None
 
 
 _REDIS_DB_PATH = re.compile(r"(/\d{0,2})?")

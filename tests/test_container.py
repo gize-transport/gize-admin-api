@@ -22,3 +22,8 @@ def test_lifespan_failure_is_fatal_and_websockets_off() -> None:
 def test_proxy_headers_and_server_header_off() -> None:
     assert "--no-proxy-headers" in ENTRYPOINT
     assert "--no-server-header" in ENTRYPOINT
+
+
+def test_migrate_command_runs_alembic_as_the_release_step() -> None:
+    assert "migrate)" in ENTRYPOINT
+    assert "exec alembic upgrade head" in ENTRYPOINT

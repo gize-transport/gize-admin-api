@@ -8,9 +8,10 @@ from collections.abc import Sequence
 
 import httpx
 import pytest
+import sqlalchemy.exc
 from fastapi import FastAPI
 from opentelemetry import trace
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoint
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -27,7 +28,7 @@ from gize_api.core.telemetry import (
     configure_telemetry,
 )
 from gize_api.main import GizeAPI, create_app
-from tests.support import SettingsFactory
+from tests.support import DatabaseUrls, SettingsFactory
 
 PHONE = "0911223344"
 SENSITIVE = (PHONE, "phone=", "10.9.8.7", "evil-host.example", "Mozilla/5.0 (Secret Phone)")
@@ -378,6 +379,7 @@ from gize_api.core.config import Settings
 from gize_api.core.telemetry import configure_telemetry
 
 settings = Settings(app_env="test", redis_url="redis://127.0.0.1:1/0",
+                    database_url="postgresql://gize_app:x@127.0.0.1:1/gize",
                     otel_exporter_otlp_endpoint="{blackhole_url}")
 telemetry = configure_telemetry(settings)
 with telemetry.tracer_provider.get_tracer("t").start_as_current_span("pending"):
@@ -469,3 +471,148 @@ async def test_failing_shutdown_step_is_logged_and_the_rest_still_run(
     assert '"telemetry_shutdown_step_failed"' in err
     assert '"trace_shutdown"' in err
     assert "exporter broke" not in err
+
+
+async def test_database_statements_traced_and_measured_without_text_leaks(
+    make_settings: SettingsFactory,
+    spans: InMemorySpanExporter,
+    metrics: InMemoryMetricReader,
+    database: DatabaseUrls,
+) -> None:
+    from sqlalchemy import bindparam, text
+
+    app = _app(make_settings, database_url=database.app)
+    app.telemetry = configure_telemetry(make_settings(), span_exporter=spans, metric_reader=metrics)
+    async with app.router.lifespan_context(app), app.state.sessionmaker() as session:
+        await session.execute(text("SELECT :v").bindparams(bindparam("v", "0911223344")))
+        with pytest.raises(sqlalchemy.exc.DBAPIError):
+            await session.execute(text("SELECT * FROM gize.no_such_table WHERE x = '0911223344'"))
+    finished = [s for s in spans.get_finished_spans() if s.kind == trace.SpanKind.CLIENT]
+    assert [s.name for s in finished] == ["SELECT", "SELECT"]
+    ok, failed = finished
+    assert (ok.attributes or {})["db.system.name"] == "postgresql"
+    assert "0911223344" not in str(ok.attributes)  # parameters are never recorded
+    assert failed.status.status_code == trace.StatusCode.ERROR
+    assert failed.status.description is None  # no Postgres message text
+    assert "0911223344" not in str(failed.attributes)  # literals are stripped from the text
+    query = (failed.attributes or {})["db.query.text"]
+    assert query == "SELECT * FROM gize.no_such_table WHERE x = ?"
+    assert (failed.attributes or {})["error.type"]
+    data = metrics.get_metrics_data()
+    assert data is not None
+    points = [
+        dict(point.attributes or {})
+        for resource in data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == "db.client.operation.duration"
+        for point in metric.data.data_points
+    ]
+    assert {p["outcome"] for p in points} == {"ok", "error"}
+
+
+def test_unknown_statements_are_named_other() -> None:
+    from gize_api.core.telemetry import _database_operation
+
+    assert _database_operation("  select 1") == "SELECT"
+    assert _database_operation("VACUUM x") == "OTHER"
+    assert _database_operation("") == "OTHER"
+
+
+async def test_errors_before_a_statement_runs_are_handled(
+    make_settings: SettingsFactory, spans: InMemorySpanExporter, database: DatabaseUrls
+) -> None:
+    from sqlalchemy import text
+
+    app = _app(make_settings, database_url=database.app)
+    app.telemetry = configure_telemetry(make_settings(), span_exporter=spans)
+    async with app.router.lifespan_context(app), app.state.sessionmaker() as session:
+        with pytest.raises(sqlalchemy.exc.StatementError, match="bind parameter"):
+            await session.execute(text("SELECT :missing"))
+    unreachable = _app(make_settings)  # connecting fails: no execution context at all
+    unreachable.telemetry = configure_telemetry(make_settings(), span_exporter=spans)
+    async with (
+        unreachable.router.lifespan_context(unreachable),
+        unreachable.state.sessionmaker() as session,
+    ):
+        with pytest.raises(OSError, match="Connect call failed"):
+            await session.execute(text("SELECT 1"))
+
+
+async def test_a_statement_span_is_never_finished_twice(
+    make_settings: SettingsFactory, spans: InMemorySpanExporter
+) -> None:
+    from types import SimpleNamespace
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    telemetry = configure_telemetry(make_settings(), span_exporter=spans)
+    assert telemetry is not None
+    engine = create_async_engine("postgresql+asyncpg://u:p@127.0.0.1:1/x")
+    telemetry.instrument_database(engine)
+    already_finished = SimpleNamespace(_gize_db=None)
+    engine.sync_engine.dialect.dispatch.handle_error(
+        SimpleNamespace(execution_context=already_finished, original_exception=ValueError())
+    )
+    assert spans.get_finished_spans() == ()
+    await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    [
+        ("SELECT * FROM t WHERE phone = '0911223344'", "SELECT * FROM t WHERE phone = ?"),
+        ("SELECT 'it''s', E'a\\'b', 'c'", "SELECT ?, ?, ?"),
+        ("SELECT x FROM t WHERE a = $1 AND b = $2", "SELECT x FROM t WHERE a = $1 AND b = $2"),
+        ("SELECT t1.c2 FROM t1 LIMIT 10 OFFSET 2.5e3", "SELECT t1.c2 FROM t1 LIMIT ? OFFSET ?"),
+        ("SELECT $$secret$$, $tag$more$tag$", "SELECT ?, ?"),
+        ('SELECT "quoted ident" FROM t', 'SELECT "quoted ident" FROM t'),
+        ("SELECT 1 -- note 0911223344\nFROM t /* 0911223344 */", "SELECT ? ?\nFROM t ?"),
+        ("SELECT 'unterminated 0911223344", "SELECT ?"),
+        ("SELECT X'1F', B'101', U&'d\\0061'", "SELECT ?, ?, ?"),
+    ],
+)
+def test_statement_literals_are_stripped(statement: str, expected: str) -> None:
+    from gize_api.core.telemetry import _statement_text
+
+    assert _statement_text(statement) == expected
+
+
+def test_statement_text_is_bounded() -> None:
+    from gize_api.core.telemetry import MAX_STATEMENT_LENGTH, _statement_text
+
+    text = _statement_text("SELECT " + "'x', " * 100_000 + "1")
+    assert len(text) <= MAX_STATEMENT_LENGTH
+    assert "x" not in text
+
+
+async def test_unavailable_database_is_counted(
+    make_settings: SettingsFactory, metrics: InMemoryMetricReader, spans: InMemorySpanExporter
+) -> None:
+    from fastapi import Depends
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from gize_api.core.db import get_session
+
+    app = _app(make_settings)  # an unreachable database
+    app.telemetry = configure_telemetry(make_settings(), span_exporter=spans, metric_reader=metrics)
+
+    @app.get("/_test/db")
+    async def db(session: AsyncSession = Depends(get_session)) -> None:  # noqa: B008
+        await session.execute(text("SELECT 1"))
+
+    async with app.router.lifespan_context(app), _client(app) as client:
+        assert (await client.get("/_test/db")).status_code == 503
+    data = metrics.get_metrics_data()
+    assert data is not None
+    points = [
+        (dict(point.attributes or {}), point.value)
+        for resource in data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == "gize.db.unavailable"
+        for point in metric.data.data_points
+        if isinstance(point, NumberDataPoint)
+    ]
+    assert points == [({"error.type": "ConnectionRefusedError"}, 1)]
