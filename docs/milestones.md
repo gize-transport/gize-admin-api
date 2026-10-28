@@ -53,10 +53,10 @@ Status: in review · Depends on: GZ-003
 - Review follow-ups done here (owner-approved): `DATABASE_SSL_ROOT_CERT` with `ssl=verify-full` required in production; `DATABASE_POOL_SIZE`/`DATABASE_MAX_OVERFLOW` (5/5) and a documented connection budget; session-mode pooler only; bootstrap drift checks; a separate compose test server.
 
 ### GZ-007 · Health endpoints
-Status: todo · Depends on: GZ-006
-- `/health/live` (no dependencies) and `/health/ready` (Postgres + Redis within timeouts).
+Status: in progress · Depends on: GZ-006
+- `/health/live` (no dependencies) and `/health/ready` (Postgres within its timeout; Redis checked, logged and alerted on, but never fails readiness: see the Health rule in `engineering-standards.md`).
 - Settle the session pattern for handlers and dependencies (from GZ-006 review): a dependency that reads (e.g. auth) autobegins a transaction, after which a service's `session.begin()` raises. Decide one rule (e.g. services use `session.begin()` only on a fresh session, or dependencies read in their own short transaction) and test it with `app_with_db_session`.
-- Acceptance: ready returns 503 with Redis stopped; live still 200; no versions or internals exposed.
+- Acceptance: ready returns 503 with Postgres stopped; with Redis stopped, ready stays 200 and Redis being down is logged and counted; live is 200 in both cases; no versions or internals exposed. (Changed from "ready returns 503 with Redis stopped" by owner decision at planning: a shared Redis outage must not take the whole API offline.)
 
 ### GZ-008 · Shared building blocks
 Status: todo · Depends on: GZ-006

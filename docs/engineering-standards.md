@@ -53,7 +53,10 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
 - **Traces:** OpenTelemetry tracing for HTTP, SQLAlchemy, Redis and outbound HTTP; propagate W3C trace context to the worker and outbound calls.
 - **Errors:** Sentry with PII scrubbing on; request ID attached.
 - **Security events** – failed token verification, permission denials, rate-limit hits, repeated OTP failures – logged at WARNING with an `event` field; Grafana/Sentry alerts send them to the private Telegram group and email.
-- **Health:** `GET /health/live` (process up, no dependencies) and `GET /health/ready` (Postgres and Redis reachable within timeouts). Neither requires auth; neither reveals versions or internals.
+- **Health:** `GET /health/live` (process up, no dependencies) and `GET /health/ready`. Neither requires auth; neither reveals versions or internals.
+  - **Readiness depends on Postgres only.** It fails (503) when Postgres does not answer within its timeout, which takes the instance out of the load balancer's rotation.
+  - **Redis is checked but does not fail readiness.** Every instance shares one Redis, so a Redis outage would otherwise take the whole API offline, defeating the fail-open rule for staff endpoints (see "Rate limiting and abuse"). Redis being down is logged at ERROR, counted in a metric and alerted on; features that need Redis decide per endpoint (staff endpoints fail open; OTP, SMS and public registration fail closed with 503).
+  - Owner decision, GZ-007 planning (2026-10-28).
 
 ## Testing (required for "done")
 
