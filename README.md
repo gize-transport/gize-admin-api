@@ -187,6 +187,39 @@ A valid token only proves someone has a Supabase account. Whether they are Gize 
 - **`GET /v1/staff/me`** returns the caller's `id`, `full_name`, `email` and `role` (`Cache-Control: no-store`). The admin portal calls it after sign-in.
 - **Supabase sign-ups:** staff are added by admins (GZ-013). In the Supabase dashboard (Authentication → Sign In / Providers), turn off **Allow new users to sign up**, so strangers can't even get a token. For the very first admin, create the user in the dashboard (Authentication → Users → Add user), then make them admin with the GZ-014 command.
 
+## Audit log
+
+Every create, update or delete by staff is recorded in `gize.audit_log` in the same transaction as the change (`core/audit.py`):
+
+```python
+async with session.begin():
+    before = audit.snapshot(STAFF_AUDIT, staff)
+    staff.role = StaffRole.ADMIN
+    audit.record(
+        session,
+        actor_id=caller.id,
+        action="staff.role_changed",
+        entity=STAFF_AUDIT,
+        entity_id=staff.id,
+        before=before,
+        after=audit.snapshot(STAFF_AUDIT, staff),
+    )
+```
+
+- **Same transaction:** `record` refuses to run outside one. A failed change leaves no row, and a saved change always has one.
+- **Minimised:** each entity (an `AuditedEntity`, e.g. `STAFF_AUDIT`) declares the fields it records and which are shown by value.
+  - The rest (names, emails, phones, children's data) appear as `"[redacted]"`, which shows that they changed but never what to. An empty value stays `null`, which shows only whether the field is set.
+  - Before and after must hold every declared field (use `snapshot`). An update keeps only the fields that changed; one that changed nothing isn't recorded.
+- **Who:** `actor_id` is the staff member. An operator command passes `actor_id=None, operator=True`, so a forgotten actor fails instead of passing as an operator.
+- **Append-only, enforced by the database** (migration 0004):
+  - the app role can read, and insert only the content columns (the ID and time always come from the database, so an entry can't be backdated);
+  - UPDATE and DELETE are revoked; restrictive row-level policies make them affect no rows even if granted again by mistake.
+- **Rollback:** the migration's downgrade refuses while the table has rows. Back it up and empty it as the owner first, deliberately.
+- **`GET /v1/audit-log`** (admins only):
+  - newest first, cursor-paginated (`AuditEntryPage`);
+  - filtered by an entity (`entity_type` and `entity_id` together) and/or `actor_staff_id`;
+  - `actor_staff_id` is null for operator commands such as the first-admin bootstrap.
+
 ## First admin
 
 Admins add staff in the admin portal, so the very first admin is made by a command, once per environment.
@@ -203,7 +236,7 @@ Admins add staff in the admin portal, so the very first admin is made by a comma
    ```
    On a host, run it inside the running API container (`docker exec <container> python -m gize_api.cli.first_admin ...`). The image's entrypoint only starts `api`, `worker` or `migrate`, so `docker run` with this command doesn't work.
 
-The command reads the user from Supabase (it must exist, have a confirmed email, and not be banned, deleted or anonymous). It then makes them an active admin in one transaction, and refuses if any admin already exists, active or not. Two runs at once can't both succeed. It prints only the user ID, never names or emails, and reports the new admin to Sentry (a `first_admin_created` security event) until the audit log exists.
+The command reads the user from Supabase (it must exist, have a confirmed email, and not be banned, deleted or anonymous). It then makes them an active admin in one transaction, and refuses if any admin already exists, active or not. Two runs at once can't both succeed. It prints only the user ID, never names or emails. It records the new admin in the audit log (action `staff.first_admin_created`, no actor) and reports it to Sentry (a `first_admin_created` security event).
 
 Exit codes:
 - `0`: done.
