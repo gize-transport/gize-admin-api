@@ -51,6 +51,7 @@ Ask before adding any dependency not listed here.
 - `uv run ruff check . && uv run ruff format --check . && uv run mypy src` – must pass
 - `uv run --env-file .env python -m gize_api.worker` – background worker (not Arq's CLI: it replaces our JSON logging)
 - `uv run python scripts/export_openapi.py` – regenerate `openapi.json` (commit it with any API change)
+- `uv run --env-file .env python -m gize_api.cli.first_admin --user-id <uid> --name "…"` – make the first admin (README, "First admin")
 
 ## Working style
 

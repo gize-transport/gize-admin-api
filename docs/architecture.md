@@ -67,6 +67,8 @@ src/gize_api/
   health/router.py        # /health/live, /health/ready
   staff/  routes/  riders/  waitlists/  drivers/  verification/   # domain slices
   integrations/sms.py     # SmsSender protocol + FakeSmsSender + real gateway adapter later
+  integrations/supabase_auth.py  # Supabase Auth admin API (secret key; read users, invites later)
+  cli/first_admin.py      # operator command: make the first admin (`python -m gize_api.cli.first_admin`)
 migrations/               # Alembic (env.py runs as gize_migrator)
 tests/
   conftest.py             # real Postgres (compose test server), per-test transaction rollback, auth helpers

@@ -93,7 +93,7 @@ Status: done · Depends on: GZ-004, GZ-006
 - Decisions at M1 planning: asymmetric signing keys only (JWKS; no shared secret in the API), PyJWT with `cryptography`, new setting `SUPABASE_URL`. Failed tokens are throttled per IP (`TOKEN_FAILURES`, the GZ-009 hand-off).
 
 ### GZ-011 · Staff accounts and role guards
-Status: in review · Depends on: GZ-010
+Status: done · Depends on: GZ-010
 - `staff` table (id = Supabase user id, role `admin`/`staff`, is_active). `current_staff` dependency; `require_role` guard; documented pattern for object-level checks in services.
 - `GET /v1/staff/me` returns the caller's id, name, email and role (used by the admin portal after sign-in).
 - Acceptance: valid token for an unknown or inactive staff → 403; role taken from our table even if the token claims otherwise.
@@ -111,8 +111,9 @@ Status: todo · Depends on: GZ-012
 - Acceptance: idempotent invite; last-admin protection test; all actions audited.
 
 ### GZ-014 · Bootstrap first admin
-Status: todo · Depends on: GZ-011
+Status: in review · Depends on: GZ-011
 - CLI command to promote an existing Supabase user to the first admin; refuses if an admin already exists.
+- Built: `python -m gize_api.cli.first_admin --user-id <uid> --name "…"`, new setting `SUPABASE_SECRET_KEY` (optional; `sb_secret_...` only), `integrations/supabase_auth.py` (admin API, `apikey` header). Refuses if any admin exists, active or not; under an advisory lock. The user must have a confirmed email and not be banned, deleted or anonymous. Hand-off to GZ-012: audit the first-admin creation (`TODO(GZ-012)` in the command).
 
 ### GZ-015 · Publish the API contract
 Status: todo · Depends on: GZ-011

@@ -50,6 +50,7 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL (with `rediss`, the server's certificate and host name are checked). |
 | `SUPABASE_URL` | yes | The Supabase project URL, `https://<project-ref>.supabase.co` (Project Settings → API). Sign-in tokens are verified against its public signing keys and must name its Auth service as issuer. |
+| `SUPABASE_SECRET_KEY` | for the first-admin command (and staff invites, GZ-013) | **Secret.** The project's secret API key, `sb_secret_...` (Project Settings → API Keys → Secret keys). It can read and create users: keep it in `.env` or the host's secret store, never in chat, code or the frontend. The legacy `service_role` JWT is refused. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, or Cloudflare's authenticated origin pulls): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
@@ -185,6 +186,23 @@ A valid token only proves someone has a Supabase account. Whether they are Gize 
 - **Object-level checks** live in services (see `docs/architecture.md`).
 - **`GET /v1/staff/me`** returns the caller's `id`, `full_name`, `email` and `role` (`Cache-Control: no-store`). The admin portal calls it after sign-in.
 - **Supabase sign-ups:** staff are added by admins (GZ-013). In the Supabase dashboard (Authentication → Sign In / Providers), turn off **Allow new users to sign up**, so strangers can't even get a token. For the very first admin, create the user in the dashboard (Authentication → Users → Add user), then make them admin with the GZ-014 command.
+
+## First admin
+
+Admins add staff in the admin portal, so the very first admin is made by a command, once per environment.
+
+1. **Create the user** in the Supabase dashboard: Authentication → Users → Add user (with their email). Have them set a password or sign in once, so the email is confirmed.
+2. **Copy their UID** from the user's row in that list.
+3. **Set the two Supabase values** where the command runs (your `.env` locally, the host's secret store on staging): `SUPABASE_URL` and `SUPABASE_SECRET_KEY` (Project Settings → API Keys → Secret keys). `DATABASE_URL` must point at that environment's database.
+4. **Run:**
+   ```bash
+   uv run --env-file .env python -m gize_api.cli.first_admin --user-id <UID> --name "Full Name"
+   ```
+   On a host, run `python -m gize_api.cli.first_admin ...` in the API container.
+
+The command reads the user from Supabase (it must exist, have a confirmed email, and not be banned, deleted or anonymous). It then makes them an active admin in one transaction, and refuses if any admin already exists. Two runs at once can't both succeed. It prints only the user ID, never names or emails.
+
+Exit codes: `0` done; `1` refused, or Supabase or the database was unavailable (nothing changed); `2` wrong arguments or settings.
 
 ## Health checks
 
