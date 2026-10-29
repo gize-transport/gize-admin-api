@@ -20,7 +20,7 @@ If these documents conflict, `engineering-standards.md` and `api-contract.md` wi
 - Python 3.12, FastAPI, Pydantic v2 (+ pydantic-settings), Uvicorn
 - SQLAlchemy 2.0 (async) + asyncpg; Alembic for every schema change
 - Supabase: Postgres (schema `gize`), Auth (JWT verification only), Storage (driver documents)
-- Redis: rate limiting (slowapi), Arq background jobs
+- Redis: rate limiting (`limits`, async; replaced slowapi, which blocks on Redis: owner decision at GZ-009), Arq background jobs
 - Observability: structlog JSON logs, OpenTelemetry (metrics + traces → Grafana Cloud), Sentry (errors)
 - Tooling: uv, ruff (lint + format), mypy `--strict`, pytest, pytest-asyncio, coverage, pre-commit, gitleaks, pip-audit
 - Packaging: Docker image; hosting provider not chosen yet, so nothing may depend on a specific host

@@ -57,7 +57,7 @@ src/gize_api/
     logging.py            # structlog JSON, request context, PII masking
     telemetry.py          # OpenTelemetry setup (traces, metrics)
     sentry.py             # Sentry init and event scrubbing
-    ratelimit.py          # slowapi + Redis, key functions, fail-open/closed policy
+    ratelimit.py          # `limits` (async) + Redis: named policies, keys, fail-open/closed
     idempotency.py        # Idempotency-Key handling (Postgres table)
     http.py               # outbound HTTP client with timeouts + host allowlist (SSRF guard)
     pagination.py         # cursor encode/decode, Page[T] schema
@@ -135,6 +135,6 @@ All configuration via environment variables loaded by `core/config.py`; app refu
 
 ## Deployment
 
-- One Docker image; commands: `api` (uvicorn with graceful timeout 30 s), `worker` (`python -m gize_api.worker`: Arq with our logging; 25 s to finish running jobs on SIGTERM) and `migrate`.
+- One Docker image; commands: `api` (uvicorn with graceful timeout 30 s), `worker` (`python -m gize_api.worker`: Arq with our logging; 20 s to finish running jobs on SIGTERM) and `migrate`.
 - Migrations run as a separate release step with the `gize_migrator` credentials, before the new app version starts.
 - Host-agnostic: no host-specific SDKs or files in application code.

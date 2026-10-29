@@ -44,6 +44,7 @@ SETTINGS_ENV_VARS = (
     "DATABASE_SSL_ROOT_CERT",
     "DATABASE_POOL_SIZE",
     "DATABASE_MAX_OVERFLOW",
+    "CLIENT_IP_HEADER",
 )
 
 SettingsFactory = Callable[..., Settings]

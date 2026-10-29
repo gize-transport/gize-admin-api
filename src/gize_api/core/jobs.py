@@ -13,6 +13,7 @@
 """
 
 import json
+import time
 import uuid
 from typing import Any
 
@@ -24,6 +25,7 @@ from redis.exceptions import RedisError
 from gize_api.core.db import OpenTransactionError, database_transaction_open
 from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.redis_options import connection_options
+from gize_api.core.telemetry import Telemetry
 
 QUEUE_RETRY_AFTER_SECONDS = "5"
 REDIS_TIMEOUT_SECONDS = 1.0
@@ -75,18 +77,33 @@ def _encode(value: object) -> object:
     raise TypeError(f"job data must be JSON (IDs), not {type(value).__name__}")
 
 
-async def enqueue(pool: ArqRedis, function: str, *args: Any, job_id: str) -> bool:  # noqa: ANN401
+async def enqueue(
+    pool: ArqRedis,
+    function: str,
+    *args: Any,  # noqa: ANN401 - job arguments (IDs)
+    job_id: str,
+    telemetry: Telemetry | None = None,
+) -> bool:
     """Queue `function(*args)`; False if a job with this ID is already queued or done."""
     if database_transaction_open():
         raise OpenTransactionError("enqueue jobs after the transaction has committed")
+    started = time.perf_counter()
     try:
         queued = await pool.enqueue_job(function, *args, _job_id=job_id)
     except (RedisError, OSError) as exc:
+        _measure(telemetry, "error", started)
         logger.error("job_queue_unavailable", job=function, exc_info=exc)
         raise AppError(
             ErrorCode.SERVICE_UNAVAILABLE, headers={"Retry-After": QUEUE_RETRY_AFTER_SECONDS}
         ) from None
     if queued is None:
+        _measure(telemetry, "duplicate", started)
         logger.info("job_already_enqueued", job=function)
         return False
+    _measure(telemetry, "ok", started)
     return True
+
+
+def _measure(telemetry: Telemetry | None, outcome: str, started: float) -> None:
+    if telemetry is not None:
+        telemetry.record_redis_operation("enqueue", outcome, time.perf_counter() - started)

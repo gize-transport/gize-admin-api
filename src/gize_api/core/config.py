@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # worker, the old release during a deploy) counts against the pooler's client limit.
     database_pool_size: int = Field(default=5, ge=1, le=50)
     database_max_overflow: int = Field(default=5, ge=0, le=50)
+    # The request header holding the client's IP, written by a trusted proxy in front of
+    # the API (`CF-Connecting-IP` behind Cloudflare). Unset: the socket address. Never set
+    # it without such a proxy: the header would let any client choose its rate-limit key.
+    client_ip_header: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]{1,64}$")
     cors_allowed_origins: Annotated[tuple[str, ...], NoDecode] = Field(default=(), max_length=20)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # Observability: each is off when unset. Production refuses to start without both unless
@@ -72,6 +76,11 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return tuple(origin.strip() for origin in value.split(",") if origin.strip())
         return value
+
+    @field_validator("client_ip_header")
+    @classmethod
+    def _lower_case_header(cls, value: str | None) -> str | None:
+        return value.lower() if value is not None else None  # how ASGI spells header names
 
     @field_validator("log_level", mode="before")
     @classmethod

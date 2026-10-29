@@ -46,6 +46,7 @@ __all__ = [
     "TRUNCATED",
     "AccessLogMiddleware",
     "configure_logging",
+    "current_staff_id",
     "known_method",
     "log_security_event",
     "mask_phone_numbers",
@@ -72,10 +73,26 @@ def set_staff_id(staff_id: str | None) -> None:
     _staff_id.set(staff_id)
 
 
-def log_security_event(event: str, **fields: Any) -> None:  # noqa: ANN401 - log fields
+def current_staff_id() -> str | None:
+    """The staff member set by the auth dependency for this request, if any."""
+    return _staff_id.get()
+
+
+def log_security_event(
+    event: str,
+    *,
+    sentry: bool = True,
+    **fields: Any,  # noqa: ANN401 - log fields
+) -> None:
     """Failed auth, permission denials, rate-limit hits, OTP abuse: logged at WARNING and
-    sent to Sentry as a warning event (the alert route until logs are shipped, GZ-066)."""
+    sent to Sentry as a warning event (the alert route until logs are shipped, GZ-066).
+
+    `sentry=False` logs only: for events that can come in floods (rate-limit hits), the
+    caller sends one now and then rather than every one.
+    """
     structlog.get_logger("gize_api.security").warning(event, category="security", **fields)
+    if not sentry:
+        return
     try:
         budget = Budget()
         extras = {key: scrub_value(key, value, budget=budget) for key, value in fields.items()}

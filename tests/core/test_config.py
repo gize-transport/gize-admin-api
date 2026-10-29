@@ -453,3 +453,18 @@ def test_env_example_loads_as_is(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.sentry_dsn is None
     assert settings.database_ssl_root_cert is None
     assert settings.release is None
+
+
+def test_client_ip_header_is_off_by_default(clean_env: pytest.MonkeyPatch) -> None:
+    """Off: the socket address. Trusting a header no proxy sets would let anyone pick their IP."""
+    _set(clean_env)
+    assert load_settings().client_ip_header is None
+    _set(clean_env, CLIENT_IP_HEADER="CF-Connecting-IP")
+    assert load_settings().client_ip_header == "cf-connecting-ip"
+
+
+@pytest.mark.parametrize("value", ["CF Connecting IP", "x" * 65, "Bad:Header", "X-Ip\\n"])
+def test_client_ip_header_must_be_a_header_name(clean_env: pytest.MonkeyPatch, value: str) -> None:
+    _set(clean_env, CLIENT_IP_HEADER=value)
+    with pytest.raises(ConfigError, match="client_ip_header"):
+        load_settings()
