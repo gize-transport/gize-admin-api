@@ -85,7 +85,8 @@ async def create_first_admin(
             staff.role, staff.is_active = StaffRole.ADMIN, True
         record(
             session,
-            actor_id=None,  # an operator at a shell, not a staff member
+            actor_id=None,
+            operator=True,  # an operator at a shell, not a staff member
             action="staff.first_admin_created",
             entity=STAFF_AUDIT,
             entity_id=user_id,

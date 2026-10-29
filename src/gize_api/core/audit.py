@@ -11,13 +11,18 @@
   row and a recorded change cannot be lost.
 - **Minimised.** Each entity declares the fields it records and which of them are
   `visible`; the others (names, phones, emails, children's data) are stored as
-  "[redacted]": the log shows that they changed, never their values. An update keeps only
-  the fields that changed; one that changed nothing is not recorded.
-- **Append-only.** The app role may only INSERT and SELECT `gize.audit_log` (migration
-  0004 revokes the rest), so not even a bug in the app can rewrite history.
+  "[redacted]": the log shows that they changed, never their values. An empty (null)
+  value stays null, which shows only whether the field is set. Before and after must hold
+  every declared field (use `snapshot`); an update keeps only the fields that changed, and
+  one that changed nothing is not recorded.
+- **Who.** `actor_id` is the staff member; an operator command (no staff member) passes
+  `actor_id=None, operator=True`, so a forgotten actor fails instead of looking like one.
+- **Append-only.** The app role may only SELECT, and INSERT the content columns: the ID
+  and time come from the database, and nothing can be changed or removed (migration 0004).
 """
 
 import enum
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -101,18 +106,25 @@ def record(
     entity_id: uuid.UUID,
     before: Mapping[str, Any] | None,
     after: Mapping[str, Any] | None,
+    operator: bool = False,
 ) -> AuditEntry | None:
     """Add the change's audit row to the open transaction (None if nothing changed)."""
     if not session.in_transaction():
         raise RuntimeError("audit.record runs inside the change's transaction")
+    if (actor_id is None) != operator:
+        raise ValueError("pass the acting staff member's actor_id, or operator=True for none")
     if not ACTION.fullmatch(action) or len(action) > ACTION_MAX_LENGTH:
         raise ValueError(f"action must look like 'entity.verb': {action!r}")
     if before is None and after is None:
         raise ValueError("a change needs before or after")
     for values in (before, after):
-        undeclared = sorted(set(values or ()) - set(entity.fields))
-        if undeclared:
-            raise ValueError(f"fields not declared for {entity.type}: {', '.join(undeclared)}")
+        if values is not None and set(values) != set(entity.fields):
+            missing = sorted(set(entity.fields) - set(values))
+            unexpected = sorted(set(values) - set(entity.fields))
+            raise ValueError(
+                f"before/after must hold exactly the fields of {entity.type} (missing:"
+                f" {', '.join(missing) or '-'}; unexpected: {', '.join(unexpected) or '-'})"
+            )
     if before is not None and after is not None:
         changed = [field for field in entity.fields if before.get(field) != after.get(field)]
         if not changed:
@@ -144,6 +156,8 @@ def _minimised(entity: AuditedEntity, values: Mapping[str, Any] | None) -> dict[
 
 
 def _json(value: object) -> Any:  # noqa: ANN401 - a JSON value
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("audit values must be finite numbers (JSON has no NaN or infinity)")
     if value is None or isinstance(value, bool | int | float):
         return value
     if isinstance(value, enum.Enum):
@@ -152,6 +166,8 @@ def _json(value: object) -> Any:  # noqa: ANN401 - a JSON value
         return value
     if isinstance(value, uuid.UUID):
         return str(value)
+    if isinstance(value, datetime) and value.tzinfo is None:
+        raise ValueError("audit times need a time zone")
     if isinstance(value, datetime | date):
         return value.isoformat()
     raise TypeError(f"cannot store a {type(value).__name__} in the audit log as JSON")

@@ -195,14 +195,30 @@ Every create, update or delete by staff is recorded in `gize.audit_log` in the s
 async with session.begin():
     before = audit.snapshot(STAFF_AUDIT, staff)
     staff.role = StaffRole.ADMIN
-    audit.record(session, actor_id=caller.id, action="staff.role_changed", entity=STAFF_AUDIT,
-                 entity_id=staff.id, before=before, after=audit.snapshot(STAFF_AUDIT, staff))
+    audit.record(
+        session,
+        actor_id=caller.id,
+        action="staff.role_changed",
+        entity=STAFF_AUDIT,
+        entity_id=staff.id,
+        before=before,
+        after=audit.snapshot(STAFF_AUDIT, staff),
+    )
 ```
 
 - **Same transaction:** `record` refuses to run outside one. A failed change leaves no row, and a saved change always has one.
-- **Minimised:** each entity (an `AuditedEntity`, e.g. `STAFF_AUDIT`) declares the fields it records and which are shown by value. The rest (names, emails, phones, children's data) appear as `"[redacted]"`, which shows that they changed but never what to. An update keeps only the fields that changed; one that changed nothing isn't recorded.
-- **Append-only:** the app role can only add and read rows. Migration 0004 revokes UPDATE, DELETE and TRUNCATE, so not even a bug can rewrite history.
-- **`GET /v1/audit-log`** (admins only): newest first, cursor-paginated, filtered by `entity_type` + `entity_id` and/or `actor_staff_id`. `actor_staff_id` is null for operator commands such as the first-admin bootstrap.
+- **Minimised:** each entity (an `AuditedEntity`, e.g. `STAFF_AUDIT`) declares the fields it records and which are shown by value.
+  - The rest (names, emails, phones, children's data) appear as `"[redacted]"`, which shows that they changed but never what to. An empty value stays `null`, which shows only whether the field is set.
+  - Before and after must hold every declared field (use `snapshot`). An update keeps only the fields that changed; one that changed nothing isn't recorded.
+- **Who:** `actor_id` is the staff member. An operator command passes `actor_id=None, operator=True`, so a forgotten actor fails instead of passing as an operator.
+- **Append-only, enforced by the database** (migration 0004):
+  - the app role can read, and insert only the content columns (the ID and time always come from the database, so an entry can't be backdated);
+  - UPDATE and DELETE are revoked and also refused by restrictive row-level policies.
+- **Rollback:** the migration's downgrade refuses while the table has rows. Back it up and empty it as the owner first, deliberately.
+- **`GET /v1/audit-log`** (admins only):
+  - newest first, cursor-paginated (`AuditEntryPage`);
+  - filtered by an entity (`entity_type` and `entity_id` together) and/or `actor_staff_id`;
+  - `actor_staff_id` is null for operator commands such as the first-admin bootstrap.
 
 ## First admin
 

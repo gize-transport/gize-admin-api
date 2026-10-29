@@ -3,12 +3,12 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.audit_log import repository
-from gize_api.audit_log.schemas import AuditEntryRead, AuditLogParams
+from gize_api.audit_log.schemas import AuditEntryPage, AuditEntryRead, AuditLogParams
 from gize_api.core.audit import AuditEntry
-from gize_api.core.pagination import Page, paginate
+from gize_api.core.pagination import paginate
 
 
-async def list_entries(session: AsyncSession, params: AuditLogParams) -> Page[AuditEntryRead]:
+async def list_entries(session: AsyncSession, params: AuditLogParams) -> AuditEntryPage:
     """Newest first. Callers are admins (the route's require_role)."""
     async with session.begin():
         page = await paginate(
@@ -19,7 +19,7 @@ async def list_entries(session: AsyncSession, params: AuditLogParams) -> Page[Au
             id=AuditEntry.id,
             newest_first=True,
         )
-        return Page(
+        return AuditEntryPage(
             items=[AuditEntryRead.model_validate(entry) for entry in page.items],
             next_cursor=page.next_cursor,
         )

@@ -2,22 +2,29 @@
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gize_api.core.audit import ACTION_MAX_LENGTH, ENTITY_TYPE_MAX_LENGTH
-from gize_api.core.pagination import PageParams
+from gize_api.core.pagination import Page, PageParams
 
 
 class AuditLogParams(PageParams):
-    """Filters, all optional and combined with AND; unknown parameters are refused."""
+    """Filters, all optional and combined with AND; unknown parameters are refused. An
+    entity is its type and ID together (each alone would scan the whole log)."""
 
     entity_type: str | None = Field(
         default=None, max_length=ENTITY_TYPE_MAX_LENGTH, pattern=r"^[a-z][a-z_]*$"
     )
     entity_id: uuid.UUID | None = None
     actor_staff_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _entity_is_type_and_id(self) -> Self:
+        if (self.entity_type is None) != (self.entity_id is None):
+            raise ValueError("entity_type and entity_id go together")
+        return self
 
 
 class AuditEntryRead(BaseModel):
@@ -35,3 +42,7 @@ class AuditEntryRead(BaseModel):
     before: dict[str, Any] | None
     after: dict[str, Any] | None
     request_id: str | None = Field(max_length=64)
+
+
+class AuditEntryPage(Page[AuditEntryRead]):
+    """A page of the audit log (a named schema: generated clients keep the name)."""

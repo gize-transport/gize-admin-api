@@ -34,7 +34,7 @@ repos:
         name: ruff format
         entry: uv run --frozen ruff format --check --force-exclude
         language: system
-        types_or: [python, pyi]
+        types_or: [python, pyi, markdown]  # ruff also formats Python blocks in Markdown
       - id: mypy
         name: mypy --strict
         entry: uv run --frozen mypy

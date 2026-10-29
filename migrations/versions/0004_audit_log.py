@@ -4,10 +4,15 @@ Revision ID: 0004
 Revises: 0003
 Create Date: 2026-10-29
 
-Expand only: a new table, with row-level security like every table. Append-only: the app
-role keeps INSERT and SELECT only (the schema's default privileges also grant UPDATE and
-DELETE, revoked here), so rows can be added and read but never changed or removed by the
-app. TRUNCATE was never granted.
+Expand only: a new table, with row-level security like every table. Append-only, enforced
+by the database:
+- the app role may SELECT, and INSERT only the content columns: `id` and `created_at`
+  always come from the database, so an entry cannot be backdated;
+- UPDATE and DELETE (from the schema's default privileges) are revoked, and restrictive
+  policies refuse them too, should they ever be granted again. TRUNCATE was never granted.
+
+The downgrade refuses while the table has rows: it would destroy the history. Back it up
+and empty it as the owner first, deliberately.
 """
 
 from collections.abc import Sequence
@@ -22,6 +27,16 @@ revision: str = "0004"
 down_revision: str | None = "0003"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+INSERTABLE = (
+    "actor_staff_id",
+    "action",
+    "entity_type",
+    "entity_id",
+    "before",
+    "after",
+    "request_id",
+)
 
 
 def upgrade() -> None:
@@ -71,10 +86,22 @@ def upgrade() -> None:
         schema="gize",
     )
     enable_row_level_security(op, "audit_log")
-    op.execute(f'REVOKE UPDATE, DELETE, TRUNCATE ON "gize"."audit_log" FROM "{APP_ROLE}"')
+    table = '"gize"."audit_log"'
+    op.execute(f'REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON {table} FROM "{APP_ROLE}"')
+    op.execute(f'GRANT INSERT ({", ".join(INSERTABLE)}) ON {table} TO "{APP_ROLE}"')
+    for command in ("UPDATE", "DELETE"):
+        op.execute(
+            f'CREATE POLICY "gize_app_no_{command.lower()}" ON {table} AS RESTRICTIVE'
+            f' FOR {command} TO "{APP_ROLE}" USING (false)'
+        )
 
 
 def downgrade() -> None:
+    op.execute(
+        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM gize.audit_log) THEN"
+        " RAISE EXCEPTION 'gize.audit_log has rows: back up and empty it first';"
+        " END IF; END $$"
+    )
     disable_row_level_security(op, "audit_log")
     op.drop_index(
         "ix_audit_log_actor_staff_id_created_at_id", table_name="audit_log", schema="gize"

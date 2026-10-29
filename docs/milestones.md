@@ -104,7 +104,7 @@ Status: in review · Depends on: GZ-011
 - Append-only `audit_log`; `audit.record()` used inside service transactions; PII-minimised before/after.
 - `GET /v1/audit-log` (admin only, filters by entity and actor, cursor-paginated).
 - Acceptance: a failed transaction leaves no audit row; staff role gets 403.
-- Built: `gize.audit_log` (migration 0004; the app role has INSERT and SELECT only; checks on action, entity type and that a change was recorded; indexes for newest-first lists overall, per entity and per actor), `core/audit.py` (`record`, `snapshot`, `AuditedEntity`; only changed fields; non-visible values `[redacted]`), `STAFF_AUDIT` (role and status by value), the first-admin command audited (`staff.first_admin_created`, no actor), `GET /v1/audit-log` (`audit_log_list`, admin only). Hand-off to GZ-013: audit every staff change with `STAFF_AUDIT`.
+- Built: `gize.audit_log` (migration 0004; the app role may SELECT and INSERT the content columns only, so IDs and times come from the database; UPDATE/DELETE revoked and refused by restrictive policies; the downgrade refuses while rows exist; checks on action, entity type and that a change was recorded; indexes for newest-first lists overall, per entity and per actor), `core/audit.py` (`record`, `snapshot`, `AuditedEntity`; every declared field required; only changed fields kept; non-visible values `[redacted]`; `operator=True` for actor-less entries), `STAFF_AUDIT` (role and status by value), the first-admin command audited (`staff.first_admin_created`, operator), `GET /v1/audit-log` (`audit_log_list`, admin only, `AuditEntryPage`). Hand-off to GZ-013: audit every staff change with `STAFF_AUDIT`.
 
 ### GZ-013 · Staff management (admin)
 Status: todo · Depends on: GZ-012
@@ -114,7 +114,7 @@ Status: todo · Depends on: GZ-012
 ### GZ-014 · Bootstrap first admin
 Status: done · Depends on: GZ-011
 - CLI command to promote an existing Supabase user to the first admin; refuses if an admin already exists.
-- Built: `python -m gize_api.cli.first_admin --user-id <uid> --name "…"`, new setting `SUPABASE_SECRET_KEY` (optional; `sb_secret_...` only), `integrations/supabase_auth.py` (admin API, `apikey` header). Refuses if any admin exists, active or not; under an advisory lock. The user must have a confirmed email and not be banned, deleted or anonymous. Hand-offs: GZ-012 audits the first-admin creation (`TODO(GZ-012)` in the command; until then a `first_admin_created` Sentry event). GZ-013's invites must take `FIRST_ADMIN_LOCK_ID` or handle a unique-constraint error on email or ID.
+- Built: `python -m gize_api.cli.first_admin --user-id <uid> --name "…"`, new setting `SUPABASE_SECRET_KEY` (optional; `sb_secret_...` only), `integrations/supabase_auth.py` (admin API, `apikey` header). Refuses if any admin exists, active or not; under an advisory lock. The user must have a confirmed email and not be banned, deleted or anonymous. Hand-offs: GZ-012 audits the first-admin creation (done in GZ-012; the `first_admin_created` Sentry event stays as an alert). GZ-013's invites must take `FIRST_ADMIN_LOCK_ID` or handle a unique-constraint error on email or ID.
 
 ### GZ-015 · Publish the API contract
 Status: done · Depends on: GZ-011

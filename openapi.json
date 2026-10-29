@@ -1,6 +1,35 @@
 {
   "components": {
     "schemas": {
+      "AuditEntryPage": {
+        "description": "A page of the audit log (a named schema: generated clients keep the name).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditEntryRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "AuditEntryPage",
+        "type": "object"
+      },
       "AuditEntryRead": {
         "additionalProperties": false,
         "description": "One recorded change. `before`/`after` hold only the fields that changed; personal\nones read \"[redacted]\". `actor_staff_id` is null for operator commands.",
@@ -142,34 +171,6 @@
           "reason"
         ],
         "title": "FieldError",
-        "type": "object"
-      },
-      "Page_AuditEntryRead_": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/AuditEntryRead"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          }
-        },
-        "required": [
-          "items",
-          "next_cursor"
-        ],
-        "title": "Page[AuditEntryRead]",
         "type": "object"
       },
       "Problem": {
@@ -429,7 +430,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_AuditEntryRead_"
+                  "$ref": "#/components/schemas/AuditEntryPage"
                 }
               }
             },

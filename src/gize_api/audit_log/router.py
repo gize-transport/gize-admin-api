@@ -6,10 +6,9 @@ from fastapi import Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.audit_log import service
-from gize_api.audit_log.schemas import AuditEntryRead, AuditLogParams
+from gize_api.audit_log.schemas import AuditEntryPage, AuditLogParams
 from gize_api.core.db import get_session
 from gize_api.core.errors import ErrorCode, problem_responses
-from gize_api.core.pagination import Page
 from gize_api.core.security import CurrentStaff, require_role, staff_router
 from gize_api.staff.models import StaffRole
 
@@ -32,7 +31,7 @@ async def audit_log(
     _: CurrentStaff = Depends(require_role(StaffRole.ADMIN)),  # noqa: B008
     params: AuditLogParams = Depends(audit_log_params),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
-) -> Page[AuditEntryRead]:
+) -> AuditEntryPage:
     """Every recorded change, filtered by entity or actor. Names, emails and other personal
     values never appear: the entries show only that they changed."""
     response.headers["Cache-Control"] = "no-store"
