@@ -57,6 +57,7 @@ from gize_api.core.telemetry import Telemetry
 CHECK_TIMEOUT_SECONDS = 1.0
 REDIS_MAX_CONNECTIONS = 20
 UNAVAILABLE_RETRY_AFTER_SECONDS = "5"
+FALLBACK_RETRY_AFTER_SECONDS = 60
 OUTAGE_LOG_INTERVAL_SECONDS = 60.0
 SENTRY_INTERVAL_SECONDS = 60.0
 KEY_PREFIX = "gize-ratelimit"
@@ -214,7 +215,8 @@ class RateLimiter:
             async with asyncio.timeout_at(deadline):
                 stats = await self._limiter.get_window_stats(exceeded.item, *exceeded.identifiers)
         except (StorageError, OSError, TimeoutError):
-            return exceeded.item.get_expiry()
+            # Unknown: a short wait, never "come back tomorrow" because Redis was slow.
+            return min(exceeded.item.get_expiry(), FALLBACK_RETRY_AFTER_SECONDS)
         return max(1, math.ceil(stats.reset_time - time.time()))
 
     def _unavailable(self, policy: Policy, error: BaseException) -> None:
@@ -247,8 +249,12 @@ def rate_limited(
     """FastAPI dependency counting the request by staff ID and client IP.
 
     Pass the route's auth dependency as `after`: FastAPI then resolves it first (and only
-    once per request), so the staff ID is known when the request is counted.
+    once per request), so the staff ID is known when the request is counted. A policy
+    with a `staff` limit requires it: without auth every staff member would be counted
+    by the office's shared IP.
     """
+    if after is None and any(limit.by == "staff" for limit in policy.limits):
+        raise ValueError(f"policy {policy.name} counts by staff: pass after=<auth dependency>")
 
     async def dependency(request: Request, _: Any = Depends(after or _nothing)) -> None:  # noqa: ANN401, B008
         limiter: RateLimiter = request.app.state.rate_limiter

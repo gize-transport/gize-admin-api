@@ -60,9 +60,7 @@ def _app(make_settings: SettingsFactory, **overrides: Any) -> GizeAPI:  # noqa: 
         if staff := request.headers.get("x-test-staff"):
             set_staff_id(staff)
 
-    @app.get(
-        "/_test/staff", dependencies=[Depends(as_staff), Depends(rate_limited(TWO_PER_MINUTE))]
-    )
+    @app.get("/_test/staff", dependencies=[Depends(rate_limited(TWO_PER_MINUTE, after=as_staff))])
     async def staff() -> dict[str, bool]:
         return {"ok": True}
 
@@ -371,6 +369,9 @@ async def test_retry_after_falls_back_to_the_window_length(
     deadline = asyncio.get_running_loop().time() + 1
     try:
         assert await down._retry_after(exceeded, deadline) == 60
+        daily = _Exceeded(Limit("3/day", "phone"), parse("3/day"), ("p", "1", "k"))
+        # A slow Redis must not tell a caller to come back tomorrow: capped at a minute.
+        assert await down._retry_after(daily, deadline) == 60
     finally:
         await down.aclose()
 
@@ -511,3 +512,10 @@ async def test_a_failing_limiter_close_does_not_stop_shutdown(
     async with app.router.lifespan_context(app):
         pass
     assert '"rate_limiter_close_failed"' in capsys.readouterr().err
+
+
+def test_a_staff_policy_requires_its_auth_dependency() -> None:
+    """Forgetting `after=` would silently count every staff member by the office IP."""
+    with pytest.raises(ValueError, match="after="):
+        rate_limited(TWO_PER_MINUTE)
+    rate_limited(CLOSED)  # IP and phone policies need no auth

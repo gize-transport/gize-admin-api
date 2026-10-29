@@ -78,7 +78,7 @@ Status: in review · Depends on: GZ-008
 - `RateLimitExceeded` needs its own handler that sets `Retry-After` (from GZ-004 review). Every security event also becomes a Sentry warning (GZ-005): decide which limit hits are sampled or aggregated so a flood cannot exhaust the Sentry quota.
 - Acceptance: tests for limit hit, Retry-After present, both Redis-down behaviours.
 - `/health/live` and `/health/ready` stay outside the limits (load-balancer probes; readiness already serves one cached result per second), from GZ-007.
-- Hand-off to GZ-010 (auth): the auth dependency calls `set_staff_id()`, and staff routes use `rate_limited(STAFF, after=<auth dependency>)` (FastAPI runs decorator dependencies before parameter ones), so limits count per staff member, not per office IP.
+- Hand-off to GZ-010 (auth): the auth dependency calls `set_staff_id()`, and staff routes use `rate_limited(STAFF, after=<auth dependency>)` (FastAPI runs decorator dependencies before parameter ones), so limits count per staff member, not per office IP (`rate_limited` refuses a staff policy without `after=`). The limiter runs after auth, so requests rejected by auth are never counted: throttle failed token checks too (e.g. a per-IP policy before auth), or a flood of bad tokens is unlimited and each is a Sentry security event.
 - Hand-off to the public sign-up and SMS tickets: check phone limits in the service with `rate_limiter.check(PUBLIC_SIGNUP | SMS, phone=...)`, passing the number normalised to E.164.
 - Hand-off to hosting (when chosen): if `CLIENT_IP_HEADER` is set, the API must accept connections from the proxy only (firewall, or Cloudflare authenticated origin pulls). Alert on `db.client.operation.duration{db.system.name="redis", outcome="error"}` (GZ-066).
 
