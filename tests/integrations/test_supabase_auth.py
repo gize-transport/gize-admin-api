@@ -1,4 +1,5 @@
-"""GZ-014: reading users from Supabase Auth's admin API with the project's secret key."""
+"""Supabase Auth's admin API with the project's secret key: reading users (GZ-014) and
+inviting staff (GZ-013)."""
 
 import json
 import uuid
@@ -10,7 +11,14 @@ import httpx
 import pytest
 
 from gize_api.core.http import OutboundClient
-from gize_api.integrations.supabase_auth import AuthAdminError, AuthUser, SupabaseAuthAdmin
+from gize_api.integrations.supabase_auth import (
+    AuthAccountExistsError,
+    AuthAdminError,
+    AuthEmailRejectedError,
+    AuthUser,
+    SupabaseAuthAdmin,
+)
+from gize_api.main import create_app
 from tests.supabase import SECRET_KEY, USER_ID, user_json
 from tests.support import TEST_SUPABASE_URL, SettingsFactory, public_resolver
 
@@ -213,3 +221,138 @@ async def test_a_ban_with_a_time_zone_is_compared_correctly(
     user = await respond(httpx.Response(200, json=user_json(banned_until=until))).get_user(USER_ID)
     assert user is not None
     assert user.banned is banned
+
+
+def _invited(**overrides: Any) -> httpx.Response:  # noqa: ANN401 - JSON
+    """Supabase's answer to an invite: the new (or still unconfirmed) user."""
+    fields = {"email": "abebe@example.com", "email_confirmed_at": None, **overrides}
+    return httpx.Response(200, json=user_json(**fields))
+
+
+async def test_an_invite_sends_the_email_and_name_with_the_secret_key(
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin], requests: list[httpx.Request]
+) -> None:
+    admin = respond(_invited())
+    user_id = await admin.invite_user("abebe@example.com", full_name="Abebe Kebede")
+    assert user_id == USER_ID
+    (request,) = requests
+    assert request.method == "POST"
+    assert request.url.path == "/auth/v1/invite"  # not under /admin
+    assert request.headers["apikey"] == SECRET_KEY
+    assert "authorization" not in request.headers
+    # The name becomes the user's display name in the Supabase dashboard; the API itself
+    # never reads it back (gize.staff holds the name).
+    assert json.loads(request.content) == {
+        "email": "abebe@example.com",
+        "data": {"full_name": "Abebe Kebede"},
+    }
+
+
+async def test_an_invite_accepts_the_email_in_another_case(
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin],
+) -> None:
+    admin = respond(_invited(email="Abebe@Example.COM"))
+    assert await admin.invite_user("abebe@example.com", full_name="Abebe") == USER_ID
+
+
+@pytest.mark.parametrize("error_code", ["email_exists", "user_already_exists"])
+async def test_an_email_with_a_confirmed_account_is_refused(
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin], error_code: str
+) -> None:
+    body = {"code": 422, "error_code": error_code, "msg": "already been registered"}
+    admin = respond(httpx.Response(422, json=body))
+    with pytest.raises(AuthAccountExistsError):
+        await admin.invite_user("abebe@example.com", full_name="Abebe")
+
+
+@pytest.mark.parametrize(
+    ("status", "error_code"),
+    [(400, "email_address_invalid"), (400, "validation_failed"), (422, "validation_failed")],
+)
+async def test_an_email_supabase_will_not_take_is_rejected(
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin], status: int, error_code: str
+) -> None:
+    admin = respond(httpx.Response(status, json={"code": status, "error_code": error_code}))
+    with pytest.raises(AuthEmailRejectedError):
+        await admin.invite_user("abebe@example.com", full_name="Abebe")
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        # Supabase's built-in email only sends to the project team: custom SMTP is needed.
+        (
+            httpx.Response(400, json={"code": 400, "error_code": "email_address_not_authorized"}),
+            "custom SMTP",
+        ),
+        (
+            httpx.Response(429, json={"code": 429, "error_code": "over_email_send_rate_limit"}),
+            "status 429",
+        ),
+        (httpx.Response(401, json={"msg": "Invalid API key"}), "refused the secret key"),
+        (httpx.Response(403, json={"msg": "forbidden"}), "refused the secret key"),
+        (httpx.Response(500), "status 500"),
+        (httpx.Response(400, json={"code": 400, "error_code": "something_new"}), "status 400"),
+        (httpx.Response(422, content=b"<html>"), "status 422"),
+        (httpx.Response(422, json=["email_exists"]), "status 422"),
+        (httpx.Response(200, content=b"<html>"), "unexpected response"),
+        (httpx.Response(200, json={"email": "abebe@example.com"}), "unexpected response"),
+        (_invited(id="nope"), "unexpected response"),
+        (_invited(email="someone.else@example.com"), "unexpected response"),
+        (_invited(email=None), "unexpected response"),
+    ],
+)
+async def test_invite_failures_are_errors_without_the_key(
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin],
+    requests: list[httpx.Request],
+    response: httpx.Response,
+    message: str,
+) -> None:
+    admin = respond(response)
+    with pytest.raises(AuthAdminError, match=message) as exc_info:
+        await admin.invite_user("abebe@example.com", full_name="Abebe Kebede")
+    assert SECRET_KEY not in str(exc_info.value)
+    assert "abebe" not in str(exc_info.value).lower()  # no personal data in errors
+    assert len(requests) == 1  # an invite sends an email: never retried blindly
+
+
+async def test_supabase_unreachable_during_an_invite_is_an_error(
+    make_settings: SettingsFactory,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    admin = admin_for(make_settings, handler)
+    try:
+        with pytest.raises(AuthAdminError, match="could not reach"):
+            await admin.invite_user("abebe@example.com", full_name="Abebe")
+    finally:
+        await admin.aclose()
+
+
+async def test_the_app_has_an_admin_client_only_with_the_secret_key(
+    make_settings: SettingsFactory,
+) -> None:
+    """Staff invites use it; without the key they answer 503 and the rest works."""
+    with_key = create_app(make_settings(supabase_secret_key=SECRET_KEY))
+    async with with_key.router.lifespan_context(with_key):
+        assert isinstance(with_key.state.auth_admin, SupabaseAuthAdmin)
+    assert not hasattr(with_key.state, "auth_admin")  # closed and dropped at shutdown
+    without = create_app(make_settings())
+    async with without.router.lifespan_context(without):
+        assert without.state.auth_admin is None
+
+
+async def test_a_failing_admin_client_close_does_not_stop_shutdown(
+    make_settings: SettingsFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def failing(self: SupabaseAuthAdmin) -> None:
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(SupabaseAuthAdmin, "aclose", failing)
+    app = create_app(make_settings(supabase_secret_key=SECRET_KEY))
+    async with app.router.lifespan_context(app):
+        pass
+    assert '"auth_admin_close_failed"' in capsys.readouterr().err

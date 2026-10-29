@@ -100,16 +100,17 @@ Status: done · Depends on: GZ-010
 - Built: `gize.staff` (migration 0003; email lower-case and unique; role and non-blank checks), `current_staff` → `CurrentStaff(id, role)`, `require_role`, `staff_router` (STAFF limit), a test that every served route is guarded unless its method and path are listed as public, `GET /v1/staff/me` (`operationId` `staff_me`). Refusals of non-staff and deactivated staff count toward `TOKEN_FAILURES`. Hand-offs: GZ-013 stores emails trimmed and lower-case (the table refuses anything else) and re-reads the caller and target rows inside its own block (deactivation and last-admin checks); owner: turn off public sign-ups in Supabase.
 
 ### GZ-012 · Audit log
-Status: in review · Depends on: GZ-011
+Status: done · Depends on: GZ-011
 - Append-only `audit_log`; `audit.record()` used inside service transactions; PII-minimised before/after.
 - `GET /v1/audit-log` (admin only, filters by entity and actor, cursor-paginated).
 - Acceptance: a failed transaction leaves no audit row; staff role gets 403.
 - Built: `gize.audit_log` (migration 0004; the app role may SELECT and INSERT the content columns only, so IDs and times come from the database; UPDATE/DELETE revoked and refused by restrictive policies; the downgrade refuses while rows exist; checks on action, entity type and that a change was recorded; indexes for newest-first lists overall, per entity and per actor), `core/audit.py` (`record`, `snapshot`, `AuditedEntity`; every declared field required; only changed fields kept; non-visible values `[redacted]`; `operator=True` for actor-less entries), `STAFF_AUDIT` (role and status by value), the first-admin command audited (`staff.first_admin_created`, operator), `GET /v1/audit-log` (`audit_log_list`, admin only, `AuditEntryPage`). Hand-off to GZ-013: audit every staff change with `STAFF_AUDIT`.
 
 ### GZ-013 · Staff management (admin)
-Status: todo · Depends on: GZ-012
+Status: in review · Depends on: GZ-012
 - Admin: invite staff (Supabase Admin API via allowlisted client), list, change role, deactivate. An admin cannot deactivate or demote themselves if they are the last active admin.
 - Acceptance: idempotent invite; last-admin protection test; all actions audited.
+- Built: `POST /v1/staff` (`staff_invite`; Supabase `POST /auth/v1/invite`; `Idempotency-Key`; `STAFF_INVITE` 20/hour per admin), `GET /v1/staff` (`staff_list`, `StaffPage`), `GET /v1/staff/{staff_id}` (`staff_get`), `PATCH /v1/staff/{staff_id}` (`staff_update`; role and/or `is_active`, reactivation included). Codes `STAFF_EMAIL_TAKEN`, `AUTH_ACCOUNT_EXISTS` (a confirmed Supabase account is refused: owner decision), `LAST_ACTIVE_ADMIN`. One advisory lock for every staff change, the first-admin command included (`lock_staff_changes`). Migration 0005 (`ix_staff_created_at_id`). `idempotency.peek` for calls made before the write transaction. Audit actions `staff.invited`, `staff.role_changed`, `staff.deactivated`, `staff.reactivated`. Owner, before real invites: Supabase Site URL (the portal's set-password page) and custom SMTP.
 
 ### GZ-014 · Bootstrap first admin
 Status: done · Depends on: GZ-011

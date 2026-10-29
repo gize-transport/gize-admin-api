@@ -90,6 +90,8 @@ class Policy:
 
 
 STAFF = Policy("staff", (Limit("120/minute", "staff"),), fail_open=True)
+# Each invite sends an email through Supabase (GZ-013); on top of STAFF.
+STAFF_INVITE = Policy("staff_invite", (Limit("20/hour", "staff"),), fail_open=True)
 PUBLIC_SIGNUP = Policy(
     "public_signup", (Limit("5/hour", "ip"), Limit("3/day", "phone")), fail_open=False
 )

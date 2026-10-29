@@ -33,6 +33,7 @@ from gize_api.core.sentry import configure_sentry
 from gize_api.core.telemetry import Telemetry, configure_telemetry
 from gize_api.health.readiness import Readiness
 from gize_api.health.router import router as health_router
+from gize_api.integrations.supabase_auth import SupabaseAuthAdmin
 from gize_api.staff.router import router as staff_routes
 
 MAX_BODY_BYTES = 1024 * 1024
@@ -152,6 +153,12 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             app.state.readiness = readiness
             app.state.rate_limiter = RateLimiter.for_settings(settings, telemetry=telemetry)
             app.state.token_verifier = TokenVerifier.for_settings(settings, telemetry=telemetry)
+            # Staff invites need SUPABASE_SECRET_KEY; without it they answer 503.
+            app.state.auth_admin = (
+                None
+                if settings.supabase_secret_key is None
+                else SupabaseAuthAdmin.for_settings(settings, telemetry=telemetry)
+            )
             if telemetry is not None:
                 telemetry.instrument_redis(redis)
                 telemetry.instrument_database(engine)
@@ -166,8 +173,9 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             # Each step runs even if an earlier one fails.
             rate_limiter: RateLimiter = app.state.rate_limiter
             token_verifier: TokenVerifier = app.state.token_verifier
+            auth_admin: SupabaseAuthAdmin | None = app.state.auth_admin
             del app.state.redis, app.state.engine, app.state.sessionmaker, app.state.readiness
-            del app.state.rate_limiter, app.state.token_verifier
+            del app.state.rate_limiter, app.state.token_verifier, app.state.auth_admin
             try:
                 await rate_limiter.aclose()
             except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
@@ -179,6 +187,13 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
                 structlog.get_logger("gize_api.startup").warning(
                     "token_verifier_close_failed", exc_info=True
+                )
+            try:
+                if auth_admin is not None:
+                    await auth_admin.aclose()
+            except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
+                structlog.get_logger("gize_api.startup").warning(
+                    "auth_admin_close_failed", exc_info=True
                 )
             try:
                 await engine.dispose()

@@ -16,12 +16,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.cli import first_admin
-from gize_api.cli.first_admin import FIRST_ADMIN_LOCK_ID, FirstAdminRefusedError, create_first_admin
+from gize_api.cli.first_admin import FirstAdminRefusedError, create_first_admin
 from gize_api.core.audit import REDACTED, AuditEntry
 from gize_api.core.config import ConfigError
 from gize_api.core.http import OutboundClient
 from gize_api.integrations.supabase_auth import AuthAdminError, AuthUser, SupabaseAuthAdmin
 from gize_api.staff.models import Staff, StaffRole
+from gize_api.staff.repository import STAFF_CHANGES_LOCK_ID
 from tests.factories import StaffFactory
 from tests.supabase import SECRET_KEY, user_json
 from tests.support import (
@@ -218,7 +219,7 @@ async def test_a_run_waits_for_the_lock(
     try:
         transaction = holder.transaction()
         await transaction.start()
-        await holder.execute("SELECT pg_advisory_xact_lock($1)", FIRST_ADMIN_LOCK_ID)
+        await holder.execute("SELECT pg_advisory_xact_lock($1)", STAFF_CHANGES_LOCK_ID)
         run = asyncio.create_task(
             create_first_admin(committed_sessionmaker, FakeAuth(USER), USER.id, "Abebe")
         )
@@ -388,12 +389,12 @@ async def test_a_run_blocked_by_another_says_so(
     holder = await asyncpg.connect(database.app, timeout=3)
     try:
         async with holder.transaction():
-            await holder.execute("SELECT pg_advisory_xact_lock($1)", FIRST_ADMIN_LOCK_ID)
+            await holder.execute("SELECT pg_advisory_xact_lock($1)", STAFF_CHANGES_LOCK_ID)
             assert await _main("--user-id", str(USER.id), "--name", "Abebe") == 1
     finally:
         await holder.close()
     err = capsys.readouterr().err
-    assert "another first-admin run is in progress" in err
+    assert "another staff change is in progress" in err
 
 
 async def test_wrong_database_credentials_say_so(
