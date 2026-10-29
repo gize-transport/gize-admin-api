@@ -18,7 +18,9 @@ user action. The service claims the key **in the same transaction as its busines
 - A claim that is never recorded makes the commit fail (a bug caught before it is stored).
   So a failure must raise (an AppError for a client error): it rolls the claim back.
 - `claim` comes first in the block: a replay returns from the block, which commits, and
-  earlier writes would be committed with it. Writing before the claim raises.
+  earlier writes would be committed with it. A guard rail catches the common mistake
+  (unflushed objects in the session make `claim` raise), not every one: statements already
+  executed are not visible to it.
 - Keys are scoped per caller (`scope`), so two callers' keys never meet. The fingerprint
   covers the method, the endpoint, the actual path (its IDs), the query and the body.
 - A replay returns the recorded status, body and headers (Location, Content-Location, ETag).

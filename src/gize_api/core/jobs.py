@@ -48,6 +48,14 @@ def create_job_redis(
     return ArqRedis(pool, job_serializer=serialize_job, job_deserializer=deserialize_job)
 
 
+class JobFailedError(RuntimeError):
+    """Stands in for a failed job's exception in Arq's stored result.
+
+    It carries only the original exception's type name, never its message (which can hold
+    data); results serve de-duplication, not reading back.
+    """
+
+
 def serialize_job(data: dict[str, Any]) -> bytes:
     return json.dumps(data, default=_encode, separators=(",", ":")).encode()
 
@@ -58,7 +66,9 @@ def deserialize_job(raw: bytes) -> dict[str, Any]:
 
 
 def _encode(value: object) -> object:
-    if isinstance(value, BaseException):  # a failed job's result: its type, no message
+    if isinstance(value, JobFailedError):  # a failed job's result: the original type only
+        return {"error": str(value)}
+    if isinstance(value, BaseException):  # anything else Arq stores: its type, no message
         return {"error": type(value).__name__}
     if isinstance(value, uuid.UUID):
         return str(value)

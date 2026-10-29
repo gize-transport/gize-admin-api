@@ -159,7 +159,7 @@ Use `/health/live` to restart a stuck instance and `/health/ready` to route traf
 
 The image declares a Docker `HEALTHCHECK` (every 10 s, 3 retries, 20 s start period). It tells the containers apart by their processes, also under an init process (`docker run --init`, ECS):
 - **API:** probes `/health/live`.
-- **Worker:** checks the health key the worker renews in Redis every 10 s, so a hung worker becomes unhealthy.
+- **Worker:** checks the health key this worker renews in Redis every 10 s (one key per replica, named after its host name), so a hung worker becomes unhealthy whatever its replicas do.
 - **Migration:** healthy.
 
 ## Continuous integration

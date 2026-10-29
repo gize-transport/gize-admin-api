@@ -14,8 +14,9 @@ arguments.
 - **Shutdown:** on SIGTERM the worker stops taking jobs, gives running ones
   SHUTDOWN_WAIT_SECONDS and re-queues any still running; closing the database and flushing
   telemetry (up to 5 s) still fit in the 30 s before SIGKILL.
-- **Health:** the worker writes Arq's health key every HEALTH_CHECK_INTERVAL_SECONDS; the
-  container health check (gize_api.healthcheck) reads it, so a hung worker is unhealthy.
+- **Health:** each worker writes its own health key (named after its host name) every
+  HEALTH_CHECK_INTERVAL_SECONDS; its container's health check (gize_api.healthcheck)
+  reads it, so a hung worker is unhealthy whatever its replicas do.
 - **Redis:** JSON job data (gize_api.core.jobs), 1 s socket timeouts, TLS names checked.
 - **Database:** the worker connects as gize_app, like the API, with the same session rule.
 """
@@ -34,10 +35,11 @@ from arq.worker import run_worker
 from gize_api.core.config import ConfigError, Settings, load_settings
 from gize_api.core.db import create_engine, create_sessionmaker
 from gize_api.core.idempotency import purge_expired
-from gize_api.core.jobs import create_job_redis, deserialize_job, serialize_job
+from gize_api.core.jobs import JobFailedError, create_job_redis, deserialize_job, serialize_job
 from gize_api.core.logging import configure_logging
 from gize_api.core.sentry import configure_sentry, report_exception
 from gize_api.core.telemetry import configure_telemetry
+from gize_api.healthcheck import worker_health_key
 
 JOB_TIMEOUT_SECONDS = 60
 MAX_TRIES = 3
@@ -53,10 +55,6 @@ if TYPE_CHECKING:
 JobFunction = Callable[..., Awaitable[Any]]
 
 logger = structlog.get_logger("gize_api.worker")
-
-
-class JobFailedError(RuntimeError):
-    """Stands in for a job's exception in Arq's stored result; the message is its type."""
 
 
 def job(function: JobFunction) -> JobFunction:
@@ -136,6 +134,8 @@ def worker_settings(settings: Settings) -> dict[str, Any]:
         "keep_result": RESULT_KEEP_SECONDS,
         "job_completion_wait": SHUTDOWN_WAIT_SECONDS,
         "health_check_interval": HEALTH_CHECK_INTERVAL_SECONDS,
+        # One key per replica: a shared key would let a healthy replica hide a hung one.
+        "health_check_key": worker_health_key(),
         "log_results": False,
     }
 

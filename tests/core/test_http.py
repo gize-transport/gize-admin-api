@@ -113,6 +113,7 @@ async def test_destinations_off_the_allowlist_are_blocked(url: str) -> None:
         "::7f00:1",  # IPv4-compatible (deprecated)
         "fec0::1",  # site-local (deprecated)
         "2002:7f00:1::1",  # 6to4 of 127.0.0.1
+        "::ffff:0:a9fe:a9fe",  # IPv4-translated metadata address
     ],
 )
 async def test_private_and_special_addresses_are_blocked(address: str) -> None:
@@ -417,3 +418,9 @@ async def test_a_blocked_call_is_logged_once(capsys: pytest.CaptureFixture[str])
     lines = [line for line in capsys.readouterr().err.splitlines() if "outbound_request" in line]
     assert len(lines) == 1
     assert "outbound_request_blocked" in lines[0]
+
+
+@pytest.mark.parametrize("entry", ["2001:db8::1", "sms.example.com:http", "user@sms.example.com"])
+def test_allowlist_entries_must_be_host_or_host_and_port(entry: str) -> None:
+    with pytest.raises(ValueError, match="host or host:port"):
+        OutboundClient(allowed_hosts={entry})

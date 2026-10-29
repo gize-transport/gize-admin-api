@@ -21,6 +21,8 @@ connection, which transaction mode shares between clients.
 """
 
 import asyncio
+import contextvars
+import dataclasses
 import ssl
 import traceback
 import weakref
@@ -104,10 +106,24 @@ class GizeSession(Session):
         return super().get(*args, **kwargs)
 
 
-# Open GizeSession transactions per asyncio task, for the outbound HTTP and enqueue guards.
-# Per task, not per context: a task started inside a block copies the context but is not
-# holding the transaction. Raw engine connections are not tracked: app code uses sessions.
-_open_transactions: "weakref.WeakKeyDictionary[asyncio.Task[Any], int]" = (
+# Open GizeSession transactions, for the outbound HTTP and enqueue guards.
+#
+# Each task that opens a transaction gets a live set of its open transactions, appended to
+# a chain in its context. Child tasks (create_task, gather, TaskGroup) copy the context and
+# so see their ancestors' live sets: inside the parent's block they are caught, and once it
+# commits they are free. A child's own transactions go into a set of its own, which the
+# parent never sees. A transaction closed in another task is removed from the set it was
+# opened in. Raw engine connections are not tracked: app code uses sessions.
+@dataclasses.dataclass(eq=False)
+class _OpenTransactions:
+    task: "asyncio.Task[Any] | None"
+    ids: set[int] = dataclasses.field(default_factory=set)
+
+
+_open_chain: contextvars.ContextVar[tuple[_OpenTransactions, ...]] = contextvars.ContextVar(
+    "gize_open_transactions", default=()
+)
+_opened_in: "weakref.WeakKeyDictionary[SessionTransaction, _OpenTransactions]" = (
     weakref.WeakKeyDictionary()
 )
 
@@ -117,9 +133,9 @@ class OpenTransactionError(RuntimeError):
 
 
 def database_transaction_open() -> bool:
-    """True inside `async with session.begin():` (any GizeSession) in the current task."""
-    task = _current_task()
-    return task is not None and _open_transactions.get(task, 0) > 0
+    """True inside `async with session.begin():` (any GizeSession), in this task or a task
+    that started this one."""
+    return any(entry.ids for entry in _open_chain.get())
 
 
 def _current_task() -> "asyncio.Task[Any] | None":
@@ -131,20 +147,23 @@ def _current_task() -> "asyncio.Task[Any] | None":
 
 @event.listens_for(GizeSession, "after_transaction_create")
 def _transaction_opened(session: Session, transaction: SessionTransaction) -> None:
-    task = _current_task()
-    if transaction.parent is None and task is not None:
-        _open_transactions[task] = _open_transactions.get(task, 0) + 1
+    if transaction.parent is not None:
+        return
+    chain, task = _open_chain.get(), _current_task()
+    if chain and chain[-1].task is task:
+        entry = chain[-1]
+    else:
+        entry = _OpenTransactions(task)
+        _open_chain.set((*chain, entry))
+    entry.ids.add(id(transaction))
+    _opened_in[transaction] = entry
 
 
 @event.listens_for(GizeSession, "after_transaction_end")
 def _transaction_closed(session: Session, transaction: SessionTransaction) -> None:
-    task = _current_task()
-    if transaction.parent is None and task is not None and task in _open_transactions:
-        remaining = _open_transactions[task] - 1
-        if remaining > 0:
-            _open_transactions[task] = remaining
-        else:
-            del _open_transactions[task]
+    entry = _opened_in.pop(transaction, None)
+    if entry is not None:
+        entry.ids.discard(id(transaction))
 
 
 @event.listens_for(GizeSession, "do_orm_execute")

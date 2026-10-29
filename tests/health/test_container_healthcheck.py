@@ -120,17 +120,19 @@ async def test_a_worker_is_healthy_only_while_it_reports_in(
     """The worker writes Arq's health key every 10 s; a hung worker stops writing it."""
     from redis.asyncio import Redis
 
-    from gize_api.healthcheck import WORKER_HEALTH_KEY
+    from gize_api.healthcheck import worker_health_key
+
+    key = worker_health_key()
 
     worker = _cmdline(tmp_path, ("python", "-m", "gize_api.worker"))
     redis = Redis.from_url(test_redis_url)
     try:
-        await redis.delete(WORKER_HEALTH_KEY)
+        await redis.delete(key)
         assert await asyncio.to_thread(main, worker, redis_url=test_redis_url) == 1
-        await redis.set(WORKER_HEALTH_KEY, b"j_complete=0", px=5000)
+        await redis.set(key, b"j_complete=0", px=5000)
         assert await asyncio.to_thread(main, worker, redis_url=test_redis_url) == 0
     finally:
-        await redis.delete(WORKER_HEALTH_KEY)
+        await redis.delete(key)
         await redis.aclose()
     assert main(worker, redis_url="redis://127.0.0.1:1/0") == 1  # Redis unreachable
 

@@ -374,3 +374,30 @@ def test_job_data_is_json_with_ids_only() -> None:
     assert deserialize_job(serialize_job({"a": [rider]})) == {"a": [str(rider)]}
     with pytest.raises(TypeError, match="JSON"):
         serialize_job({"a": [object()]})
+
+
+def test_each_worker_has_its_own_health_key(make_settings: SettingsFactory) -> None:
+    """One shared key would let a healthy replica hide a hung one, and a replica's clean
+    shutdown (which deletes the key) would mark the others unhealthy (GZ-008 review)."""
+    import socket
+
+    from gize_api.healthcheck import worker_health_key
+
+    settings = worker_settings(make_settings())
+    assert settings["health_check_key"] == worker_health_key()
+    assert worker_health_key().endswith(socket.gethostname())
+
+
+def test_a_failed_jobs_stored_result_names_the_original_type() -> None:
+    from gize_api.core.jobs import JobFailedError, serialize_job
+
+    assert json.loads(serialize_job({"r": JobFailedError("ValueError")})) == {
+        "r": {"error": "ValueError"}
+    }
+
+
+def test_any_other_stored_exception_keeps_only_its_type() -> None:
+    from gize_api.core.jobs import serialize_job
+
+    stored = serialize_job({"r": ValueError("a message with 0911223344")})
+    assert json.loads(stored) == {"r": {"error": "ValueError"}}

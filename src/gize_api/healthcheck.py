@@ -4,14 +4,16 @@ Which container this is comes from its processes, whatever PID 1 is (an init pro
 as `docker run --init` or ECS's is common):
 - **API** (no worker or migration process found): ask its own `/health/live`, with a short
   timeout and no proxy.
-- **Worker:** the worker writes Arq's health key in Redis every 10 s (it expires 1 s
-  later); healthy while the key exists, so a hung worker becomes unhealthy.
+- **Worker:** the worker writes its own health key in Redis (named after the container's
+  host name) every 10 s; it expires 1 s later. Healthy while the key exists, so a hung
+  worker becomes unhealthy, whatever its replicas do.
 - **Migration:** a one-off run: healthy.
 
 Exit status 0 is healthy, 1 unhealthy (Docker's convention).
 """
 
 import os
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -25,7 +27,7 @@ from gize_api.core.redis_options import connection_options
 
 LIVE_URL = "http://127.0.0.1:8000/health/live"
 TIMEOUT_SECONDS = 2.0
-WORKER_HEALTH_KEY = "arq:queue:health-check"  # Arq's default queue + its health suffix
+_WORKER_HEALTH_KEY_PREFIX = "arq:queue:health-check:"  # Arq's default queue + its suffix
 _PROC = Path("/proc")
 # The worker (`python -m gize_api.worker`, or Arq's CLI) and migrate commands.
 _WORKER_COMMANDS = frozenset({"gize_api.worker", "arq"})
@@ -49,6 +51,11 @@ def container_role(proc: Path = _PROC) -> Role:
     return "api"
 
 
+def worker_health_key() -> str:
+    """This worker's own health key: the container's host name tells replicas apart."""
+    return _WORKER_HEALTH_KEY_PREFIX + socket.gethostname()
+
+
 def runs_without_http(proc: Path = _PROC) -> bool:
     """True if a worker or migration process runs in this container."""
     return container_role(proc) != "api"
@@ -64,7 +71,7 @@ def worker_reports_in(redis_url: str, *, timeout: float = TIMEOUT_SECONDS) -> bo
             ),
         )
         try:
-            return bool(client.exists(WORKER_HEALTH_KEY))
+            return bool(client.exists(worker_health_key()))
         finally:
             client.close()
     except (RedisError, OSError, ValueError):

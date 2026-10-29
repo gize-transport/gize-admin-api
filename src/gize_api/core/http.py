@@ -72,6 +72,7 @@ _NEVER_PUBLIC_V6 = (
     ipaddress.ip_network("::/96"),  # IPv4-compatible (deprecated)
     ipaddress.ip_network("64:ff9b:1::/48"),  # local-use NAT64
     ipaddress.ip_network("fec0::/10"),  # site-local (deprecated)
+    ipaddress.ip_network("::ffff:0:0:0/96"),  # IPv4-translated (SIIT)
 )
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
@@ -359,9 +360,20 @@ def is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) ->
 
 
 def _allowed_destination(entry: str) -> tuple[str, int]:
-    """`host` (port 443) or `host:port`, lower-cased."""
-    host, separator, port = entry.lower().rpartition(":")
-    return (host, int(port)) if separator and port.isdigit() else (entry.lower(), 443)
+    """`host` (port 443) or `host:port`, lower-cased; anything else is a configuration bug."""
+    try:
+        parts = urlsplit(f"//{entry.lower()}")
+        port = parts.port
+    except ValueError:
+        parts, port = None, None
+    if (
+        parts is None
+        or not parts.hostname
+        or parts.username is not None
+        or parts.netloc != (f"{parts.hostname}:{port}" if port else parts.hostname)
+    ):
+        raise ValueError(f"allowlist entries are host or host:port, not {entry!r}")
+    return parts.hostname, port or 443
 
 
 async def _resolve(host: str, port: int) -> list[str]:
