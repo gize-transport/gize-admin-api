@@ -276,6 +276,10 @@ jobs:
         # HEAD is the merge commit; its first parent is exactly the base it was built on
         # (origin/<base> may have moved since, e.g. on "Re-run jobs").
         run: |
+          if ! git rev-parse --verify --quiet HEAD^2 > /dev/null; then
+            echo "::error::expected the PR's merge commit as HEAD (first parent = base)"
+            exit 1
+          fi
           if [ -z "$(git ls-tree --name-only HEAD^1 -- openapi.json)" ]; then
             echo "The base has no openapi.json yet (the PR that introduces it): nothing to compare."
             exit 0

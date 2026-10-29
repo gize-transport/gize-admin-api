@@ -268,6 +268,7 @@ def test_the_script_writes_the_contract(tmp_path: Any) -> None:  # noqa: ANN401
         {409: {"description": "Conflict", "model": WidgetError}},  # not our error shape
         {"4XX": {"description": "Some error"}},
         {"default": {"description": "Anything"}},
+        {500: {"description": "Oops", "model": WidgetError}},  # one we would add ourselves
     ],
 )
 def test_error_responses_must_be_declared_with_problem_responses(
@@ -304,3 +305,16 @@ def test_path_level_keys_are_left_alone() -> None:
     finished = finish_contract(schema)
     assert finished["paths"]["/v1/x/{id}"]["parameters"] == shared
     assert set(finished["paths"]["/v1/x/{id}"]["get"]["responses"]) == {"200", "500"}
+
+
+def test_a_hand_written_422_is_refused_too(make_settings: SettingsFactory) -> None:
+    app = create_app(make_settings())
+    router = staff_router(prefix="/v1/odd")
+
+    @router.get("", operation_id="odd_list", summary="Odd", responses={422: {"description": "Bad"}})
+    async def odd(q: str = Query(max_length=5)) -> list[int]:
+        return []
+
+    app.include_router(router)
+    with pytest.raises(ValueError, match=r"odd_list.*422"):
+        app.openapi()

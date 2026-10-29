@@ -15,6 +15,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
+
 
 def compare_codes(base: dict[str, Any], new: dict[str, Any]) -> dict[str, list[str]]:
     old_codes, new_codes = _codes(base), _codes(new)
@@ -29,7 +31,7 @@ def _codes(contract: dict[str, Any]) -> set[str]:
     enum = contract.get("components", {}).get("schemas", {}).get("ErrorCode", {}).get("enum", [])
     codes = {f"ErrorCode {code}" for code in enum}
     for path, item in contract.get("paths", {}).items():
-        for method, operation in item.items():
+        for method, operation in _methods(item):
             for status, response in operation.get("responses", {}).items():
                 for code in response.get("x-error-codes", []):
                     codes.add(f"{method.upper()} {path} {status} {code}")
@@ -40,8 +42,13 @@ def _operations(contract: dict[str, Any]) -> set[str]:
     return {
         f"{method.upper()} {path} "
         for path, item in contract.get("paths", {}).items()
-        for method in item
+        for method, _ in _methods(item)
     }
+
+
+def _methods(path_item: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """The operations of a path item; `parameters`, `summary` and the like are not."""
+    return [(key, value) for key, value in path_item.items() if key in HTTP_METHODS]
 
 
 def _one_sided_operations(base: dict[str, Any], new: dict[str, Any]) -> set[str]:
@@ -57,10 +64,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         base, new = (json.loads(Path(name).read_text()) for name in args)
-    except (OSError, ValueError) as exc:
-        print(f"contract_codes: cannot read a contract: {exc}", file=sys.stderr)
+        result = compare_codes(base, new)
+    except Exception as exc:  # noqa: BLE001 - exit 1 means "removed": anything else is 2
+        print(f"contract_codes: cannot compare the contracts: {exc!r}", file=sys.stderr)
         return 2
-    result = compare_codes(base, new)
     print(json.dumps(result, indent=2))
     return 1 if result["removed"] else 0
 

@@ -71,7 +71,7 @@ jobs:
           breaking=0
           if [ -n "${previous}" ]; then
             if ! git merge-base --is-ancestor "${previous}" "${GITHUB_SHA}"; then
-              echo "${previous} is newer than this commit (a re-run of an old run): nothing to release."
+              echo "::warning::${previous} is not an ancestor of this commit (a re-run of an old run, or a tag placed off main): nothing released. Check the api-v* tags if this is the latest merge."
               echo "tag=" >> "${GITHUB_OUTPUT}"
               exit 0
             fi

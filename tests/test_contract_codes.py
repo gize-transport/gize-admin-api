@@ -62,6 +62,13 @@ def test_a_removed_operation_is_left_to_oasdiff() -> None:
     assert compare_codes(BASE, new)["removed"] == []
 
 
+def test_path_level_keys_are_not_operations() -> None:
+    new = json.loads(json.dumps(BASE))
+    new["paths"]["/v1/a"]["parameters"] = []
+    new["paths"]["/v1/a"]["summary"] = "A"
+    assert compare_codes(BASE, new) == {"removed": [], "added": []}
+
+
 def test_the_real_contract_against_itself() -> None:
     contract = json.loads((ROOT / "openapi.json").read_text())
     assert compare_codes(contract, contract) == {"removed": [], "added": []}
@@ -94,9 +101,11 @@ def test_the_command_fails_on_removals(tmp_path: Path, new: dict[str, Any], code
     assert set(json.loads(result.stdout)) == {"removed", "added"}
 
 
-def test_the_command_refuses_unreadable_files(tmp_path: Path) -> None:
+@pytest.mark.parametrize("content", ["nope", "[1, 2]", '{"paths": {"/x": 3}}'])
+def test_the_command_refuses_what_it_cannot_compare(tmp_path: Path, content: str) -> None:
+    """Never exit 1 for it: 1 means "codes were removed"."""
     bad = tmp_path / "bad.json"
-    bad.write_text("nope")
+    bad.write_text(content)
     result = _run(str(bad), str(bad))
     assert result.returncode == 2
     assert "contract_codes" in result.stderr

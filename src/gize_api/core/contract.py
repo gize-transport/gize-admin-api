@@ -65,7 +65,9 @@ def _finish_operation(operation: dict[str, Any]) -> None:
     for code in implied:
         status = str(ERROR_SPECS[code].status)
         response = responses.setdefault(status, {})
-        if "x-error-codes" not in response:  # FastAPI's own 422, or nothing yet
+        if "x-error-codes" not in response:
+            if response and not _is_fastapi_validation_error(response):
+                continue  # written by hand: refused below
             response.clear()
             response["x-error-codes"] = []
         if code.value not in response["x-error-codes"]:
@@ -81,6 +83,11 @@ def _finish_operation(operation: dict[str, Any]) -> None:
         codes = [ErrorCode(code) for code in response["x-error-codes"]]
         response["description"] = ", ".join(sorted({ERROR_SPECS[code].title for code in codes}))
         response["content"] = {PROBLEM_JSON: {"schema": _problem_schema(codes)}}
+
+
+def _is_fastapi_validation_error(response: dict[str, Any]) -> bool:
+    schema = response.get("content", {}).get("application/json", {}).get("schema", {})
+    return bool(schema.get("$ref") == REF.format(model="HTTPValidationError"))
 
 
 def _problem_schema(codes: list[ErrorCode]) -> dict[str, Any]:
