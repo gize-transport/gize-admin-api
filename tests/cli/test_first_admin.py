@@ -7,6 +7,7 @@ Supabase is a fake, or the real client on a mock transport.
 import asyncio
 import uuid
 from dataclasses import replace
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 import httpx
@@ -21,7 +22,7 @@ from gize_api.core.http import OutboundClient
 from gize_api.integrations.supabase_auth import AuthAdminError, AuthUser, SupabaseAuthAdmin
 from gize_api.staff.models import Staff, StaffRole
 from tests.factories import StaffFactory
-from tests.integrations.test_supabase_auth import SECRET_KEY, user_json
+from tests.supabase import SECRET_KEY, user_json
 from tests.support import (
     UNREACHABLE_DATABASE_URL,
     DatabaseUrls,
@@ -100,6 +101,8 @@ async def test_it_refuses_once_any_admin_exists(
         (None, "no Supabase user"),
         (replace(USER, email=None), "no email"),
         (replace(USER, email_confirmed=False), "not confirmed"),
+        (replace(USER, email="no-at-sign"), "cannot be stored"),
+        (replace(USER, email="a@" + "b" * 320), "cannot be stored"),
         (replace(USER, banned=True), "banned"),
         (replace(USER, deleted=True), "deleted"),
         (replace(USER, anonymous=True), "anonymous"),
@@ -312,7 +315,9 @@ async def test_the_command_reports_the_database_down(
     settings = make_settings(database_url=UNREACHABLE_DATABASE_URL, supabase_secret_key=SECRET_KEY)
     monkeypatch.setattr(first_admin, "load_settings", lambda: settings)
     assert await _main("--user-id", str(USER.id), "--name", "Abebe") == 1
-    assert "database is unavailable; nothing was changed" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "database is unavailable" in err
+    assert "may not have been saved; running the command again is safe" in err
 
 
 async def test_other_errors_are_not_hidden(
@@ -324,3 +329,47 @@ async def test_other_errors_are_not_hidden(
     monkeypatch.setattr(first_admin, "create_first_admin", broken)
     with pytest.raises(RuntimeError, match="a bug"):
         await _main("--user-id", str(USER.id), "--name", "Abebe")
+
+
+async def test_a_run_blocked_by_another_says_so(
+    command_env: list[httpx.Request],
+    database: DatabaseUrls,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The lock wait is bounded by the role's lock_timeout, then reported as such."""
+    holder = await asyncpg.connect(database.app, timeout=3)
+    try:
+        async with holder.transaction():
+            await holder.execute("SELECT pg_advisory_xact_lock($1)", FIRST_ADMIN_LOCK_ID)
+            assert await _main("--user-id", str(USER.id), "--name", "Abebe") == 1
+    finally:
+        await holder.close()
+    err = capsys.readouterr().err
+    assert "another first-admin run is in progress" in err
+
+
+async def test_wrong_database_credentials_say_so(
+    command_env: list[httpx.Request],
+    monkeypatch: pytest.MonkeyPatch,
+    make_settings: SettingsFactory,
+    database: DatabaseUrls,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parts = urlsplit(database.app)
+    wrong = urlunsplit(parts._replace(netloc=f"gize_app:wrong@{parts.hostname}:{parts.port}"))
+    settings = make_settings(database_url=wrong, supabase_secret_key=SECRET_KEY)
+    monkeypatch.setattr(first_admin, "load_settings", lambda: settings)
+    assert await _main("--user-id", str(USER.id), "--name", "Abebe") == 1
+    err = capsys.readouterr().err
+    assert "check DATABASE_URL" in err
+    assert "wrong" not in err
+
+
+async def test_the_command_reports_to_sentry(
+    command_env: list[httpx.Request], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no audit log yet (GZ-012), Sentry is where the new admin is recorded."""
+    configured: list[object] = []
+    monkeypatch.setattr(first_admin, "configure_sentry", configured.append)
+    assert await _main("--user-id", str(USER.id), "--name", "Abebe") == 0
+    assert len(configured) == 1

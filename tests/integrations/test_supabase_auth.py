@@ -3,7 +3,7 @@
 import json
 import uuid
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -11,30 +11,10 @@ import pytest
 
 from gize_api.core.http import OutboundClient
 from gize_api.integrations.supabase_auth import AuthAdminError, AuthUser, SupabaseAuthAdmin
+from tests.supabase import SECRET_KEY, USER_ID, user_json
 from tests.support import TEST_SUPABASE_URL, SettingsFactory, public_resolver
 
-SECRET_KEY = "sb_secret_" + "x" * 32  # a made-up key: the shape only
-USER_ID = uuid.UUID(int=42)
 Handler = Callable[[httpx.Request], httpx.Response]
-
-
-def user_json(**overrides: Any) -> dict[str, Any]:  # noqa: ANN401 - JSON
-    """A user as Supabase's admin API returns it (the fields we read, plus some we don't)."""
-    user: dict[str, Any] = {
-        "id": str(USER_ID),
-        "aud": "authenticated",
-        "role": "authenticated",
-        "email": "Abebe@Example.com",
-        "email_confirmed_at": "2026-10-01T08:00:00.123456Z",
-        "phone": "",
-        "banned_until": None,
-        "deleted_at": None,
-        "is_anonymous": False,
-        "app_metadata": {"provider": "email"},
-        "user_metadata": {},
-    }
-    user.update(overrides)
-    return user
 
 
 def admin_for(make_settings: SettingsFactory, handler: Handler) -> SupabaseAuthAdmin:
@@ -111,6 +91,7 @@ async def test_an_unknown_user_is_none(
         ({"email_confirmed_at": None}, "email_confirmed", False),
         ({"deleted_at": "2026-10-02T08:00:00Z"}, "deleted", True),
         ({"is_anonymous": True}, "anonymous", True),
+        ({"is_anonymous": False}, "anonymous", False),
         ({"banned_until": "2999-01-01T00:00:00Z"}, "banned", True),
         ({"banned_until": "2000-01-01T00:00:00Z"}, "banned", False),  # a ban that ended
         ({"banned_until": "2999-01-01T00:00:00"}, "banned", True),  # no zone: read as UTC
@@ -141,6 +122,13 @@ async def test_what_the_user_record_says(
         (httpx.Response(200, json=user_json(id=str(uuid.UUID(int=1)))), "unexpected response"),
         (httpx.Response(200, json=user_json(id="nope")), "unexpected response"),
         (httpx.Response(200, json=user_json(email=7)), "unexpected response"),
+        (httpx.Response(200, json=user_json(email_confirmed_at="")), "unexpected response"),
+        (httpx.Response(200, json=user_json(email_confirmed_at=False)), "unexpected response"),
+        (httpx.Response(200, json=user_json(email_confirmed_at="soon")), "unexpected response"),
+        (httpx.Response(200, json=user_json(deleted_at=1)), "unexpected response"),
+        (httpx.Response(200, json=user_json(deleted_at="")), "unexpected response"),
+        (httpx.Response(200, json=user_json(is_anonymous="true")), "unexpected response"),
+        (httpx.Response(200, json=user_json(is_anonymous=None)), "unexpected response"),
     ],
 )
 async def test_unexpected_answers_are_errors_without_the_key(
@@ -171,11 +159,21 @@ def test_the_secret_key_is_required(make_settings: SettingsFactory) -> None:
         SupabaseAuthAdmin.for_settings(make_settings(), telemetry=None)
 
 
-async def test_the_real_client_talks_only_to_the_project(make_settings: SettingsFactory) -> None:
+async def test_the_real_client_talks_only_to_the_project(
+    make_settings: SettingsFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created: list[dict[str, Any]] = []
+
+    def outbound(**options: Any) -> OutboundClient:  # noqa: ANN401
+        created.append(options)
+        return OutboundClient(**options)
+
+    monkeypatch.setattr("gize_api.integrations.supabase_auth.OutboundClient", outbound)
     admin = SupabaseAuthAdmin.for_settings(
         make_settings(supabase_secret_key=SECRET_KEY), telemetry=None
     )
     await admin.aclose()
+    assert [options["allowed_hosts"] for options in created] == [{make_settings().supabase_host}]
 
 
 def test_the_secret_key_never_shows_in_a_repr(make_settings: SettingsFactory) -> None:
@@ -190,5 +188,26 @@ async def test_the_banned_until_time_is_compared_in_utc(
     soon = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
     admin = respond(httpx.Response(200, json=user_json(banned_until=soon)))
     user = await admin.get_user(USER_ID)
+    assert user is not None
+    assert user.banned
+
+
+async def test_a_record_without_is_anonymous_is_not_anonymous(
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin],
+) -> None:
+    body = user_json()
+    del body["is_anonymous"]  # older Auth versions leave it out
+    user = await respond(httpx.Response(200, json=body)).get_user(USER_ID)
+    assert user is not None
+    assert not user.anonymous
+
+
+async def test_a_ban_with_a_time_zone_is_compared_correctly(
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin],
+) -> None:
+    """Addis Ababa time, +03:00: still banned for a few minutes in UTC terms."""
+    addis = timezone(timedelta(hours=3))
+    soon = (datetime.now(addis) + timedelta(minutes=5)).isoformat()
+    user = await respond(httpx.Response(200, json=user_json(banned_until=soon))).get_user(USER_ID)
     assert user is not None
     assert user.banned

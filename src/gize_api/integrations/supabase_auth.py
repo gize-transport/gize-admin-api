@@ -6,6 +6,7 @@ as a Bearer token Supabase would reject them. Errors never contain the key or th
 data, and every call goes through the guarded outbound client to the project's host only.
 """
 
+import contextlib
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -101,16 +102,27 @@ def _user(body: Any, user_id: uuid.UUID) -> AuthUser:  # noqa: ANN401 - JSON
     except ValueError:
         raise unexpected from None
     email = body.get("email")
-    if email is not None and not isinstance(email, str):
+    anonymous = body.get("is_anonymous", False)  # older Auth versions leave it out
+    if (email is not None and not isinstance(email, str)) or not isinstance(anonymous, bool):
         raise unexpected
     return AuthUser(
         id=user_id,
         email=(email.strip().lower() or None) if email else None,
-        email_confirmed=body.get("email_confirmed_at") is not None,
+        email_confirmed=_timestamp(body.get("email_confirmed_at")) is not None,
         banned=_banned(body.get("banned_until")),
-        deleted=body.get("deleted_at") is not None,
-        anonymous=body.get("is_anonymous") is True,
+        deleted=_timestamp(body.get("deleted_at")) is not None,
+        anonymous=anonymous,
     )
+
+
+def _timestamp(value: object) -> datetime | None:
+    """A timestamp field: absent (None) or a readable time; anything else is unexpected."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            return datetime.fromisoformat(value)
+    raise AuthAdminError("unexpected response from Supabase")
 
 
 def _banned(until: object, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> bool:

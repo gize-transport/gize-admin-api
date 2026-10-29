@@ -24,14 +24,22 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.core.config import ConfigError, Settings, load_settings
-from gize_api.core.db import create_engine, create_sessionmaker, is_database_unavailable
+from gize_api.core.db import (
+    create_engine,
+    create_sessionmaker,
+    database_sqlstate,
+    is_database_misconfigured,
+    is_database_unavailable,
+)
 from gize_api.core.http import OutboundClient
 from gize_api.core.logging import configure_logging, log_security_event
+from gize_api.core.sentry import configure_sentry
 from gize_api.integrations.supabase_auth import AuthAdminError, AuthUser, SupabaseAuthAdmin
-from gize_api.staff.models import FULL_NAME_MAX_LENGTH, Staff, StaffRole
+from gize_api.staff.models import EMAIL_MAX_LENGTH, FULL_NAME_MAX_LENGTH, Staff, StaffRole
 from gize_api.staff.repository import admin_exists, get_staff, get_staff_by_email
 
 FIRST_ADMIN_LOCK_ID = 0x67697A6561646D  # "gizeadm"
+LOCK_NOT_AVAILABLE = "55P03"  # the role's lock_timeout ran out
 
 
 class FirstAdminRefusedError(Exception):
@@ -81,6 +89,8 @@ def _eligible_email(user: AuthUser | None) -> str:
         raise FirstAdminRefusedError("the Supabase user has no email")
     if not user.email_confirmed:
         raise FirstAdminRefusedError("the Supabase user's email is not confirmed")
+    if user.email.find("@") < 1 or len(user.email) > EMAIL_MAX_LENGTH:
+        raise FirstAdminRefusedError("the Supabase user's email cannot be stored")
     return user.email
 
 
@@ -107,6 +117,21 @@ async def _run(settings: Settings, user_id: uuid.UUID, full_name: str) -> None:
         await engine.dispose()
 
 
+def _database_problem(exc: Exception) -> str | None:
+    """What to tell the operator about a database failure, or None if it is not one."""
+    if database_sqlstate(exc) == LOCK_NOT_AVAILABLE:
+        return "another first-admin run is in progress; try again in a moment"
+    if not is_database_unavailable(exc):
+        return None
+    if is_database_misconfigured(exc):
+        return "the database refused the connection; check DATABASE_URL"
+    # The connection may have dropped during COMMIT: the change may have been saved.
+    return (
+        "the database is unavailable: the change may not have been saved; "
+        "running the command again is safe"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m gize_api.cli.first_admin",
@@ -126,6 +151,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("first_admin: set SUPABASE_SECRET_KEY (see README)", file=sys.stderr)  # noqa: T201 - CLI
         return 2
     configure_logging(settings.log_level)
+    # Until the audit log exists (GZ-012), Sentry is where the new admin is recorded.
+    configure_sentry(settings)
     try:
         asyncio.run(_run(settings, args.user_id, args.name))
     except FirstAdminRefusedError as exc:
@@ -135,9 +162,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"first_admin: {exc}; nothing was changed", file=sys.stderr)  # noqa: T201 - CLI
         return 1
     except Exception as exc:
-        if not is_database_unavailable(exc):
+        problem = _database_problem(exc)
+        if problem is None:
             raise
-        print("first_admin: the database is unavailable; nothing was changed", file=sys.stderr)  # noqa: T201 - CLI
+        print(f"first_admin: {problem}", file=sys.stderr)  # noqa: T201 - CLI
         return 1
     print(f"first_admin: done: {args.user_id} is now an admin", file=sys.stderr)  # noqa: T201 - CLI
     return 0

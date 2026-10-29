@@ -191,18 +191,24 @@ A valid token only proves someone has a Supabase account. Whether they are Gize 
 
 Admins add staff in the admin portal, so the very first admin is made by a command, once per environment.
 
-1. **Create the user** in the Supabase dashboard: Authentication → Users → Add user (with their email). Have them set a password or sign in once, so the email is confirmed.
+1. **Create the user** in the Supabase dashboard: Authentication → Users → Add user. The email must end up confirmed (setting a password alone doesn't confirm it):
+   - **Create new user**, with **Auto Confirm User** ticked; or
+   - **Send invitation**, and wait until they accept it.
 2. **Copy their UID** from the user's row in that list.
-3. **Set the two Supabase values** where the command runs (your `.env` locally, the host's secret store on staging): `SUPABASE_URL` and `SUPABASE_SECRET_KEY` (Project Settings → API Keys → Secret keys). `DATABASE_URL` must point at that environment's database.
-4. **Run:**
+3. **Get the secret key:** Project Settings → API Keys → Secret keys (`sb_secret_...`). A project still on the legacy keys has none yet: create one there first.
+4. **Set up the environment** where the command runs: the app's full environment (`APP_ENV`, `DATABASE_URL` for that environment's database, `REDIS_URL`, and so on) plus `SUPABASE_URL` and `SUPABASE_SECRET_KEY`. Locally that is your `.env`; on a host, the API's secret store.
+5. **Run:**
    ```bash
    uv run --env-file .env python -m gize_api.cli.first_admin --user-id <UID> --name "Full Name"
    ```
-   On a host, run `python -m gize_api.cli.first_admin ...` in the API container.
+   On a host, run it inside the running API container (`docker exec <container> python -m gize_api.cli.first_admin ...`). The image's entrypoint only starts `api`, `worker` or `migrate`, so `docker run` with this command doesn't work.
 
-The command reads the user from Supabase (it must exist, have a confirmed email, and not be banned, deleted or anonymous). It then makes them an active admin in one transaction, and refuses if any admin already exists. Two runs at once can't both succeed. It prints only the user ID, never names or emails.
+The command reads the user from Supabase (it must exist, have a confirmed email, and not be banned, deleted or anonymous). It then makes them an active admin in one transaction, and refuses if any admin already exists, active or not. Two runs at once can't both succeed. It prints only the user ID, never names or emails, and reports the new admin to Sentry (a `first_admin_created` security event) until the audit log exists.
 
-Exit codes: `0` done; `1` refused, or Supabase or the database was unavailable (nothing changed); `2` wrong arguments or settings.
+Exit codes:
+- `0`: done.
+- `1`: refused, another run in progress, or Supabase or the database unavailable. If the database dropped mid-run, the change may or may not have been saved; running the command again is safe, since it refuses once an admin exists.
+- `2`: wrong arguments or settings.
 
 ## Health checks
 

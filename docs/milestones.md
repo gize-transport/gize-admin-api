@@ -113,7 +113,7 @@ Status: todo · Depends on: GZ-012
 ### GZ-014 · Bootstrap first admin
 Status: in review · Depends on: GZ-011
 - CLI command to promote an existing Supabase user to the first admin; refuses if an admin already exists.
-- Built: `python -m gize_api.cli.first_admin --user-id <uid> --name "…"`, new setting `SUPABASE_SECRET_KEY` (optional; `sb_secret_...` only), `integrations/supabase_auth.py` (admin API, `apikey` header). Refuses if any admin exists, active or not; under an advisory lock. The user must have a confirmed email and not be banned, deleted or anonymous. Hand-off to GZ-012: audit the first-admin creation (`TODO(GZ-012)` in the command).
+- Built: `python -m gize_api.cli.first_admin --user-id <uid> --name "…"`, new setting `SUPABASE_SECRET_KEY` (optional; `sb_secret_...` only), `integrations/supabase_auth.py` (admin API, `apikey` header). Refuses if any admin exists, active or not; under an advisory lock. The user must have a confirmed email and not be banned, deleted or anonymous. Hand-offs: GZ-012 audits the first-admin creation (`TODO(GZ-012)` in the command; until then a `first_admin_created` Sentry event). GZ-013's invites must take `FIRST_ADMIN_LOCK_ID` or handle a unique-constraint error on email or ID.
 
 ### GZ-015 · Publish the API contract
 Status: todo · Depends on: GZ-011
