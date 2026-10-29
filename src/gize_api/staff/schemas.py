@@ -19,8 +19,10 @@ from gize_api.core.pagination import Page, PageParams
 from gize_api.staff.models import EMAIL_MAX_LENGTH, FULL_NAME_MAX_LENGTH, StaffRole
 
 EMAIL_LOCAL_PART_MAX_LENGTH = 64  # RFC 5321
-_LOCAL_PART = r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]"
-_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+# Punctuation escaped: browsers compile `<input pattern>` with the `v` flag, which refuses
+# unescaped `/ { | } -` in a class (tests/staff/test_invite.py runs it under node).
+_LOCAL_PART = r"[A-Za-z0-9.!#$%&'*+\/=?^_`\{\|\}~\-]"
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?"
 # The HTML form rule for email addresses (what Supabase accepts too), ASCII only, with a dot
 # in the domain: no spaces, control or invisible characters ever reach Supabase. The
 # invite email itself proves the address.

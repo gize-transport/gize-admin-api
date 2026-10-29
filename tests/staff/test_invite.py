@@ -4,6 +4,8 @@ Supabase is the fake in conftest.py (the real client on a mock transport); the d
 the real test database. Parallel requests are in test_concurrency.py.
 """
 
+import shutil
+import subprocess
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -18,6 +20,7 @@ from gize_api.core.db import get_session
 from gize_api.main import GizeAPI
 from gize_api.staff import service
 from gize_api.staff.models import Staff, StaffRole
+from gize_api.staff.schemas import EMAIL_PATTERN
 from tests.staff.support import (
     STAFF,
     FakeSupabase,
@@ -401,3 +404,23 @@ async def test_refusals_and_replays_do_not_use_up_the_invite_limit(
         body = {**ALMAZ, "email": f"person{number}@example.com"}
         assert (await api.post(STAFF, json=body, headers=with_key(admin.id))).status_code == 201
     assert len(supabase.invites) == 20
+
+
+def test_the_email_pattern_is_valid_in_browsers() -> None:
+    """The contract's pattern is JSON Schema (ECMA regex): the portal may use it in an
+    `<input pattern>`, which browsers compile with the `v` flag, the strictest."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.fail("node is needed to check the pattern as browsers compile it")
+    script = (
+        "const p = process.argv[1];"
+        "for (const f of ['', 'u', 'v']) {"
+        "  const r = new RegExp(p, f);"
+        "  if (!r.test('almaz.t+gize@sub-1.example.et') || r.test('a b@example.com'))"
+        "    throw new Error(f);"
+        "}"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed arguments, no shell
+        [node, "-e", script, EMAIL_PATTERN], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr

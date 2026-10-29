@@ -44,10 +44,11 @@ async def other_signed_in_admin_exists(session: AsyncSession, staff_id: uuid.UUI
 
 
 async def record_first_sign_in(session: AsyncSession, staff_id: uuid.UUID) -> None:
-    """Set `first_signed_in_at` unless it is set (two first requests at once: one wins)."""
+    """Set `first_signed_in_at` unless it is set (two first requests at once: one wins),
+    and only while they are active (deactivated meanwhile: not a sign-in)."""
     await session.execute(
         update(Staff)
-        .where(Staff.id == staff_id, Staff.first_signed_in_at.is_(None))
+        .where(Staff.id == staff_id, Staff.is_active, Staff.first_signed_in_at.is_(None))
         .values(first_signed_in_at=func.now())
     )
 

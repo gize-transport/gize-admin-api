@@ -212,6 +212,17 @@ async def test_an_admin_who_has_never_signed_in_does_not_count(
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize("body", [{"role": "staff"}, {"is_active": False}])
+async def test_the_only_signed_in_admin_may_remove_an_unaccepted_admin(
+    api: httpx.AsyncClient, db_session: AsyncSession, body: dict[str, object]
+) -> None:
+    """A mistyped invite is cleaned up by the admin who sent it."""
+    admin = await add_admin(db_session)
+    invited = await add_admin(db_session, first_signed_in_at=None)
+    response = await api.patch(_member(invited), json=body, headers=signed_in(admin.id))
+    assert response.status_code == 200
+
+
 async def test_an_admin_may_deactivate_another_admin(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
