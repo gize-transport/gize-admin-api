@@ -213,3 +213,24 @@ def test_scrub_event_without_contexts() -> None:
     result = scrub_event(cast(Event, {"message": f"call {PHONE}"}), {})
     assert result is not None
     assert PHONE not in json.dumps(result)
+
+
+@pytest.mark.usefixtures("sentry_enabled")
+def test_the_command_line_never_reaches_sentry(
+    make_settings: SettingsFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator commands take names as arguments (GZ-014's --name)."""
+    monkeypatch.setattr("sys.argv", ["first_admin", "--user-id", "u-1", "--name", "Abebe Kebede"])
+    configure_sentry(make_settings(sentry_dsn=DSN), transport=CapturingTransport)
+    log_security_event("first_admin_created", staff_id="u-1")
+    (event,) = _events()
+    assert event["message"] == "first_admin_created"
+    assert "sys.argv" not in event.get("extra", {})
+    assert "Abebe" not in json.dumps(event)
+
+
+def test_scrubbing_drops_the_command_line_whatever_adds_it() -> None:
+    event = cast(Event, {"extra": {"sys.argv": ["cmd", "--name", "Abebe Kebede"], "n": 1}})
+    scrubbed = scrub_event(event, {})
+    assert scrubbed is not None
+    assert "sys.argv" not in scrubbed.get("extra", {})

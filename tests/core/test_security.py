@@ -29,7 +29,7 @@ from gize_api.core.security import (
     verified_token,
 )
 from gize_api.main import GizeAPI, create_app
-from tests.support import SettingsFactory
+from tests.support import SettingsFactory, public_resolver
 from tests.tokens import (
     EC_KEY,
     KEY_SET,
@@ -222,7 +222,7 @@ async def test_keys_come_from_the_project_through_the_outbound_client(
     settings = make_settings()
     client = OutboundClient(
         allowed_hosts={settings.supabase_host},
-        resolver=_public_resolver,
+        resolver=public_resolver,
         transport_factory=lambda: httpx.MockTransport(handler),
     )
     verifier = TokenVerifier.for_settings(settings, telemetry=None, outbound=client)
@@ -235,17 +235,13 @@ async def test_keys_come_from_the_project_through_the_outbound_client(
     assert "Authorization" not in seen[0].headers  # public keys need no credentials
 
 
-async def _public_resolver(host: str, port: int) -> list[str]:
-    return ["93.184.216.34"]
-
-
 @pytest.mark.parametrize("status", [404, 500])
 async def test_an_error_from_the_key_endpoint_is_unavailable(
     make_settings: SettingsFactory, status: int
 ) -> None:
     client = OutboundClient(
         allowed_hosts={make_settings().supabase_host},
-        resolver=_public_resolver,
+        resolver=public_resolver,
         transport_factory=lambda: httpx.MockTransport(lambda _: httpx.Response(status)),
     )
     verifier = TokenVerifier.for_settings(make_settings(), telemetry=None, outbound=client)
@@ -389,7 +385,7 @@ async def test_a_failing_or_garbled_key_endpoint_is_unavailable(
     monkeypatch.setattr("gize_api.core.http.RETRY_BASE_DELAY_SECONDS", 0.001)
     client = OutboundClient(
         allowed_hosts={make_settings().supabase_host},
-        resolver=_public_resolver,
+        resolver=public_resolver,
         transport_factory=lambda: httpx.MockTransport(handler),
     )
     verifier = TokenVerifier.for_settings(make_settings(), telemetry=None, outbound=client)

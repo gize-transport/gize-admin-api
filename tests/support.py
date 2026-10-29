@@ -47,6 +47,7 @@ SETTINGS_ENV_VARS = (
     "DATABASE_MAX_OVERFLOW",
     "CLIENT_IP_HEADER",
     "SUPABASE_URL",
+    "SUPABASE_SECRET_KEY",
 )
 
 SettingsFactory = Callable[..., Settings]
@@ -202,3 +203,8 @@ class StallableProxy:
                 writer.write(data)
                 await writer.drain()
         writer.close()
+
+
+async def public_resolver(host: str, port: int) -> list[str]:
+    """Resolves every host to a public address: outbound-client tests on a mock transport."""
+    return ["93.184.216.34"]

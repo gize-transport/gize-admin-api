@@ -1,5 +1,7 @@
 """GZ-003: settings load from the environment and fail fast without leaking values."""
 
+import base64
+
 import pytest
 from pydantic import SecretStr
 
@@ -516,3 +518,42 @@ def test_supabase_url_is_normalised_to_the_issuer_supabase_writes(
     """A different spelling of the host would make every token's issuer mismatch."""
     _set(clean_env, SUPABASE_URL=value)
     assert load_settings().supabase_url == "https://abcdefghijklmnopqrst.supabase.co"
+
+
+def test_the_supabase_secret_key_is_optional_and_secret(clean_env: pytest.MonkeyPatch) -> None:
+    _set(clean_env)
+    assert load_settings().supabase_secret_key is None
+    key = "sb_secret_" + "Ab1_-" * 8
+    _set(clean_env, SUPABASE_SECRET_KEY=key)
+    settings = load_settings()
+    assert settings.supabase_secret_key is not None
+    assert settings.supabase_secret_key.get_secret_value() == key
+    assert key not in repr(settings)
+
+
+# Built at runtime: a made-up JWT, not a real key (a literal would trip the secret scanner).
+LEGACY_SERVICE_ROLE_KEY = ".".join(
+    base64.urlsafe_b64encode(part).decode().rstrip("=")
+    for part in (b'{"alg":"HS256"}', b'{"role":"service_role"}', b"not-a-signature")
+)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sb_publishable_" + "x" * 32,  # the browser key: it cannot read users
+        LEGACY_SERVICE_ROLE_KEY,  # the legacy service_role JWT
+        "sb_secret_",
+        "sb_secret_short",
+        "sb_secret_" + "x" * 32 + " ",
+        "sb_secret_" + "x" * 300,
+    ],
+)
+def test_the_supabase_secret_key_must_be_a_secret_key(
+    clean_env: pytest.MonkeyPatch, value: str
+) -> None:
+    _set(clean_env, SUPABASE_SECRET_KEY=value)
+    with pytest.raises(ConfigError, match="supabase_secret_key") as exc_info:
+        load_settings()
+    secret = value.strip().removeprefix("sb_secret_")  # the hint names the prefix itself
+    assert not secret or secret not in str(exc_info.value)

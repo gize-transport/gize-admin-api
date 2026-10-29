@@ -50,6 +50,7 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL (with `rediss`, the server's certificate and host name are checked). |
 | `SUPABASE_URL` | yes | The Supabase project URL, `https://<project-ref>.supabase.co` (Project Settings → API). Sign-in tokens are verified against its public signing keys and must name its Auth service as issuer. |
+| `SUPABASE_SECRET_KEY` | for the first-admin command (and staff invites, GZ-013) | **Secret.** The project's secret API key, `sb_secret_...` (Project Settings → API Keys → Secret keys). It can read and create users: keep it in `.env` or the host's secret store, never in chat, code or the frontend. The legacy `service_role` JWT is refused. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, or Cloudflare's authenticated origin pulls): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
@@ -185,6 +186,29 @@ A valid token only proves someone has a Supabase account. Whether they are Gize 
 - **Object-level checks** live in services (see `docs/architecture.md`).
 - **`GET /v1/staff/me`** returns the caller's `id`, `full_name`, `email` and `role` (`Cache-Control: no-store`). The admin portal calls it after sign-in.
 - **Supabase sign-ups:** staff are added by admins (GZ-013). In the Supabase dashboard (Authentication → Sign In / Providers), turn off **Allow new users to sign up**, so strangers can't even get a token. For the very first admin, create the user in the dashboard (Authentication → Users → Add user), then make them admin with the GZ-014 command.
+
+## First admin
+
+Admins add staff in the admin portal, so the very first admin is made by a command, once per environment.
+
+1. **Create the user** in the Supabase dashboard: Authentication → Users → Add user. The email must end up confirmed (setting a password alone doesn't confirm it):
+   - **Create new user**, with **Auto Confirm User** ticked; or
+   - **Send invitation**, and wait until they accept it.
+2. **Copy their UID** from the user's row in that list.
+3. **Get the secret key:** Project Settings → API Keys → Secret keys (`sb_secret_...`). A project still on the legacy keys has none yet: create one there first.
+4. **Set up the environment** where the command runs: the app's full environment (`APP_ENV`, `DATABASE_URL` for that environment's database, `REDIS_URL`, and so on) plus `SUPABASE_URL` and `SUPABASE_SECRET_KEY`. Locally that is your `.env`; on a host, the API's secret store.
+5. **Run:**
+   ```bash
+   uv run --env-file .env python -m gize_api.cli.first_admin --user-id <UID> --name "Full Name"
+   ```
+   On a host, run it inside the running API container (`docker exec <container> python -m gize_api.cli.first_admin ...`). The image's entrypoint only starts `api`, `worker` or `migrate`, so `docker run` with this command doesn't work.
+
+The command reads the user from Supabase (it must exist, have a confirmed email, and not be banned, deleted or anonymous). It then makes them an active admin in one transaction, and refuses if any admin already exists, active or not. Two runs at once can't both succeed. It prints only the user ID, never names or emails, and reports the new admin to Sentry (a `first_admin_created` security event) until the audit log exists.
+
+Exit codes:
+- `0`: done.
+- `1`: refused, another run in progress, or Supabase or the database unavailable. If the database dropped mid-run, the change may or may not have been saved; running the command again is safe, since it refuses once an admin exists.
+- `2`: wrong arguments or settings.
 
 ## Health checks
 

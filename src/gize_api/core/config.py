@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # The Supabase project URL (https://<ref>.supabase.co): sign-in tokens are verified
     # against its public signing keys and must name its Auth service as issuer.
     supabase_url: str
+    # The project's secret API key (`sb_secret_...`, Project Settings → API Keys): reads and
+    # creates Auth users. Only the first-admin command (GZ-014) and staff invites (GZ-013)
+    # use it; never sent to clients. The legacy service_role JWT is not accepted.
+    supabase_secret_key: SecretStr | None = None
     # CA certificate (PEM) that the database's certificate must chain to (ssl=verify-full);
     # Supabase's is downloaded from the project's database settings. Unset: system CAs.
     database_ssl_root_cert: FilePath | None = None
@@ -147,6 +151,13 @@ class Settings(BaseSettings):
         ):
             raise ValueError("must be the project URL, e.g. https://<project-ref>.supabase.co")
         return f"https://{host}"
+
+    @field_validator("supabase_secret_key")
+    @classmethod
+    def _supabase_secret_key_shape(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not _SUPABASE_SECRET_KEY.fullmatch(value.get_secret_value()):
+            raise ValueError("must be a secret API key (sb_secret_...) from Project Settings")
+        return value
 
     @field_validator("sentry_dsn")
     @classmethod
@@ -266,6 +277,7 @@ class Settings(BaseSettings):
 
 _DATABASE_SCHEMES = frozenset({"postgresql", "postgres", "postgresql+asyncpg"})
 _DATABASE_SSL_MODES = frozenset({"require", "verify-full"})
+_SUPABASE_SECRET_KEY = re.compile(r"sb_secret_[A-Za-z0-9_-]{16,200}")
 _DATABASE_NAME = re.compile(r"/[A-Za-z0-9_-]{1,63}")
 
 
