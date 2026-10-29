@@ -107,7 +107,7 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 
 | Table | Key columns |
 | --- | --- |
-| `staff` | id (= Supabase user id), full_name, email, role (`admin`/`staff`), is_active |
+| `staff` | id (= Supabase user id), full_name, email, role (`admin`/`staff`), is_active, first_signed_in_at (null until the first request: an invitation not yet accepted) |
 | `audit_log` | id, actor_staff_id, action, entity_type, entity_id, before (jsonb), after (jsonb), request_id, created_at – append-only |
 | `idempotency_keys` | key, actor, request_hash, response_status, response_body, created_at (purged after 24 h) |
 | `corridors` | id, name, origin_area, destination_area, waitlist_threshold |

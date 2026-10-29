@@ -194,6 +194,24 @@ async def test_with_another_active_admin_either_may_step_down(
     assert response.json()["code"] == "LAST_ACTIVE_ADMIN"
 
 
+async def test_an_admin_who_has_never_signed_in_does_not_count(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """An invited admin may never accept (a mistyped email): stepping down in their favour
+    would leave nobody able to sign in as admin, and the first-admin command refuses
+    once any admin exists. They count once they have signed in."""
+    admin_id = (await add_admin(db_session)).id
+    invited_id = (await add_admin(db_session, first_signed_in_at=None)).id
+    body = {"role": "staff"}
+    response = await api.patch(_member(admin_id), json=body, headers=signed_in(admin_id))
+    assert response.status_code == 409
+    assert response.json()["code"] == "LAST_ACTIVE_ADMIN"
+
+    assert (await api.get(f"{STAFF}/me", headers=signed_in(invited_id))).status_code == 200
+    response = await api.patch(_member(admin_id), json=body, headers=signed_in(admin_id))
+    assert response.status_code == 200
+
+
 async def test_an_admin_may_deactivate_another_admin(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:

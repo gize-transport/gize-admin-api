@@ -2,7 +2,8 @@
 
 Staff management (GZ-013) is for active admins (the routes' `require_role`); every write
 re-reads the caller under the staff-changes lock, so an admin deactivated or demoted a
-moment ago is refused. No change may leave the system without an active admin.
+moment ago is refused. No change may leave the system without an active admin who has
+signed in at least once (an invited admin may never accept: owner decision).
 """
 
 import uuid
@@ -30,7 +31,7 @@ from gize_api.staff.repository import (
     get_staff,
     get_staff_by_email,
     lock_staff_changes,
-    other_active_admin_exists,
+    other_signed_in_admin_exists,
     staff_members,
 )
 from gize_api.staff.schemas import (
@@ -170,7 +171,11 @@ async def update(
         is_active = active_before if changes.is_active is None else changes.is_active
         was_admin = role_before is StaffRole.ADMIN and active_before
         stays_admin = role is StaffRole.ADMIN and is_active
-        if was_admin and not stays_admin and not await other_active_admin_exists(session, staff.id):
+        if (
+            was_admin
+            and not stays_admin
+            and not await other_signed_in_admin_exists(session, staff.id)
+        ):
             raise AppError(ErrorCode.LAST_ACTIVE_ADMIN)
 
         before = audit.snapshot(STAFF_AUDIT, staff)

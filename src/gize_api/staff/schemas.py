@@ -79,6 +79,9 @@ class StaffRead(BaseModel):
     email: str = Field(max_length=EMAIL_MAX_LENGTH)
     role: StaffRole
     is_active: bool = Field(description="False: deactivated, locked out until reactivated.")
+    first_signed_in_at: datetime | None = Field(
+        description="Null until their first sign-in: an invitation not yet accepted."
+    )
     created_at: datetime
     updated_at: datetime
 

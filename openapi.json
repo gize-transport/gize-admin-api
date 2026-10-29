@@ -319,6 +319,19 @@
             "title": "Email",
             "type": "string"
           },
+          "first_signed_in_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until their first sign-in: an invitation not yet accepted.",
+            "title": "First Signed In At"
+          },
           "full_name": {
             "maxLength": 200,
             "title": "Full Name",
@@ -350,6 +363,7 @@
           "email",
           "role",
           "is_active",
+          "first_signed_in_at",
           "created_at",
           "updated_at"
         ],

@@ -51,6 +51,7 @@ async def test_an_admin_invites_a_staff_member(
         "email": "almaz.t@example.com",  # stored trimmed and lower-case
         "role": "staff",
         "is_active": True,
+        "first_signed_in_at": None,  # until they accept and sign in
         "created_at": created["created_at"],
         "updated_at": created["updated_at"],
     }

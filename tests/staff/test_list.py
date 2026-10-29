@@ -49,6 +49,7 @@ async def test_admins_list_staff_newest_first(
         "email": newest.email,
         "role": "staff",
         "is_active": True,
+        "first_signed_in_at": None,
         "created_at": "2026-10-29T06:32:00Z",
         "updated_at": body["items"][0]["updated_at"],
     }
@@ -249,7 +250,8 @@ def test_staff_management_is_in_the_contract(make_settings: SettingsFactory) -> 
     assert "required" not in changes
     assert set(schemas["StaffInvite"]["required"]) == {"email", "full_name", "role"}
     assert set(schemas["StaffRead"]["properties"]) == {
-        "id", "full_name", "email", "role", "is_active", "created_at", "updated_at",
+        "id", "full_name", "email", "role", "is_active", "first_signed_in_at", "created_at",
+        "updated_at",
     }  # fmt: skip
     assert {"STAFF_EMAIL_TAKEN", "AUTH_ACCOUNT_EXISTS", "LAST_ACTIVE_ADMIN"} <= set(
         schemas["ErrorCode"]["enum"]

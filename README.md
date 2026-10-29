@@ -181,6 +181,7 @@ A valid token only proves someone has a Supabase account. Whether they are Gize 
   - a deactivated row → `403`, reason `inactive`. **Deactivating someone locks them out on their next request,** even though their token is still valid;
   - both refusals count toward the per-IP token throttle (30 a minute), so a stranger or a dismissed employee can't send unlimited requests. Only refusals count: active staff are never throttled by it;
   - the role (`admin` or `staff`) always comes from the table, never from the token.
+  - a member's first request records `first_signed_in_at` (once): until then, an invited member hasn't accepted. The staff list shows it.
 - **`require_role(StaffRole.ADMIN)`** → `403`, security event `permission_denied`, for any other role.
 - **Staff routes** are built on `staff_router(...)`, which applies the `STAFF` limit (120 a minute per staff member; Redis down → allowed). A test fails if any route the app serves lacks `current_staff` or that limit, unless its method and path are on the public list (health checks, the local and staging docs, and later the public sign-up routes).
 - **Object-level checks** live in services (see `docs/architecture.md`).
@@ -194,7 +195,7 @@ Admins manage staff under `/v1/staff` (GZ-013). Every route is for **active admi
 | Endpoint | What it does |
 | --- | --- |
 | `POST /v1/staff` (`staff_invite`) | Body `{email, full_name, role}`. Supabase emails them an invitation; they are active staff in that role at once and can sign in when they have accepted. `201` with `Location`. Requires `Idempotency-Key`; 20 invites an hour per admin (refusals and replays don't count). |
-| `GET /v1/staff` (`staff_list`) | Newest first, cursor-paginated, filtered by `role` and `is_active`. Deactivated members are listed. |
+| `GET /v1/staff` (`staff_list`) | Newest first, cursor-paginated, filtered by `role` and `is_active`. Deactivated members are listed; `first_signed_in_at` is null while an invitation is pending. |
 | `GET /v1/staff/{staff_id}` (`staff_get`) | One member, or `404`. |
 | `PATCH /v1/staff/{staff_id}` (`staff_update`) | Body `{role?, is_active?}`, at least one, never `null`. Promote, demote, deactivate (locks them out on their next request) or reactivate. No key needed: setting what is already there changes nothing. |
 
@@ -202,7 +203,7 @@ Admins manage staff under `/v1/staff` (GZ-013). Every route is for **active admi
 - **Existing sign-in accounts:** an email that already has a confirmed Supabase account is `409 AUTH_ACCOUNT_EXISTS` (owner decision, GZ-013). Turning an existing account into staff is deliberate work for an operator, not a side effect of an invite.
   - **Recovery** (for example, someone accepted an invite whose write then failed, so they have an account but no staff row and get `403`): in the Supabase dashboard (Authentication → Users) delete that user, then invite them again. Check first that the account is the stranded invitee and not someone else's.
 - **Public sign-ups must stay off** (see "Staff and roles"). An invite to an email with an *unconfirmed* Supabase account re-sends to that account; with sign-ups on, a stranger could create that account first with a password of their own.
-- **Always an admin:** no change may leave the system without an active admin (`409 LAST_ACTIVE_ADMIN`). Every staff change, and the first-admin command, holds one database lock (`lock_staff_changes`), so two admins stepping down at once can't both succeed. The service re-reads the caller under that lock: an admin demoted or deactivated a moment ago is refused.
+- **Always an admin:** no change may leave the system without an active admin who has signed in at least once (`409 LAST_ACTIVE_ADMIN`). An invited admin who hasn't accepted yet doesn't count: with a mistyped email they never will, and nobody could sign in as admin (owner decision, GZ-013). Every staff change, and the first-admin command, holds one database lock (`lock_staff_changes`), so two admins stepping down at once can't both succeed. The service re-reads the caller under that lock: an admin demoted or deactivated a moment ago is refused.
 - **Invites and failures:** Supabase is called between two transactions, never inside one.
   - A retry of a finished invite (same key) replays the stored response without calling Supabase.
   - If Supabase answered but the database write failed, a retry invites again: Supabase returns the same user (a second email arrives) and the write completes.

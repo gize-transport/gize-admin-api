@@ -3,6 +3,7 @@
 import json
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -67,7 +68,13 @@ async def add_staff(session: AsyncSession, **values: Any) -> Staff:  # noqa: ANN
         return await StaffFactory().create(session, **values)
 
 
+SIGNED_IN_AT = datetime(2026, 10, 1, 8, 0, tzinfo=UTC)
+
+
 async def add_admin(session: AsyncSession, **values: Any) -> Staff:  # noqa: ANN401
+    """An admin who has signed in before (pass `first_signed_in_at=None` for one who has
+    not): only those count as the active admin who must remain."""
+    values.setdefault("first_signed_in_at", SIGNED_IN_AT)
     return await add_staff(session, role=StaffRole.ADMIN, **values)
 
 

@@ -3,12 +3,15 @@
 A staff member's ID is their Supabase user ID: sign-in proves who they are, this table
 says whether they are staff, active, and in which role. The role is never taken from the
 token. Deactivating a member (`is_active = false`) locks them out on their next request.
+`first_signed_in_at` is set by their first request (GZ-013): until then an invited member
+has not accepted, and an admin among them does not count as the admin who must remain.
 """
 
 import uuid
+from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, CheckConstraint, Enum, Index, String, true
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Index, String, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gize_api.core.audit import AuditedEntity
@@ -54,3 +57,4 @@ class Staff(TimestampMixin, Base):
         )
     )
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=true())
+    first_signed_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
