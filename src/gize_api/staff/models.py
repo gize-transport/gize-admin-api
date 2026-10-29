@@ -11,10 +11,19 @@ from enum import StrEnum
 from sqlalchemy import Boolean, CheckConstraint, Enum, String, true
 from sqlalchemy.orm import Mapped, mapped_column
 
+from gize_api.core.audit import AuditedEntity
 from gize_api.core.models import Base, TimestampMixin
 
 FULL_NAME_MAX_LENGTH = 200
 EMAIL_MAX_LENGTH = 320  # RFC 5321 path limit
+
+
+# The audit log keeps role and status by value; names and emails only as "changed".
+STAFF_AUDIT = AuditedEntity(
+    type="staff",
+    fields=("full_name", "email", "role", "is_active"),
+    visible=frozenset({"role", "is_active"}),
+)
 
 
 class StaffRole(StrEnum):

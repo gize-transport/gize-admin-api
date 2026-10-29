@@ -67,6 +67,7 @@ src/gize_api/
     audit.py              # audit log writer used by services
   health/router.py        # /health/live, /health/ready
   staff/  routes/  riders/  waitlists/  drivers/  verification/   # domain slices
+  audit_log/              # GET /v1/audit-log (admins); the writer is core/audit.py
   integrations/sms.py     # SmsSender protocol + FakeSmsSender + real gateway adapter later
   integrations/supabase_auth.py  # Supabase Auth admin API (secret key; read users, invites later)
   cli/first_admin.py      # operator command: make the first admin (`python -m gize_api.cli.first_admin`)

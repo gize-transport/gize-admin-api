@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.cli import first_admin
 from gize_api.cli.first_admin import FIRST_ADMIN_LOCK_ID, FirstAdminRefusedError, create_first_admin
+from gize_api.core.audit import REDACTED, AuditEntry
 from gize_api.core.config import ConfigError
 from gize_api.core.http import OutboundClient
 from gize_api.integrations.supabase_auth import AuthAdminError, AuthUser, SupabaseAuthAdmin
@@ -82,6 +83,53 @@ async def test_an_existing_staff_member_is_promoted(
     assert staff.role is StaffRole.ADMIN
     assert staff.is_active
     assert (staff.full_name, staff.email) == ("Abebe Kebede", USER.email)  # Supabase's email
+
+
+async def _audit(sessions: async_sessionmaker[AsyncSession]) -> list[AuditEntry]:
+    async with sessions() as session, session.begin():
+        return list((await session.scalars(select(AuditEntry))).all())
+
+
+async def test_the_new_admin_is_audited(
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    await create_first_admin(committed_sessionmaker, FakeAuth(USER), USER.id, "Abebe Kebede")
+    (entry,) = await _audit(committed_sessionmaker)
+    assert (entry.action, entry.entity_type, entry.entity_id) == (
+        "staff.first_admin_created",
+        "staff",
+        USER.id,
+    )
+    assert entry.actor_staff_id is None  # an operator at a shell, not a staff member
+    assert entry.before is None
+    assert entry.after == {
+        "full_name": REDACTED,
+        "email": REDACTED,
+        "role": "admin",
+        "is_active": True,
+    }
+
+
+async def test_a_promotion_is_audited_as_what_changed(
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with committed_sessionmaker() as session, session.begin():
+        await StaffFactory().create(
+            session, id=USER.id, email=USER.email, full_name="Abebe Kebede", role=StaffRole.STAFF
+        )
+    await create_first_admin(committed_sessionmaker, FakeAuth(USER), USER.id, "Abebe Kebede")
+    (entry,) = await _audit(committed_sessionmaker)
+    assert (entry.before, entry.after) == ({"role": "staff"}, {"role": "admin"})
+
+
+async def test_a_refusal_is_not_audited(
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with committed_sessionmaker() as session, session.begin():
+        await StaffFactory().create(session, role=StaffRole.ADMIN)
+    with pytest.raises(FirstAdminRefusedError):
+        await create_first_admin(committed_sessionmaker, FakeAuth(USER), USER.id, "Abebe")
+    assert await _audit(committed_sessionmaker) == []
 
 
 @pytest.mark.parametrize("active", [True, False])

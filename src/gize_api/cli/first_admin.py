@@ -23,6 +23,7 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gize_api.core.audit import record, snapshot
 from gize_api.core.config import ConfigError, Settings, load_settings
 from gize_api.core.db import (
     create_engine,
@@ -35,7 +36,13 @@ from gize_api.core.http import OutboundClient
 from gize_api.core.logging import configure_logging, log_security_event
 from gize_api.core.sentry import configure_sentry
 from gize_api.integrations.supabase_auth import AuthAdminError, AuthUser, SupabaseAuthAdmin
-from gize_api.staff.models import EMAIL_MAX_LENGTH, FULL_NAME_MAX_LENGTH, Staff, StaffRole
+from gize_api.staff.models import (
+    EMAIL_MAX_LENGTH,
+    FULL_NAME_MAX_LENGTH,
+    STAFF_AUDIT,
+    Staff,
+    StaffRole,
+)
 from gize_api.staff.repository import admin_exists, get_staff, get_staff_by_email
 
 FIRST_ADMIN_LOCK_ID = 0x67697A6561646D  # "gizeadm"
@@ -67,12 +74,24 @@ async def create_first_admin(
         if other is not None and other.id != user_id:
             raise FirstAdminRefusedError("another staff member already uses this email")
         staff = await get_staff(session, user_id)
+        before = None if staff is None else snapshot(STAFF_AUDIT, staff)
         if staff is None:
-            session.add(Staff(id=user_id, full_name=full_name, email=email, role=StaffRole.ADMIN))
+            staff = Staff(
+                id=user_id, full_name=full_name, email=email, role=StaffRole.ADMIN, is_active=True
+            )
+            session.add(staff)
         else:
             staff.full_name, staff.email = full_name, email
             staff.role, staff.is_active = StaffRole.ADMIN, True
-    # TODO(GZ-012): record this in the audit log once it exists.
+        record(
+            session,
+            actor_id=None,  # an operator at a shell, not a staff member
+            action="staff.first_admin_created",
+            entity=STAFF_AUDIT,
+            entity_id=user_id,
+            before=before,
+            after=snapshot(STAFF_AUDIT, staff),
+        )
     log_security_event("first_admin_created", staff_id=str(user_id))
 
 
@@ -151,7 +170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("first_admin: set SUPABASE_SECRET_KEY (see README)", file=sys.stderr)  # noqa: T201 - CLI
         return 2
     configure_logging(settings.log_level)
-    # Until the audit log exists (GZ-012), Sentry is where the new admin is recorded.
+    # The new admin is in the audit log; Sentry also alerts on it (a security event).
     configure_sentry(settings)
     try:
         asyncio.run(_run(settings, args.user_id, args.name))
