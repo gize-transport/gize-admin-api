@@ -71,7 +71,7 @@ Status: done · Depends on: GZ-006
 - Hand-off to M2 (first job enqueued by the API, SMS): pass W3C trace context to the worker in the job (our own process); consider an outbox if a job must never be lost between commit and enqueue.
 
 ### GZ-009 · Rate limiting core
-Status: in review · Depends on: GZ-008
+Status: done · Depends on: GZ-008
 - `limits` (async) + Redis (owner decision at planning: slowapi calls Redis synchronously); key = staff ID, fallback client IP from `CLIENT_IP_HEADER` (new setting) or the socket; named limit policies; 429 + `Retry-After` problem+json.
 - Fail-open (staff) vs fail-closed (OTP/SMS/public) policy when Redis is down; security event logged on limit hits.
 - Redis metrics per command: request count, error count, duration (moved from GZ-005; instrument the limiter's own Redis client per client, like the app's).
@@ -87,9 +87,10 @@ Status: in review · Depends on: GZ-008
 ## M1 – Authentication, staff and contract publishing
 
 ### GZ-010 · Supabase token verification
-Status: todo · Depends on: GZ-004, GZ-006
+Status: in review · Depends on: GZ-004, GZ-006
 - Verify access tokens against the Supabase project's signing method (confirm JWKS vs shared secret for the project and document it); check `exp`, `aud`, `iss`; JWKS cached with timeout and refresh on unknown key.
 - Acceptance: expired, wrong-audience, tampered and unsigned tokens rejected (401) and logged as security events.
+- Decisions at M1 planning: asymmetric signing keys only (JWKS; no shared secret in the API), PyJWT with `cryptography`, new setting `SUPABASE_URL`. Failed tokens are throttled per IP (`TOKEN_FAILURES`, the GZ-009 hand-off).
 
 ### GZ-011 · Staff accounts and role guards
 Status: todo · Depends on: GZ-010

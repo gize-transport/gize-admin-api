@@ -21,6 +21,7 @@ from gize_api.core.rls import row_level_security_statements
 from gize_api.main import GizeAPI, create_app
 from tests.support import (
     SETTINGS_ENV_VARS,
+    TEST_SUPABASE_URL,
     UNREACHABLE_DATABASE_URL,
     UNREACHABLE_REDIS_URL,
     DatabaseUrls,
@@ -59,6 +60,7 @@ def make_settings() -> SettingsFactory:
             "app_env": "test",
             "redis_url": UNREACHABLE_REDIS_URL,
             "database_url": UNREACHABLE_DATABASE_URL,
+            "supabase_url": TEST_SUPABASE_URL,
             "cors_allowed_origins": ("https://admin.example.com",),
             "log_level": "INFO",
             # Production refuses to start without Sentry/OTLP; tests opt in explicitly.

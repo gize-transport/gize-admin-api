@@ -282,6 +282,7 @@ def test_main_runs_the_worker_with_our_settings(
     clean_env.setenv("APP_ENV", "test")
     clean_env.setenv("REDIS_URL", test_redis_url)
     clean_env.setenv("DATABASE_URL", "postgresql://gize_app:pw@127.0.0.1:1/gize")
+    clean_env.setenv("SUPABASE_URL", "https://abcdefghijklmnopqrst.supabase.co")
     started: list[dict[str, Any]] = []
     monkeypatch.setattr(module, "run_worker", started.append)  # not Arq's CLI or its logging
     assert module.main() == 0

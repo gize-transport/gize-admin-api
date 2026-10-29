@@ -49,6 +49,7 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | --- | --- | --- |
 | `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL (with `rediss`, the server's certificate and host name are checked). |
+| `SUPABASE_URL` | yes | The Supabase project URL, `https://<project-ref>.supabase.co` (Project Settings → API). Sign-in tokens are verified against its public signing keys and must name its Auth service as issuer. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, or Cloudflare's authenticated origin pulls): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
@@ -151,6 +152,19 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
   - Redis unavailable: staff policies allow the request (logged once a minute per process, and counted as `outcome=error` in `db.client.operation.duration`: alert on it); public and SMS policies answer `503` with `Retry-After`. A busy connection pool waits instead of failing; one 1 s deadline covers each check.
   - Keys reach Redis hashed, so no phone number or IP is stored in clear. The hash is not secret, so it stops casual reading only.
   - Health endpoints have no limits.
+
+## Sign-in tokens
+
+Staff sign in to Supabase Auth in the admin portal, which sends `Authorization: Bearer <access token>`. `core/security.py` verifies it, and `verified_token` is the FastAPI dependency (GZ-011's `current_staff` builds on it).
+
+- **Asymmetric signing keys only** (ES256 or RS256). In the Supabase dashboard (Project Settings → JWT Keys) the project must use signing keys, not the legacy shared JWT secret: the API never holds a secret that could create tokens. A project still on the shared secret publishes no public keys, and every request gets 503.
+- **Checked:**
+  - the signature against the project's key set (`/auth/v1/.well-known/jwks.json`);
+  - `exp` and `nbf` with 30 s of clock difference;
+  - `aud = authenticated` and `iss = <project>/auth/v1`;
+  - a UUID `sub`, and `role = authenticated` (no anon or service-role tokens).
+- **Keys** are fetched through the guarded outbound client and cached for 10 minutes. An unknown key ID triggers at most one refresh every 30 s. While Supabase is unreachable, cached keys keep working for up to 24 hours; without any, requests get `503` with `Retry-After`.
+- **Rejected tokens** get `401 UNAUTHENTICATED` with `WWW-Authenticate: Bearer`. Each is logged as a `token_rejected` security event (the reason only, never the token; Sentry at most once a minute per reason and process). After 30 rejections a minute from one IP, that IP gets `429`. Valid tokens are never counted.
 
 ## Health checks
 

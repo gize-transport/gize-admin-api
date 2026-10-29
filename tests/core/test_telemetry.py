@@ -380,6 +380,7 @@ from gize_api.core.telemetry import configure_telemetry
 
 settings = Settings(app_env="test", redis_url="redis://127.0.0.1:1/0",
                     database_url="postgresql://gize_app:x@127.0.0.1:1/gize",
+                    supabase_url="https://abcdefghijklmnopqrst.supabase.co",
                     otel_exporter_otlp_endpoint="{blackhole_url}")
 telemetry = configure_telemetry(settings)
 with telemetry.tracer_provider.get_tracer("t").start_as_current_span("pending"):

@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     redis_url: SecretStr
     # As the least-privileged gize_app role; migrations use MIGRATOR_DATABASE_URL instead.
     database_url: SecretStr
+    # The Supabase project URL (https://<ref>.supabase.co): sign-in tokens are verified
+    # against its public signing keys and must name its Auth service as issuer.
+    supabase_url: str
     # CA certificate (PEM) that the database's certificate must chain to (ssl=verify-full);
     # Supabase's is downloaded from the project's database settings. Unset: system CAs.
     database_ssl_root_cert: FilePath | None = None
@@ -122,6 +125,22 @@ class Settings(BaseSettings):
                 "must be postgresql://user:password@host[:port]/database[?ssl=require|verify-full]"
             )
         return value
+
+    @field_validator("supabase_url")
+    @classmethod
+    def _supabase_url_shape(cls, value: str) -> str:
+        parts = _safe_split(value)
+        if (
+            parts is None
+            or parts.scheme != "https"
+            or not parts.hostname
+            or parts.username is not None
+            or parts.path not in {"", "/"}
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError("must be the project URL, e.g. https://<project-ref>.supabase.co")
+        return value.rstrip("/")
 
     @field_validator("sentry_dsn")
     @classmethod
@@ -202,6 +221,21 @@ class Settings(BaseSettings):
     def database_ssl(self) -> str | None:
         """The `ssl` option from DATABASE_URL (`require`, `verify-full`), or None."""
         return database_ssl_mode(self.database_url.get_secret_value())
+
+    @property
+    def supabase_host(self) -> str:
+        """The project's host (with a port if the URL names one), for the outbound allowlist."""
+        return urlsplit(self.supabase_url).netloc
+
+    @property
+    def supabase_auth_issuer(self) -> str:
+        """The `iss` claim Supabase Auth puts in this project's access tokens."""
+        return f"{self.supabase_url}/auth/v1"
+
+    @property
+    def supabase_jwks_url(self) -> str:
+        """Where the project publishes its public signing keys."""
+        return f"{self.supabase_auth_issuer}/.well-known/jwks.json"
 
     def otlp_headers(self) -> dict[str, str] | None:
         """OTLP exporter headers (e.g. Grafana Cloud auth), or None."""

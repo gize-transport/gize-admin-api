@@ -53,6 +53,7 @@ def test_create_app_reads_environment(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("APP_ENV", "test")
     clean_env.setenv("REDIS_URL", "redis://127.0.0.1:1/0")
     clean_env.setenv("DATABASE_URL", "postgresql://gize_app:pw@127.0.0.1:1/gize")
+    clean_env.setenv("SUPABASE_URL", "https://abcdefghijklmnopqrst.supabase.co")
     assert isinstance(create_app(), FastAPI)
 
 

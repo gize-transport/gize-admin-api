@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Ports nothing listens on: calls fail fast and nothing real is touched.
 UNREACHABLE_REDIS_URL = "redis://127.0.0.1:1/0"
+TEST_SUPABASE_URL = "https://abcdefghijklmnopqrst.supabase.co"
 UNREACHABLE_DATABASE_URL = "postgresql://gize_app:unused@127.0.0.1:1/gize?ssl=verify-full"
 
 # Every variable Settings reads; cleared so the developer's shell cannot change a result.
@@ -45,6 +46,7 @@ SETTINGS_ENV_VARS = (
     "DATABASE_POOL_SIZE",
     "DATABASE_MAX_OVERFLOW",
     "CLIENT_IP_HEADER",
+    "SUPABASE_URL",
 )
 
 SettingsFactory = Callable[..., Settings]
