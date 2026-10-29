@@ -80,8 +80,17 @@ Dockerfile                # multi-stage, non-root user, healthcheck
 
 1. Staff log in to Supabase Auth from the admin portal; the portal sends `Authorization: Bearer <access token>`.
 2. `core/security.py` verifies the signature against the project's JWKS (asymmetric ES256/RS256 keys only; the project must use Supabase signing keys, not the legacy shared secret), plus `exp`, `aud`, `iss`, `sub` and `role`. The JWKS is cached for 10 minutes and refreshed on an unknown `kid` at most every 30 s.
-3. The token's `sub` is looked up in `gize.staff`; the account must exist and be active. Role (`admin` | `staff`) comes **from our table, never from the token**.
-4. Services check the role for the action **and** that the target object exists, is not soft-deleted and may be acted on. Missing or forbidden objects return the same 404 to avoid leaking existence where appropriate.
+3. The token's `sub` is looked up in `gize.staff` by `current_staff`; the account must exist and be active (403 otherwise). Role (`admin` | `staff`) comes **from our table, never from the token**. `require_role(...)` guards actions by role. Staff routers are created with `staff_router(...)`, which adds the per-staff `STAFF` rate limit; a test fails if a `/v1` route lacks `current_staff` or that limit and is not listed as public.
+4. Services check the role for the action **and** that the target object exists, is not soft-deleted and may be acted on. Missing or forbidden objects return the same 404 to avoid leaking existence where appropriate. The pattern:
+   ```python
+   async def update_route(session, caller: CurrentStaff, route_id, changes):
+       async with session.begin():
+           route = await repository.get_route_for_update(session, route_id)  # not deleted
+           if route is None or not may_edit(caller, route):
+               raise AppError(ErrorCode.NOT_FOUND)  # same answer for both
+           ...
+   ```
+   Re-read anything the decision depends on inside the service's own block: `current_staff` read the caller moments earlier, in a block that is already closed.
 5. Public endpoints (registration, waitlist sign-up, phone verification) are unauthenticated, rate-limited per IP and per phone, and require a verified phone token from the OTP flow.
 
 Login rate limits for Supabase Auth are configured in the Supabase dashboard (Auth → Rate limits), not in this API.

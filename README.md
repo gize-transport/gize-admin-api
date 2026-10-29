@@ -155,7 +155,7 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
 
 ## Sign-in tokens
 
-Staff sign in to Supabase Auth in the admin portal, which sends `Authorization: Bearer <access token>`. `core/security.py` verifies it, and `verified_token` is the FastAPI dependency (GZ-011's `current_staff` builds on it).
+Staff sign in to Supabase Auth in the admin portal, which sends `Authorization: Bearer <access token>`. `core/security.py` verifies it, and `verified_token` is the FastAPI dependency (`current_staff`, below, builds on it).
 
 - **Asymmetric signing keys only** (ES256 or RS256). In the Supabase dashboard (Project Settings → JWT Keys) the project must use signing keys, not the legacy shared JWT secret: the API never holds a secret that could create tokens. A project still on the shared secret issues HS256 tokens, which are all rejected (`401`, reason `algorithm`).
 - **Checked:**
@@ -170,6 +170,20 @@ Staff sign in to Supabase Auth in the admin portal, which sends `Authorization: 
   - **Revoking a key urgently:** a key revoked in Supabase stays trusted until the next successful refresh (within 10 minutes, or 24 hours if Supabase is unreachable). Restarting the API instances drops it immediately.
 - **Rejected tokens** get `401 UNAUTHENTICATED` with `WWW-Authenticate: Bearer`. Each is logged as a `token_rejected` security event (the reason only, never the token; Sentry at most once a minute per reason and process).
 - **Throttle:** after 30 *forged-looking* rejections a minute from one IP (bad signature, unknown key, wrong audience or issuer, malformed), that IP gets `429`. Missing or expired tokens (a stale tab) and valid tokens are never counted, so one stale tab can't lock out an office.
+
+## Staff and roles
+
+A valid token only proves someone has a Supabase account. Whether they are Gize staff, and in which role, comes from the `gize.staff` table (ID = Supabase user ID).
+
+- **`current_staff`** (FastAPI dependency) looks the caller up on every request:
+  - no row → `403 FORBIDDEN`, security event `staff_access_denied` (reason `not_staff`); these also count toward the per-IP token throttle;
+  - a deactivated row → `403`, reason `inactive` (not counted: a stale tab). **Deactivating someone locks them out on their next request,** even though their token is still valid;
+  - the role (`admin` or `staff`) always comes from the table, never from the token.
+- **`require_role(StaffRole.ADMIN)`** → `403`, security event `permission_denied`, for any other role.
+- **Staff routes** are built on `staff_router(...)`, which applies the `STAFF` limit (120 a minute per staff member; Redis down → allowed). A test fails if any `/v1` route lacks `current_staff` or that limit, unless it is listed as public.
+- **Object-level checks** live in services (see `docs/architecture.md`).
+- **`GET /v1/staff/me`** returns the caller's `id`, `full_name`, `email` and `role` (`Cache-Control: no-store`). The admin portal calls it after sign-in.
+- **Supabase sign-ups:** staff are added by admins (GZ-013) and the first admin by command (GZ-014). In the Supabase dashboard (Authentication → Sign In / Providers), turn off **Allow new users to sign up**, so strangers can't even get a token.
 
 ## Health checks
 

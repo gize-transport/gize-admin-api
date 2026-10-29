@@ -30,6 +30,7 @@ from gize_api.core.sentry import configure_sentry
 from gize_api.core.telemetry import Telemetry, configure_telemetry
 from gize_api.health.readiness import Readiness
 from gize_api.health.router import router as health_router
+from gize_api.staff.router import router as staff_router
 
 MAX_BODY_BYTES = 1024 * 1024
 
@@ -113,6 +114,7 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     install_exception_handlers(app)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
     app.include_router(health_router)
+    app.include_router(staff_router)
     return app
 
 
