@@ -222,7 +222,7 @@
         "properties": {
           "email": {
             "maxLength": 320,
-            "pattern": "^[^@\\s\\x00-\\x1f\\x7f-\\x9f]{1,64}@[^@\\s\\x00-\\x1f\\x7f-\\x9f.]+(?:\\.[^@\\s\\x00-\\x1f\\x7f-\\x9f.]+)+$",
+            "pattern": "^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
             "title": "Email",
             "type": "string"
           },
@@ -374,8 +374,7 @@
             "type": "boolean"
           },
           "role": {
-            "$ref": "#/components/schemas/StaffRole",
-            "title": "Role"
+            "$ref": "#/components/schemas/StaffRole"
           }
         },
         "title": "StaffUpdate",
@@ -838,23 +837,17 @@
         ]
       },
       "post": {
-        "description": "Supabase emails them a link to set a password. They are active staff in `role` at\nonce, and can sign in when they have accepted. Requires `Idempotency-Key`.\n\n- 409 STAFF_EMAIL_TAKEN: a staff member, active or not, has this email (reactivate them).\n- 409 AUTH_ACCOUNT_EXISTS: the email already has a sign-in account (an operator adds\n  such people deliberately).\n- 503: Supabase could not send the invite; retrying with the same key is safe.",
+        "description": "Supabase emails them a link to set a password. They are active staff in `role` at\nonce, and can sign in when they have accepted. Requires `Idempotency-Key`. Each admin\nmay send 20 invites an hour (refusals and replays do not count).\n\n- 409 STAFF_EMAIL_TAKEN: a staff member, active or not, has this email (reactivate them).\n- 409 AUTH_ACCOUNT_EXISTS: the email already has a sign-in account. An operator deletes\n  that Supabase user if it should not exist, then the invite can be sent (README).\n- 503: Supabase could not send the invite; retrying with the same key is safe.",
         "operationId": "staff_invite",
         "parameters": [
           {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
             "in": "header",
             "name": "Idempotency-Key",
-            "required": false,
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Idempotency-Key"
+              "format": "uuid",
+              "type": "string"
             }
           }
         ],
@@ -877,7 +870,24 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Invited",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Present on a retry answered with the stored response.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "description": "The new member: `/v1/staff/{id}`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "content": {

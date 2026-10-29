@@ -193,18 +193,20 @@ Admins manage staff under `/v1/staff` (GZ-013). Every route is for **active admi
 
 | Endpoint | What it does |
 | --- | --- |
-| `POST /v1/staff` (`staff_invite`) | Body `{email, full_name, role}`. Supabase emails them an invitation; they are active staff in that role at once and can sign in when they have accepted. `201` with `Location`. Requires `Idempotency-Key`; 20 invites an hour per admin. |
+| `POST /v1/staff` (`staff_invite`) | Body `{email, full_name, role}`. Supabase emails them an invitation; they are active staff in that role at once and can sign in when they have accepted. `201` with `Location`. Requires `Idempotency-Key`; 20 invites an hour per admin (refusals and replays don't count). |
 | `GET /v1/staff` (`staff_list`) | Newest first, cursor-paginated, filtered by `role` and `is_active`. Deactivated members are listed. |
 | `GET /v1/staff/{staff_id}` (`staff_get`) | One member, or `404`. |
 | `PATCH /v1/staff/{staff_id}` (`staff_update`) | Body `{role?, is_active?}`, at least one, never `null`. Promote, demote, deactivate (locks them out on their next request) or reactivate. No key needed: setting what is already there changes nothing. |
 
 - **Emails** are stored trimmed and lower-case. An email already on staff, active or not, is `409 STAFF_EMAIL_TAKEN`: reactivate the person instead.
 - **Existing sign-in accounts:** an email that already has a confirmed Supabase account is `409 AUTH_ACCOUNT_EXISTS` (owner decision, GZ-013). Turning an existing account into staff is deliberate work for an operator, not a side effect of an invite.
+  - **Recovery** (for example, someone accepted an invite whose write then failed, so they have an account but no staff row and get `403`): in the Supabase dashboard (Authentication → Users) delete that user, then invite them again. Check first that the account is the stranded invitee and not someone else's.
+- **Public sign-ups must stay off** (see "Staff and roles"). An invite to an email with an *unconfirmed* Supabase account re-sends to that account; with sign-ups on, a stranger could create that account first with a password of their own.
 - **Always an admin:** no change may leave the system without an active admin (`409 LAST_ACTIVE_ADMIN`). Every staff change, and the first-admin command, holds one database lock (`lock_staff_changes`), so two admins stepping down at once can't both succeed. The service re-reads the caller under that lock: an admin demoted or deactivated a moment ago is refused.
 - **Invites and failures:** Supabase is called between two transactions, never inside one.
   - A retry of a finished invite (same key) replays the stored response without calling Supabase.
   - If Supabase answered but the database write failed, a retry invites again: Supabase returns the same user (a second email arrives) and the write completes.
-  - Supabase unreachable or refusing gives `503` with `Retry-After`; nothing is stored. The log line `supabase_invite_failed` says why (for example, Supabase's built-in email refusing an address outside the project team).
+  - Supabase unreachable or refusing gives `503`; nothing is stored. `Retry-After` is 30 s for a passing failure and Supabase's own wait (at most an hour) when its email limit is reached. There is none when only a configuration fix helps (the secret key refused or missing, custom SMTP needed). The log line `supabase_invite_failed` says why (for example, Supabase's built-in email refusing an address outside the project team).
 - **Audit and alerts:** `staff.invited`, `staff.role_changed`, `staff.deactivated`, `staff.reactivated` in the audit log (role and status by value, name and email redacted). The matching security events carry IDs and roles only. Making someone an admin, by invite, promotion or reactivation, also alerts in Sentry.
 - **Supabase setup before real invites** (owner, in the Supabase dashboard):
   - **Site URL** (Authentication → URL Configuration): the admin portal's page where invited staff set their password, once the portal has it. Until then invite links land on Supabase's default.

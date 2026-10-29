@@ -14,19 +14,17 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
-from pydantic.json_schema import SkipJsonSchema
 
 from gize_api.core.pagination import Page, PageParams
 from gize_api.staff.models import EMAIL_MAX_LENGTH, FULL_NAME_MAX_LENGTH, StaffRole
 
 EMAIL_LOCAL_PART_MAX_LENGTH = 64  # RFC 5321
-_NOT_IN_EMAIL = r"@\s\x00-\x1f\x7f-\x9f"
-# One "@", a local part, and a domain with a dot; no spaces or control characters. Supabase
-# checks the address further (its refusal is a 422 too) and the invite email proves it.
-EMAIL_PATTERN = (
-    rf"^[^{_NOT_IN_EMAIL}]{{1,{EMAIL_LOCAL_PART_MAX_LENGTH}}}"
-    rf"@[^{_NOT_IN_EMAIL}.]+(?:\.[^{_NOT_IN_EMAIL}.]+)+$"
-)
+_LOCAL_PART = r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]"
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+# The HTML form rule for email addresses (what Supabase accepts too), ASCII only, with a dot
+# in the domain: no spaces, control or invisible characters ever reach Supabase. The
+# invite email itself proves the address.
+EMAIL_PATTERN = rf"^{_LOCAL_PART}{{1,{EMAIL_LOCAL_PART_MAX_LENGTH}}}@{_LABEL}(?:\.{_LABEL})+$"
 
 
 def check_full_name(name: str) -> str:
@@ -50,8 +48,14 @@ FullName = Annotated[
 ]
 
 
-def _no_default(schema: dict[str, Any]) -> None:
-    schema.pop("default", None)  # null is refused: leave the field out instead
+def _without_null(schema: dict[str, Any]) -> None:
+    """Optional fields that refuse null (the model validator): the contract shows them as
+    their type only, and asks for at least one."""
+    schema["minProperties"] = 1
+    for field in schema["properties"].values():  # each one `X | None = None`
+        (kept,) = [branch for branch in field.pop("anyOf") if branch != {"type": "null"}]
+        field.update(kept)
+        field.pop("default")
 
 
 class StaffMe(BaseModel):
@@ -105,12 +109,10 @@ class StaffUpdate(BaseModel):
     """What to change: leave a field out to keep it, and send at least one. Deactivating
     someone locks them out on their next request; `is_active: true` reactivates them."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra={"minProperties": 1})
+    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra=_without_null)
 
-    role: StaffRole | SkipJsonSchema[None] = Field(default=None, json_schema_extra=_no_default)
-    is_active: StrictBool | SkipJsonSchema[None] = Field(
-        default=None, json_schema_extra=_no_default
-    )
+    role: StaffRole | None = None
+    is_active: StrictBool | None = None
 
     @model_validator(mode="after")
     def _a_change_without_nulls(self) -> Self:

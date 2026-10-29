@@ -220,7 +220,10 @@ def test_staff_management_is_in_the_contract(make_settings: SettingsFactory) -> 
     assert invite["422"]["x-error-codes"] == ["IDEMPOTENCY_KEY_MISMATCH", "VALIDATION_FAILED"]
     assert invite["428"]["x-error-codes"] == ["IDEMPOTENCY_KEY_REQUIRED"]
     key = {p["name"]: p for p in collection["post"]["parameters"]}["Idempotency-Key"]
-    assert key["in"] == "header"
+    # Required, a UUID: generated clients must send it (a missing one is still a 428).
+    assert (key["in"], key["required"]) == ("header", True)
+    assert key["schema"] == {"type": "string", "format": "uuid"}
+    assert set(invite["201"]["headers"]) == {"Location", "Idempotent-Replayed"}
 
     page = collection["get"]["responses"]["200"]["content"]["application/json"]["schema"]
     assert page == {"$ref": "#/components/schemas/StaffPage"}

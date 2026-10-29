@@ -356,3 +356,27 @@ async def test_a_failing_admin_client_close_does_not_stop_shutdown(
     async with app.router.lifespan_context(app):
         pass
     assert '"auth_admin_close_failed"' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("response", "retry_after"),
+    [
+        (httpx.Response(500), 30),
+        (httpx.Response(429), 60),
+        (httpx.Response(429, headers={"Retry-After": "120"}), 120),
+        (httpx.Response(429, headers={"Retry-After": "0"}), 1),
+        (httpx.Response(429, headers={"Retry-After": "86400"}), 3600),
+        (httpx.Response(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}), 60),
+        (httpx.Response(401), None),  # a configuration fix, not a wait
+        (httpx.Response(400, json={"error_code": "email_address_not_authorized"}), None),
+    ],
+)
+async def test_invite_errors_say_how_long_to_wait(
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin],
+    response: httpx.Response,
+    retry_after: int | None,
+) -> None:
+    admin = respond(response)
+    with pytest.raises(AuthAdminError) as exc_info:
+        await admin.invite_user("abebe@example.com", full_name="Abebe")
+    assert exc_info.value.retry_after == retry_after

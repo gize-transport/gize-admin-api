@@ -9,7 +9,9 @@ so every operation's error responses are rewritten here:
 - 422 VALIDATION_FAILED is documented wherever there is input (parameters or a body),
   413 PAYLOAD_TOO_LARGE wherever there is a body, and 500 INTERNAL_ERROR everywhere;
 - `ErrorCode`, `Problem`, `ValidationProblem` and their parts are components, and
-  FastAPI's `HTTPValidationError`/`ValidationError` are gone.
+  FastAPI's `HTTPValidationError`/`ValidationError` are gone;
+- the `Idempotency-Key` header is required, a UUID. In the code it is optional, so that a
+  missing key is answered with 428 IDEMPOTENCY_KEY_REQUIRED rather than a validation error.
 
 Routes declare the rest with `problem_responses(...)`; any other 4xx/5xx entry (a bare
 description, a `model`, `4XX` or `default`) is refused with an error naming the operation.
@@ -32,6 +34,7 @@ PROBLEM_REF = REF.format(model="Problem")
 VALIDATION_PROBLEM_REF = REF.format(model="ValidationProblem")
 PROBLEM_JSON = "application/problem+json"
 FASTAPI_ERROR_SCHEMAS = ("HTTPValidationError", "ValidationError")
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
 
@@ -56,6 +59,13 @@ def _error_schemas() -> dict[str, Any]:
 
 
 def _finish_operation(operation: dict[str, Any]) -> None:
+    for parameter in operation.get("parameters", []):
+        if parameter.get("in") == "header" and parameter.get("name") == IDEMPOTENCY_KEY_HEADER:
+            parameter["required"] = True
+            parameter["schema"] = {"type": "string", "format": "uuid"}
+            parameter["description"] = (
+                "One per user action, reused on every retry of it (api-contract.md)."
+            )
     responses: dict[str, Any] = operation.setdefault("responses", {})
     implied: list[ErrorCode] = [ErrorCode.INTERNAL_ERROR]
     if operation.get("parameters") or "requestBody" in operation:

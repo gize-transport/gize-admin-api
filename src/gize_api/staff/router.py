@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gize_api.core.db import get_session
 from gize_api.core.errors import AppError, ErrorCode, problem_responses
 from gize_api.core.idempotency import IdempotentRequest, idempotent_request
-from gize_api.core.ratelimit import STAFF_INVITE, rate_limited
+from gize_api.core.ratelimit import RateLimiter
 from gize_api.core.security import CurrentStaff, current_staff, require_role, staff_router
 from gize_api.integrations.supabase_auth import SupabaseAuthAdmin
 from gize_api.staff import service
@@ -30,6 +30,14 @@ router = staff_router(prefix="/v1/staff", tags=["staff"])
 require_admin = require_role(StaffRole.ADMIN)
 
 logger = structlog.get_logger("gize_api.staff")
+
+INVITED_HEADERS = {
+    "Location": {"description": "The new member: `/v1/staff/{id}`.", "schema": {"type": "string"}},
+    "Idempotent-Replayed": {
+        "description": "Present on a retry answered with the stored response.",
+        "schema": {"type": "string", "enum": ["true"]},
+    },
+}
 
 
 def staff_list_params(params: Annotated[StaffListParams, Query()]) -> StaffListParams:
@@ -84,32 +92,36 @@ async def list_staff(
     summary="Invite a staff member (admins only)",
     status_code=201,
     response_model=StaffRead,
-    # Counted after the role check: only admins' invites count (20 an hour each).
-    dependencies=[Depends(rate_limited(STAFF_INVITE, after=require_admin))],
-    responses=problem_responses(
-        ErrorCode.STAFF_EMAIL_TAKEN,
-        ErrorCode.AUTH_ACCOUNT_EXISTS,
-        ErrorCode.IDEMPOTENCY_IN_PROGRESS,
-        ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
-        ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
-    ),
+    responses={
+        201: {"description": "Invited", "headers": INVITED_HEADERS},
+        **problem_responses(
+            ErrorCode.STAFF_EMAIL_TAKEN,
+            ErrorCode.AUTH_ACCOUNT_EXISTS,
+            ErrorCode.IDEMPOTENCY_IN_PROGRESS,
+            ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+            ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+        ),
+    },
 )
 async def invite(
     invitation: StaffInvite,
+    request: Request,
     caller: CurrentStaff = Depends(require_admin),  # noqa: B008
     idempotent: IdempotentRequest = Depends(idempotent_request),  # noqa: B008
     auth: SupabaseAuthAdmin = Depends(auth_admin),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
     """Supabase emails them a link to set a password. They are active staff in `role` at
-    once, and can sign in when they have accepted. Requires `Idempotency-Key`.
+    once, and can sign in when they have accepted. Requires `Idempotency-Key`. Each admin
+    may send 20 invites an hour (refusals and replays do not count).
 
     - 409 STAFF_EMAIL_TAKEN: a staff member, active or not, has this email (reactivate them).
-    - 409 AUTH_ACCOUNT_EXISTS: the email already has a sign-in account (an operator adds
-      such people deliberately).
+    - 409 AUTH_ACCOUNT_EXISTS: the email already has a sign-in account. An operator deletes
+      that Supabase user if it should not exist, then the invite can be sent (README).
     - 503: Supabase could not send the invite; retrying with the same key is safe.
     """
-    response = await service.invite(session, auth, caller, invitation, idempotent)
+    limiter: RateLimiter = request.app.state.rate_limiter
+    response = await service.invite(session, auth, limiter, caller, invitation, idempotent)
     response.headers["Cache-Control"] = "no-store"  # personal data
     return response
 

@@ -18,6 +18,7 @@ from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.idempotency import IdempotentRequest, claim, peek, record, replay_response
 from gize_api.core.logging import log_security_event
 from gize_api.core.pagination import paginate
+from gize_api.core.ratelimit import STAFF_INVITE, RateLimiter
 from gize_api.core.security import CurrentStaff
 from gize_api.integrations.supabase_auth import (
     AuthAccountExistsError,
@@ -40,8 +41,6 @@ from gize_api.staff.schemas import (
     StaffRead,
     StaffUpdate,
 )
-
-INVITE_RETRY_AFTER_SECONDS = "30"
 
 logger = structlog.get_logger("gize_api.staff")
 
@@ -87,6 +86,7 @@ async def get_member(session: AsyncSession, staff_id: uuid.UUID) -> StaffRead:
 async def invite(
     session: AsyncSession,
     auth: Inviter,
+    limiter: RateLimiter,
     caller: CurrentStaff,
     invitation: StaffInvite,
     idempotent: IdempotentRequest,
@@ -97,15 +97,20 @@ async def invite(
     request is answered from its stored response without calling Supabase; a retry after
     Supabase answered but the write failed invites again (Supabase returns the same user,
     who gets a second email) and completes the write.
+
+    The STAFF_INVITE limit counts only requests about to send an email: not refusals or
+    replays, which a retrying client could otherwise use up the admin's hour with.
     """
     scope = f"staff:{caller.id}"
     async with session.begin():
+        await _require_active_admin(session, caller)  # before an email goes out
         stored = await peek(session, scope=scope, request=idempotent)
         if stored is None and await get_staff_by_email(session, invitation.email) is not None:
             raise AppError(ErrorCode.STAFF_EMAIL_TAKEN)
     if stored is not None:
         return replay_response(stored)
 
+    await limiter.check(STAFF_INVITE, staff_id=str(caller.id))
     user_id = await _send_invite(auth, invitation)
 
     async with session.begin():
@@ -236,6 +241,5 @@ async def _send_invite(auth: Inviter, invitation: StaffInvite) -> uuid.UUID:
     except AuthAdminError as exc:
         # The message names the cause (never the key or the address): an operator's cue.
         logger.error("supabase_invite_failed", reason=str(exc))
-        raise AppError(
-            ErrorCode.SERVICE_UNAVAILABLE, headers={"Retry-After": INVITE_RETRY_AFTER_SECONDS}
-        ) from None
+        retry = None if exc.retry_after is None else {"Retry-After": str(exc.retry_after)}
+        raise AppError(ErrorCode.SERVICE_UNAVAILABLE, headers=retry) from None

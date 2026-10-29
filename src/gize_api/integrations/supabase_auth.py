@@ -20,9 +20,23 @@ from gize_api.core.config import Settings
 from gize_api.core.http import OutboundClient, OutboundError, OutboundResponse
 from gize_api.core.telemetry import Telemetry
 
+TRANSIENT_RETRY_AFTER_SECONDS = 30
+RATE_LIMITED_RETRY_AFTER_SECONDS = 60  # Supabase's 429 without a Retry-After of its own
+MAX_RETRY_AFTER_SECONDS = 3600
+
 
 class AuthAdminError(Exception):
-    """Supabase could not answer: unreachable, the key refused, or an unexpected response."""
+    """Supabase could not answer: unreachable, the key refused, or an unexpected response.
+
+    `retry_after`: seconds worth waiting before trying again, or None when only a fix in
+    the configuration helps (the key refused, custom SMTP missing).
+    """
+
+    def __init__(
+        self, message: str, *, retry_after: int | None = TRANSIENT_RETRY_AFTER_SECONDS
+    ) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class AuthAccountExistsError(Exception):
@@ -107,7 +121,12 @@ class SupabaseAuthAdmin:
                 raise AuthEmailRejectedError("Supabase does not accept the email address")
             if error_code == _EMAIL_NOT_AUTHORIZED:
                 raise AuthAdminError(
-                    "Supabase may not email this address: set up custom SMTP (README)"
+                    "Supabase may not email this address: set up custom SMTP (README)",
+                    retry_after=None,
+                )
+            if response.status == 429:  # Supabase's email limit (hourly)
+                raise AuthAdminError(
+                    "Supabase answered with status 429", retry_after=_retry_after(response)
                 )
             raise AuthAdminError(f"Supabase answered with status {response.status}")
         body = _json(response)
@@ -134,7 +153,9 @@ class SupabaseAuthAdmin:
         except OutboundError:
             raise AuthAdminError("could not reach Supabase") from None
         if response.status in {401, 403}:
-            raise AuthAdminError("Supabase refused the secret key (check SUPABASE_SECRET_KEY)")
+            raise AuthAdminError(
+                "Supabase refused the secret key (check SUPABASE_SECRET_KEY)", retry_after=None
+            )
         return response
 
 
@@ -153,6 +174,15 @@ def _error_code(response: OutboundResponse) -> str | None:
         return None
     code = body.get("error_code") if isinstance(body, dict) else None
     return code if isinstance(code, str) else None
+
+
+def _retry_after(response: OutboundResponse) -> int:
+    """Supabase's Retry-After in seconds, within 1 s to an hour; a default without one."""
+    try:
+        seconds = int(response.headers.get("retry-after", ""))
+    except ValueError:
+        return RATE_LIMITED_RETRY_AFTER_SECONDS
+    return min(max(seconds, 1), MAX_RETRY_AFTER_SECONDS)
 
 
 def _uuid(value: object) -> uuid.UUID:

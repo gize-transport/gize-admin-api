@@ -217,25 +217,39 @@ async def test_an_email_supabase_rejects_is_422(
     ]
 
 
+EMAIL_LIMIT = {"code": 429, "error_code": "over_email_send_rate_limit"}
+
+
 @pytest.mark.parametrize(
-    "reply",
+    ("reply", "retry_after"),
     [
-        httpx.Response(500),
-        httpx.Response(429, json={"code": 429, "error_code": "over_email_send_rate_limit"}),
-        httpx.Response(401, json={"msg": "Invalid API key"}),
-        httpx.Response(400, json={"code": 400, "error_code": "email_address_not_authorized"}),
-        httpx.Response(200, content=b"<html>"),
+        (httpx.Response(500), "30"),
+        (httpx.Response(200, content=b"<html>"), "30"),
+        # Supabase's hourly email limit: its own Retry-After, within an hour.
+        (httpx.Response(429, json=EMAIL_LIMIT), "60"),
+        (httpx.Response(429, json=EMAIL_LIMIT, headers={"Retry-After": "120"}), "120"),
+        (httpx.Response(429, json=EMAIL_LIMIT, headers={"Retry-After": "99999"}), "3600"),
+        # Only a configuration fix helps: no point in retrying soon.
+        (httpx.Response(401, json={"msg": "Invalid API key"}), None),
+        (
+            httpx.Response(400, json={"code": 400, "error_code": "email_address_not_authorized"}),
+            None,
+        ),
     ],
 )
 async def test_supabase_failing_is_503_and_changes_nothing(
-    api: httpx.AsyncClient, db_session: AsyncSession, supabase: FakeSupabase, reply: httpx.Response
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    supabase: FakeSupabase,
+    reply: httpx.Response,
+    retry_after: str | None,
 ) -> None:
     supabase.answer = lambda request: reply
     admin = await add_admin(db_session)
     response = await api.post(STAFF, json=ALMAZ, headers=with_key(admin.id))
     assert response.status_code == 503
     assert response.json()["code"] == "SERVICE_UNAVAILABLE"
-    assert response.headers["Retry-After"]
+    assert response.headers.get("Retry-After") == retry_after
     assert "supabase" not in response.text.lower()  # no internals in the response
     assert await _staff_with_email(db_session, "almaz@example.com") is None
 
@@ -276,6 +290,10 @@ async def test_without_the_secret_key_invites_are_503(
         {**ALMAZ, "email": "al maz@example.com"},
         {**ALMAZ, "email": "al@maz@example.com"},
         {**ALMAZ, "email": "almaz@exam\u0000ple.com"},
+        {**ALMAZ, "email": "al\u200bmaz@example.com"},  # invisible
+        {**ALMAZ, "email": "almaz@ex\u202eample.com"},  # right-to-left override
+        {**ALMAZ, "email": "almaz@-example.com"},
+        {**ALMAZ, "email": "almaz@example..com"},
         {**ALMAZ, "email": "a" * 65 + "@example.com"},
         {**ALMAZ, "email": "a@" + "b" * 316 + ".com"},
         {**ALMAZ, "email": 7},
@@ -317,9 +335,11 @@ async def test_a_deactivated_admin_gets_403(
 
 
 @pytest.mark.parametrize("body", [{"surprise": 1}, {**ALMAZ, "email": "nope"}])
-async def test_the_role_is_checked_before_the_body_and_the_key(
+async def test_the_role_is_checked_before_the_body_fields_and_the_key(
     api: httpx.AsyncClient, db_session: AsyncSession, supabase: FakeSupabase, body: object
 ) -> None:
+    """Field values and the key are judged after the role. (A body that is not JSON at all
+    is a 422 before anything else: FastAPI decodes it before any dependency runs.)"""
     member = await add_staff(db_session)
     assert (await api.post(STAFF, json=body, headers=signed_in(member.id))).status_code == 403
     assert (await api.post(STAFF, json=body)).status_code == 401
@@ -359,4 +379,24 @@ async def test_invites_have_their_own_hourly_limit(
     assert response.status_code == 429
     assert response.json()["code"] == "RATE_LIMITED"
     assert response.headers["Retry-After"]
+    assert len(supabase.invites) == 20
+
+
+async def test_refusals_and_replays_do_not_use_up_the_invite_limit(
+    api: httpx.AsyncClient, db_session: AsyncSession, supabase: FakeSupabase
+) -> None:
+    """Only requests about to send an email count: a client retrying a refused or finished
+    request cannot lock its admin out of inviting for an hour."""
+    admin = await add_admin(db_session)
+    await add_staff(db_session, email="taken@example.com")
+    finished = with_key(admin.id)
+    assert (await api.post(STAFF, json=ALMAZ, headers=finished)).status_code == 201
+    for _ in range(10):
+        assert (await api.post(STAFF, json=ALMAZ, headers=signed_in(admin.id))).status_code == 428
+        taken = {**ALMAZ, "email": "taken@example.com"}
+        assert (await api.post(STAFF, json=taken, headers=with_key(admin.id))).status_code == 409
+        assert (await api.post(STAFF, json=ALMAZ, headers=finished)).status_code == 201  # replay
+    for number in range(19):  # 20 emails in all
+        body = {**ALMAZ, "email": f"person{number}@example.com"}
+        assert (await api.post(STAFF, json=body, headers=with_key(admin.id))).status_code == 201
     assert len(supabase.invites) == 20

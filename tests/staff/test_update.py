@@ -270,6 +270,20 @@ async def test_a_deactivated_admin_gets_403(
     assert response.status_code == 403  # nobody reactivates themselves
 
 
+async def test_a_bad_value_is_one_error_on_its_field(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """The portal shows each error next to its input: the pointer must be the field's."""
+    admin = await add_admin(db_session)
+    member = await add_staff(db_session)
+    for field, value in (("is_active", "true"), ("role", "ADMIN")):
+        response = await api.patch(
+            _member(member), json={field: value}, headers=signed_in(admin.id)
+        )
+        errors = response.json()["errors"]
+        assert [(error["location"], error["field"]) for error in errors] == [("body", f"/{field}")]
+
+
 @pytest.mark.parametrize("body", [{}, {"surprise": 1}, {"role": "owner"}])
 async def test_the_role_is_checked_before_the_body(
     api: httpx.AsyncClient, db_session: AsyncSession, body: object
