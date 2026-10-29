@@ -15,6 +15,7 @@
 from typing import Any, cast
 
 import sentry_sdk
+from sentry_sdk.integrations.argv import ArgvIntegration
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
@@ -65,7 +66,13 @@ def configure_sentry(settings: Settings, *, transport: type[Transport] | None = 
         traces_sample_rate=None,  # traces go to OpenTelemetry
         trace_propagation_targets=[],  # never add sentry-trace/baggage to outbound requests
         auto_enabling_integrations=False,
-        disabled_integrations=[StarletteIntegration, FastApiIntegration, LoggingIntegration],
+        # Argv would attach the command line, and operator commands take names (GZ-014).
+        disabled_integrations=[
+            StarletteIntegration,
+            FastApiIntegration,
+            LoggingIntegration,
+            ArgvIntegration,
+        ],
         max_breadcrumbs=0,
         before_send=scrub_event,
         transport=transport,
@@ -81,6 +88,9 @@ def report_exception(exc: BaseException, *, request_id: str | None, route: str) 
 def scrub_event(event: Event, hint: Hint) -> Event | None:
     data = cast(dict[str, Any], event)
     data.pop("user", None)
+    extra = data.get("extra")
+    if isinstance(extra, dict):
+        extra.pop("sys.argv", None)  # if Argv is ever enabled again: names are arguments
     budget = Budget()
     for section in _CONTENT_SECTIONS:
         if section in data:

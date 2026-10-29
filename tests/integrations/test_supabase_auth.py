@@ -202,12 +202,14 @@ async def test_a_record_without_is_anonymous_is_not_anonymous(
     assert not user.anonymous
 
 
+@pytest.mark.parametrize(("offset_minutes", "banned"), [(5, True), (-60, False)])
 async def test_a_ban_with_a_time_zone_is_compared_correctly(
-    respond: Callable[[httpx.Response], SupabaseAuthAdmin],
+    respond: Callable[[httpx.Response], SupabaseAuthAdmin], offset_minutes: int, banned: bool
 ) -> None:
-    """Addis Ababa time, +03:00: still banned for a few minutes in UTC terms."""
+    """Addis Ababa time, +03:00. A ban that ended an hour ago would still look active for
+    two more hours if the offset were ignored and the time read as UTC."""
     addis = timezone(timedelta(hours=3))
-    soon = (datetime.now(addis) + timedelta(minutes=5)).isoformat()
-    user = await respond(httpx.Response(200, json=user_json(banned_until=soon))).get_user(USER_ID)
+    until = (datetime.now(addis) + timedelta(minutes=offset_minutes)).isoformat()
+    user = await respond(httpx.Response(200, json=user_json(banned_until=until))).get_user(USER_ID)
     assert user is not None
-    assert user.banned
+    assert user.banned is banned
