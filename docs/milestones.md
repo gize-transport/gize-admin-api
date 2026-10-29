@@ -59,7 +59,7 @@ Status: done · Depends on: GZ-006
 - Acceptance: ready returns 503 with Postgres stopped; with Redis stopped, ready stays 200 and Redis being down is logged and counted; live is 200 in both cases; no versions or internals exposed. (Changed from "ready returns 503 with Redis stopped" by owner decision at planning: a shared Redis outage must not take the whole API offline.)
 
 ### GZ-008 · Shared building blocks
-Status: in review · Depends on: GZ-006
+Status: done · Depends on: GZ-006
 - Cursor pagination (`Page[T]`, encode/decode, max 100, stable order).
 - Idempotency: `idempotency_keys` table, dependency for POST handlers, conflict on same key + different body, Arq cleanup job (24 h).
 - `core/http.py` outbound client: timeouts, host allowlist, private-IP blocking.
@@ -71,13 +71,16 @@ Status: in review · Depends on: GZ-006
 - Hand-off to M2 (first job enqueued by the API, SMS): pass W3C trace context to the worker in the job (our own process); consider an outbox if a job must never be lost between commit and enqueue.
 
 ### GZ-009 · Rate limiting core
-Status: todo · Depends on: GZ-008
-- slowapi + Redis; key = staff ID, fallback `CF-Connecting-IP` / socket IP; named limit policies; 429 + `Retry-After` problem+json.
+Status: in review · Depends on: GZ-008
+- `limits` (async) + Redis (owner decision at planning: slowapi calls Redis synchronously); key = staff ID, fallback client IP from `CLIENT_IP_HEADER` (new setting) or the socket; named limit policies; 429 + `Retry-After` problem+json.
 - Fail-open (staff) vs fail-closed (OTP/SMS/public) policy when Redis is down; security event logged on limit hits.
 - Redis metrics per command: request count, error count, duration (moved from GZ-005; instrument the limiter's own Redis client per client, like the app's).
 - `RateLimitExceeded` needs its own handler that sets `Retry-After` (from GZ-004 review). Every security event also becomes a Sentry warning (GZ-005): decide which limit hits are sampled or aggregated so a flood cannot exhaust the Sentry quota.
 - Acceptance: tests for limit hit, Retry-After present, both Redis-down behaviours.
 - `/health/live` and `/health/ready` stay outside the limits (load-balancer probes; readiness already serves one cached result per second), from GZ-007.
+- Hand-off to GZ-010 (auth): the auth dependency calls `set_staff_id()`, and staff routes use `rate_limited(STAFF, after=<auth dependency>)` (FastAPI runs decorator dependencies before parameter ones), so limits count per staff member, not per office IP (`rate_limited` refuses a staff policy without `after=`). The limiter runs after auth, so requests rejected by auth are never counted: throttle failed token checks too (e.g. a per-IP policy before auth), or a flood of bad tokens is unlimited and each is a Sentry security event.
+- Hand-off to the public sign-up and SMS tickets: check phone limits in the service with `rate_limiter.check(PUBLIC_SIGNUP | SMS, phone=...)`, passing the number normalised to E.164.
+- Hand-off to hosting (when chosen): if `CLIENT_IP_HEADER` is set, the API must accept connections from the proxy only (firewall, or Cloudflare authenticated origin pulls). Alert on `db.client.operation.duration{db.system.name="redis", outcome="error"}` (GZ-066).
 
 ---
 

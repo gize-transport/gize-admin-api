@@ -121,14 +121,24 @@ class Readiness:
         return True
 
     async def _check_redis(self) -> bool:
+        started = time.perf_counter()
         try:
             async with asyncio.timeout(READINESS_TIMEOUT_SECONDS):
                 await self._redis.ping()
         except Exception as exc:  # noqa: BLE001 - reported, never decisive
+            self._measure_ping("error", started)
             self._failed("redis", exc)
             return False
+        self._measure_ping("ok", started)
         self._succeeded("redis")
         return True
+
+    def _measure_ping(self, outcome: str, started: float) -> None:
+        with contextlib.suppress(Exception):  # reporting never changes the answer
+            if self._telemetry is not None:
+                self._telemetry.record_redis_operation(
+                    "ping", outcome, time.perf_counter() - started
+                )
 
     def _failed(self, dependency: str, error: Exception) -> None:
         # Reporting must never change the answer (a broken exporter is not an outage).

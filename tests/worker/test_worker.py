@@ -104,7 +104,7 @@ async def test_an_enqueued_job_runs(
 ) -> None:
     pool = await _pool(test_redis_url, queue)
     try:
-        assert await enqueue(pool, "record_call", "hello", job_id="call-1")
+        assert await enqueue(pool, "record_call", "hello", job_id="call-1", telemetry=None)
     finally:
         await pool.aclose()
     worker = _worker(make_settings, test_redis_url, database, queue)
@@ -120,8 +120,8 @@ async def test_the_same_job_id_is_enqueued_once(test_redis_url: str, queue: str)
     """SMS jobs are de-duplicated by their key (engineering-standards.md, Reliability)."""
     pool = await _pool(test_redis_url, queue)
     try:
-        assert await enqueue(pool, "record_call", "a", job_id="sms:rider-1:otp")
-        assert not await enqueue(pool, "record_call", "a", job_id="sms:rider-1:otp")
+        assert await enqueue(pool, "record_call", "a", job_id="sms:rider-1:otp", telemetry=None)
+        assert not await enqueue(pool, "record_call", "a", job_id="sms:rider-1:otp", telemetry=None)
     finally:
         await pool.aclose()
 
@@ -131,7 +131,7 @@ async def test_a_job_that_asks_for_a_retry_runs_again(
 ) -> None:
     pool = await _pool(test_redis_url, queue)
     try:
-        await enqueue(pool, "flaky", "f", job_id="flaky-1")
+        await enqueue(pool, "flaky", "f", job_id="flaky-1", telemetry=None)
     finally:
         await pool.aclose()
     worker = _worker(make_settings, test_redis_url, database, queue)
@@ -152,7 +152,7 @@ async def test_a_failing_job_is_logged_without_its_message(
 ) -> None:
     pool = await _pool(test_redis_url, queue)
     try:
-        await enqueue(pool, "broken", job_id="broken-1")
+        await enqueue(pool, "broken", job_id="broken-1", telemetry=None)
     finally:
         await pool.aclose()
     worker = _worker(make_settings, test_redis_url, database, queue)
@@ -174,7 +174,7 @@ async def test_shutdown_lets_a_short_job_finish(
 ) -> None:
     pool = await _pool(test_redis_url, queue)
     try:
-        await enqueue(pool, "slow", 0.3, job_id="slow-short")
+        await enqueue(pool, "slow", 0.3, job_id="slow-short", telemetry=None)
     finally:
         await pool.aclose()
     worker = _worker(
@@ -194,7 +194,7 @@ async def test_shutdown_requeues_a_job_that_cannot_finish_in_time(
 ) -> None:
     pool = await _pool(test_redis_url, queue)
     try:
-        await enqueue(pool, "slow", 5.0, job_id="slow-long")
+        await enqueue(pool, "slow", 5.0, job_id="slow-long", telemetry=None)
         worker = _worker(
             make_settings, test_redis_url, database, queue, burst=False, job_completion_wait=0.2
         )
@@ -250,7 +250,7 @@ async def test_enqueue_refuses_inside_a_database_transaction(
     try:
         async with db_session.begin():
             with pytest.raises(OpenTransactionError):
-                await enqueue(pool, "record_call", "x", job_id="in-transaction")
+                await enqueue(pool, "record_call", "x", job_id="in-transaction", telemetry=None)
     finally:
         await pool.aclose()
 
@@ -259,7 +259,7 @@ async def test_enqueue_with_redis_down_is_503() -> None:
     pool = ArqRedis.from_url("redis://127.0.0.1:1/0", socket_connect_timeout=0.2)
     try:
         with pytest.raises(AppError) as exc_info:
-            await enqueue(pool, "record_call", "x", job_id="redis-down")
+            await enqueue(pool, "record_call", "x", job_id="redis-down", telemetry=None)
     finally:
         await pool.aclose()
     assert exc_info.value.code is ErrorCode.SERVICE_UNAVAILABLE
@@ -323,7 +323,7 @@ async def test_jobs_travel_as_json_never_pickle(test_redis_url: str, queue: str)
     """Pickle would let anyone who can write to Redis run code in the worker."""
     pool = await _pool(test_redis_url, queue)
     try:
-        await enqueue(pool, "record_call", "x", job_id="json-1")
+        await enqueue(pool, "record_call", "x", job_id="json-1", telemetry=None)
         raw = await pool.get("arq:job:json-1")
     finally:
         await pool.aclose()
@@ -345,7 +345,7 @@ async def test_a_failed_job_leaves_no_message_text_in_redis_and_reaches_sentry(
     )
     pool = await _pool(test_redis_url, queue)
     try:
-        await enqueue(pool, "broken", job_id="broken-2")
+        await enqueue(pool, "broken", job_id="broken-2", telemetry=None)
         worker = _worker(make_settings, test_redis_url, database, queue)
         try:
             await worker.async_run()

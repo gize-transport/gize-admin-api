@@ -245,6 +245,22 @@ class Telemetry:
             "gize.job.duration", unit="s", description="Duration of background jobs by outcome"
         )
 
+    def record_redis_operation(self, operation: str, outcome: str, seconds: float) -> None:
+        """One Redis operation of ours (rate_limit, enqueue, ping): its outcome and duration.
+
+        The Redis instrumentation records spans only; every place we call Redis records this.
+        """
+        self._redis_duration.record(
+            seconds,
+            {"db.system.name": "redis", "db.operation.name": operation, "outcome": outcome},
+        )
+
+    @functools.cached_property
+    def _redis_duration(self) -> Histogram:
+        return self.meter_provider.get_meter("gize_api.redis").create_histogram(
+            "db.client.operation.duration", unit="s", description="Duration of Redis operations"
+        )
+
     def record_health_probe(self, endpoint: str, status: int) -> None:
         """Count a probe (`live` or `ready`): probes are neither traced nor access-logged."""
         self._health_probes.add(1, {"endpoint": endpoint, "status": status})

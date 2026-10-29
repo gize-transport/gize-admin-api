@@ -23,6 +23,7 @@ from gize_api.core.middleware import (
     CORSGuardMiddleware,
     SecurityHeadersMiddleware,
 )
+from gize_api.core.ratelimit import RateLimiter
 from gize_api.core.request_id import RequestIdMiddleware
 from gize_api.core.sentry import configure_sentry
 from gize_api.core.telemetry import Telemetry, configure_telemetry
@@ -135,6 +136,7 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             telemetry = app.telemetry
             readiness = Readiness.for_settings(settings, telemetry)
             app.state.readiness = readiness
+            app.state.rate_limiter = RateLimiter.for_settings(settings, telemetry=telemetry)
             if telemetry is not None:
                 telemetry.instrument_redis(redis)
                 telemetry.instrument_database(engine)
@@ -147,7 +149,15 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             yield
         finally:
             # Each step runs even if an earlier one fails.
+            rate_limiter: RateLimiter = app.state.rate_limiter
             del app.state.redis, app.state.engine, app.state.sessionmaker, app.state.readiness
+            del app.state.rate_limiter
+            try:
+                await rate_limiter.aclose()
+            except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
+                structlog.get_logger("gize_api.startup").warning(
+                    "rate_limiter_close_failed", exc_info=True
+                )
             try:
                 await engine.dispose()
             except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged

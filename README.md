@@ -50,6 +50,7 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL (with `rediss`, the server's certificate and host name are checked). |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
+| `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, or Cloudflare's authenticated origin pulls): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
 | `SENTRY_DSN` | production, secret | Sentry errors and security events; off when unset. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | production | OTLP/HTTP base URL for traces and metrics (`https` in staging/production); off when unset. |
@@ -101,7 +102,7 @@ The bootstrap resets the roles' settings (role-wide and for this database) and p
 
 The API writes one JSON object per line to stderr: `timestamp`, `level`, `logger`, `event`, `request_id` and (once authenticated) `staff_id`, plus one `request` line per request with the route template, status and duration. Secrets and personal data are scrubbed before anything is written: tokens, passwords, OTPs and names become `[REDACTED]`, phone numbers become `+2519••••1234`. Use `structlog.get_logger(__name__)` and pass data as fields, never formatted into the message.
 
-With `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT` set, unhandled errors and security events go to Sentry (tagged with the request ID), and traces and metrics go to the OTLP endpoint. Production refuses to start without both unless `OBSERVABILITY_REQUIRED=false`; staging logs `observability_disabled` for each one that is unset. Log lines inside a request carry `trace_id`, and spans carry `gize.request_id`, so logs, traces and Sentry events can be matched. A database that is down, saturated or asks for a retry answers 503 with `Retry-After` and is logged as `database_unavailable` with its SQLSTATE and counted (`gize.db.unavailable`); it goes to Sentry only when a human must act (wrong password or role, unknown database, an untrusted certificate), at most once a minute per process and kind. Network errors count only when raised on the way through the database driver: an outbound call or Redis failing is never reported as the database.
+With `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT` set, unhandled errors and security events go to Sentry (tagged with the request ID), and traces and metrics go to the OTLP endpoint. Production refuses to start without both unless `OBSERVABILITY_REQUIRED=false`; staging logs `observability_disabled` for each one that is unset. Log lines inside a request carry `trace_id`, and spans carry `gize.request_id`, so logs, traces and Sentry events can be matched. A database that is down, saturated or asks for a retry answers 503 with `Retry-After` and is logged as `database_unavailable` with its SQLSTATE and counted (`gize.db.unavailable`); it goes to Sentry only when a human must act (wrong password or role, unknown database, an untrusted certificate), at most once a minute per process and kind. Network errors count only when raised on the way through the database driver: an outbound call or Redis failing is never reported as the database. Every Redis operation of ours (rate-limit checks, job enqueueing, the readiness ping) records `db.client.operation.duration` with `db.system.name=redis`, the operation and its outcome; the Redis instrumentation itself records spans only.
 
 Call `set_staff_id()` from the (async) auth dependency to put the staff ID on that request's log lines; call `log_security_event()` for failed auth, permission denials, rate-limit hits and OTP abuse.
 
@@ -140,6 +141,16 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
   - The whole call takes at most 10 s; responses are requested uncompressed and capped at 1 MB; only safe methods are retried; no trace headers are sent.
 - **Background jobs:** `core/jobs.py` `enqueue(pool, "job_name", *ids, job_id=…)`, after the transaction commits. A repeated job ID is refused for 24 h. Jobs take IDs, never personal data.
 - **Never** call out or enqueue inside `async with session.begin():`: both raise `OpenTransactionError` (tracked per task, for sessions; raw engine connections are not app code).
+- **Rate limits:** `core/ratelimit.py`, built on `limits`' async API, so it never blocks on Redis. (slowapi was replaced at GZ-009; it calls Redis synchronously.)
+  - Routes add `Depends(rate_limited(POLICY, after=<auth dependency>))`. It counts by staff ID, or IP before login; `after=` makes auth run first (FastAPI runs decorator dependencies before parameter ones).
+  - Services check phone limits with `await request.app.state.rate_limiter.check(POLICY, phone=...)`, passing a normalised E.164 number: `0911…` and `+251911…` would otherwise be separate counters.
+  - IPv6 clients are counted by their /64; IPv4-mapped addresses as IPv4.
+  - Limits are checked in order and each check counts, so a request rejected by a later limit still uses up the earlier ones.
+  - Policies (engineering-standards.md): `STAFF` 120/min, `PUBLIC_SIGNUP` 5/hour per IP and 3/day per phone, `SMS` 10/hour per IP and 3/hour per phone. An expensive endpoint defines its own.
+  - Over the limit: `429 RATE_LIMITED` with `Retry-After`, logged as a security event (the policy, never the key). Sentry hears at most once a minute per policy and process.
+  - Redis unavailable: staff policies allow the request (logged once a minute per process, and counted as `outcome=error` in `db.client.operation.duration`: alert on it); public and SMS policies answer `503` with `Retry-After`. A busy connection pool waits instead of failing; one 1 s deadline covers each check.
+  - Keys reach Redis hashed, so no phone number or IP is stored in clear. The hash is not secret, so it stops casual reading only.
+  - Health endpoints have no limits.
 
 ## Health checks
 

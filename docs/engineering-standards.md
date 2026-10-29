@@ -36,7 +36,7 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
 
 ## Rate limiting and abuse
 
-- Limits via slowapi with Redis storage, keyed by **staff user ID**, falling back to client IP (`CF-Connecting-IP` behind Cloudflare, otherwise the socket address – never trust other forwarded headers).
+- Limits via `limits` (async) with Redis storage, keyed by **staff user ID**, falling back to client IP: the header named in `CLIENT_IP_HEADER` (`CF-Connecting-IP` behind Cloudflare), otherwise the socket address – never trust any other forwarded header. (slowapi was replaced at GZ-009: it calls Redis synchronously and would stall every request while Redis is slow.)
 - Defaults:
   - Staff endpoints: 120 requests/minute per user.
   - Public registration and waitlist sign-up: 5/hour per IP and 3/day per phone.
