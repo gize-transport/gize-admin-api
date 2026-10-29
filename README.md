@@ -176,14 +176,15 @@ Staff sign in to Supabase Auth in the admin portal, which sends `Authorization: 
 A valid token only proves someone has a Supabase account. Whether they are Gize staff, and in which role, comes from the `gize.staff` table (ID = Supabase user ID).
 
 - **`current_staff`** (FastAPI dependency) looks the caller up on every request:
-  - no row → `403 FORBIDDEN`, security event `staff_access_denied` (reason `not_staff`); these also count toward the per-IP token throttle;
-  - a deactivated row → `403`, reason `inactive` (not counted: a stale tab). **Deactivating someone locks them out on their next request,** even though their token is still valid;
+  - no row → `403 FORBIDDEN`, security event `staff_access_denied` (reason `not_staff`);
+  - a deactivated row → `403`, reason `inactive`. **Deactivating someone locks them out on their next request,** even though their token is still valid;
+  - both refusals count toward the per-IP token throttle (30 a minute), so a stranger or a dismissed employee can't send unlimited requests. Only refusals count: active staff are never throttled by it;
   - the role (`admin` or `staff`) always comes from the table, never from the token.
 - **`require_role(StaffRole.ADMIN)`** → `403`, security event `permission_denied`, for any other role.
-- **Staff routes** are built on `staff_router(...)`, which applies the `STAFF` limit (120 a minute per staff member; Redis down → allowed). A test fails if any `/v1` route lacks `current_staff` or that limit, unless it is listed as public.
+- **Staff routes** are built on `staff_router(...)`, which applies the `STAFF` limit (120 a minute per staff member; Redis down → allowed). A test fails if any route the app serves lacks `current_staff` or that limit, unless its method and path are on the public list (health checks, the local and staging docs, and later the public sign-up routes).
 - **Object-level checks** live in services (see `docs/architecture.md`).
 - **`GET /v1/staff/me`** returns the caller's `id`, `full_name`, `email` and `role` (`Cache-Control: no-store`). The admin portal calls it after sign-in.
-- **Supabase sign-ups:** staff are added by admins (GZ-013) and the first admin by command (GZ-014). In the Supabase dashboard (Authentication → Sign In / Providers), turn off **Allow new users to sign up**, so strangers can't even get a token.
+- **Supabase sign-ups:** staff are added by admins (GZ-013). In the Supabase dashboard (Authentication → Sign In / Providers), turn off **Allow new users to sign up**, so strangers can't even get a token. For the very first admin, create the user in the dashboard (Authentication → Users → Add user), then make them admin with the GZ-014 command.
 
 ## Health checks
 

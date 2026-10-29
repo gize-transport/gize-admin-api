@@ -26,7 +26,7 @@ class Staff(TimestampMixin, Base):
     __tablename__ = "staff"
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'staff')", name="role"),
-        CheckConstraint("email = lower(email) AND btrim(email) <> ''", name="email"),
+        CheckConstraint("email = lower(btrim(email)) AND position('@' in email) > 1", name="email"),
         CheckConstraint("btrim(full_name) <> ''", name="full_name"),
     )
 

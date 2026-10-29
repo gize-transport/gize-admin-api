@@ -11,10 +11,11 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, WebSocket
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, iter_route_contexts
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.routing import BaseRoute
 
 from gize_api.core.db import get_session
 from gize_api.core.ratelimit import STAFF, RateLimiter
@@ -196,16 +197,40 @@ async def test_users_who_are_not_staff_are_throttled_per_ip(
     headers = bearer(make_token(sub=str(uuid.uuid4())))
     statuses = [(await http.get("/_test/whoami", headers=headers)).status_code for _ in range(31)]
     assert statuses == [403] * 30 + [429]
-    staff = await _staff(db_session)  # deactivated staff and valid staff are not counted
+    staff = await _staff(db_session)  # only rejections count: active staff get through
     assert (await http.get("/_test/whoami", headers=_as(staff))).status_code == 200
 
 
-async def test_inactive_staff_are_not_counted_as_attacks(
+async def test_deactivated_staff_are_throttled_per_ip(
     http: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
+    """A dismissed employee's token is valid for up to an hour: it must not be unlimited."""
     headers = _as(await _staff(db_session, is_active=False))
-    statuses = {(await http.get("/_test/whoami", headers=headers)).status_code for _ in range(31)}
-    assert statuses == {403}
+    statuses = [(await http.get("/_test/whoami", headers=headers)).status_code for _ in range(31)]
+    assert statuses == [403] * 30 + [429]
+
+
+async def test_strangers_are_refused_while_redis_is_down(
+    http: httpx.AsyncClient, test_routes: GizeAPI, make_settings: SettingsFactory
+) -> None:
+    """The failure throttle fails open: Redis down never turns a 403 into a 200 or a 500."""
+    await test_routes.state.rate_limiter.aclose()
+    test_routes.state.rate_limiter = RateLimiter.for_settings(
+        make_settings(redis_url=UNREACHABLE_REDIS_URL), telemetry=None
+    )
+    response = await http.get("/_test/whoami", headers=bearer(make_token(sub=str(uuid.uuid4()))))
+    assert response.status_code == 403
+
+
+async def test_wrong_role_requests_count_against_the_staff_limit(
+    http: httpx.AsyncClient, test_routes: GizeAPI, db_session: AsyncSession
+) -> None:
+    staff = await _staff(db_session, role=StaffRole.STAFF)
+    limiter: RateLimiter = test_routes.state.rate_limiter
+    for _ in range(119):
+        await limiter.check(STAFF, staff_id=str(staff.id), ip="192.0.2.1")
+    assert (await http.get("/_test/admin-only", headers=_as(staff))).status_code == 403
+    assert (await http.get("/_test/admin-only", headers=_as(staff))).status_code == 429
 
 
 async def test_staff_get_through_while_redis_is_down(
@@ -234,12 +259,13 @@ async def test_the_database_down_is_503(
     assert response.json()["code"] == "SERVICE_UNAVAILABLE"
 
 
-def _v1_routes(app: GizeAPI) -> Iterator[tuple[str, Dependant]]:
-    """Every /v1 API route as served (FastAPI 0.162 keeps included routers unflattened)."""
+def _routes(app: GizeAPI) -> Iterator[tuple[str, str, BaseRoute, Dependant | None]]:
+    """Every (method, path) the app serves; FastAPI 0.162 keeps included routers unflattened."""
     for context in iter_route_contexts(app.routes):
-        path = context.path or ""
-        if isinstance(context.original_route, APIRoute) and path.startswith("/v1/"):
-            yield path, context.dependant
+        route = context.original_route
+        dependant = context.dependant if isinstance(route, APIRoute) else None
+        for method in sorted(context.methods or {"*"}):
+            yield method, context.path or repr(route), route, dependant
 
 
 def _calls(dependant: Dependant) -> Iterator[object]:
@@ -250,35 +276,66 @@ def _calls(dependant: Dependant) -> Iterator[object]:
         stack.extend(current.dependencies)
 
 
-PUBLIC_ROUTES: frozenset[str] = frozenset()  # e.g. registration; each one listed in its PR
+# Everything else needs active staff and the STAFF limit. Each public route is listed in
+# its PR; methods are listed one by one, so a public POST does not exempt a later GET.
+UNGUARDED_ROUTES = frozenset(
+    (method, path)
+    for method in ("GET", "HEAD")
+    for path in (
+        "/health/live",
+        "/health/ready",
+        # Interactive docs: local and staging only (Settings.docs_enabled).
+        "/openapi.json",
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
+    )
+)
 
 
-def test_every_v1_route_needs_active_staff_and_is_rate_limited(
+def _unguarded(app: GizeAPI) -> list[tuple[str, str]]:
+    unguarded = []
+    for method, path, _, dependant in _routes(app):
+        if (method, path) in UNGUARDED_ROUTES:
+            continue
+        calls = [] if dependant is None else list(_calls(dependant))
+        if current_staff not in calls or staff_rate_limit not in calls:
+            unguarded.append((method, path))
+    return unguarded
+
+
+def test_every_route_needs_active_staff_and_is_rate_limited(
     make_settings: SettingsFactory,
 ) -> None:
     """A route someone forgot to guard fails here, not in production."""
-    routes = list(_v1_routes(create_app(make_settings())))
-    assert "/v1/staff/me" in [path for path, _ in routes]  # the check covers something
-    for path, dependant in routes:
-        if path in PUBLIC_ROUTES:
-            continue
-        calls = list(_calls(dependant))
-        assert current_staff in calls, path
-        assert staff_rate_limit in calls, path
+    app = create_app(make_settings(app_env="local"))  # with the docs routes
+    assert ("GET", "/v1/staff/me") in [(method, path) for method, path, _, _ in _routes(app)]
+    assert _unguarded(app) == []
 
 
 def test_an_unguarded_route_would_be_caught(make_settings: SettingsFactory) -> None:
     app = create_app(make_settings())
-    unguarded = APIRouter(prefix="/v1/oops")
+    open_router = APIRouter()
 
-    @unguarded.get("/open")
+    @open_router.get("/internal/open")
     async def open_route() -> None:
         return None
 
-    app.include_router(unguarded)
-    calls = {path: list(_calls(dependant)) for path, dependant in _v1_routes(app)}
-    assert current_staff not in calls["/v1/oops/open"]
-    assert staff_rate_limit not in calls["/v1/oops/open"]
+    @open_router.post("/health/live")  # a public GET does not make a POST public
+    async def sneaky() -> None:
+        return None
+
+    app.include_router(open_router)
+
+    async def socket(websocket: WebSocket) -> None:
+        await websocket.close()
+
+    app.add_api_websocket_route("/ws", socket)  # not an API route: never trusted
+    assert sorted(_unguarded(app)) == [
+        ("*", "/ws"),
+        ("GET", "/internal/open"),
+        ("POST", "/health/live"),
+    ]
 
 
 def test_staff_router_adds_the_rate_limit() -> None:

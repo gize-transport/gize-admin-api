@@ -43,7 +43,8 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("role IN ('admin', 'staff')", name=op.f("ck_staff_role")),
         sa.CheckConstraint(
-            "email = lower(email) AND btrim(email) <> ''", name=op.f("ck_staff_email")
+            "email = lower(btrim(email)) AND position('@' in email) > 1",
+            name=op.f("ck_staff_email"),
         ),
         sa.CheckConstraint("btrim(full_name) <> ''", name=op.f("ck_staff_full_name")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_staff")),

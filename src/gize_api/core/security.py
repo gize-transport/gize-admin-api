@@ -26,8 +26,11 @@ Who the caller is *in Gize* (GZ-011):
 - **`current_staff`**: the token's `sub` must be an active row in `gize.staff`, else 403.
   The role comes from that row, never from the token. It sets the staff ID for logs and
   rate limits, and hands on a `CurrentStaff` (ID and role), not the ORM row (the session
-  rule, architecture.md). Users who are not staff at all count against TOKEN_FAILURES
-  (Supabase may let anyone sign up); deactivated staff do not (a stale tab).
+  rule, architecture.md). Refusals count against TOKEN_FAILURES like rejected tokens:
+  strangers (Supabase may let anyone sign up) and dismissed staff, whose tokens stay
+  valid for up to an hour. Only refusals are counted, so active staff never are.
+  Use it through `Depends`: `Security(current_staff, scopes=...)` is cached separately
+  and would read the staff row twice.
 - **`require_role(...)`**: `current_staff` plus a role check, 403 otherwise.
 - **`staff_router(...)`**: an APIRouter whose routes count against the STAFF limit, per
   staff member. Every `/v1` route needs `current_staff` and that limit unless it is listed
@@ -366,6 +369,7 @@ async def current_staff(
         _denied("staff_access_denied", reason="not_staff", user_id=str(token.subject))
     is_active, caller = found
     if not is_active:
+        await _count_failure(request)  # dismissed: the token is valid until it expires
         _denied("staff_access_denied", reason="inactive", user_id=str(token.subject))
     set_staff_id(str(caller.id))
     return caller

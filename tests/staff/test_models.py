@@ -31,6 +31,9 @@ async def test_a_staff_member_with_defaults(db_session: AsyncSession) -> None:
         {"email": "Someone@Example.com"},  # stored lower-case only
         {"full_name": "   "},
         {"email": " "},
+        {"email": " a@example.com"},  # stored trimmed
+        {"email": "no-at-sign"},
+        {"email": "@example.com"},
     ],
 )
 async def test_invalid_rows_are_refused_by_the_database(
