@@ -15,7 +15,6 @@ router = staff_router(prefix="/v1/staff", tags=["staff"])
     "/me",
     operation_id="staff_me",
     summary="The signed-in staff member",
-    responses={401: {}, 403: {}, 429: {}, 503: {}},
 )
 async def me(
     response: Response,

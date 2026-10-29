@@ -1,0 +1,313 @@
+{
+  "components": {
+    "schemas": {
+      "ErrorCode": {
+        "description": "Stable error codes: never rename or reuse one; only add.",
+        "enum": [
+          "BAD_REQUEST",
+          "CORS_PREFLIGHT_REJECTED",
+          "UNAUTHENTICATED",
+          "FORBIDDEN",
+          "NOT_FOUND",
+          "METHOD_NOT_ALLOWED",
+          "PAYLOAD_TOO_LARGE",
+          "VALIDATION_FAILED",
+          "INVALID_CURSOR",
+          "IDEMPOTENCY_KEY_REQUIRED",
+          "IDEMPOTENCY_KEY_MISMATCH",
+          "IDEMPOTENCY_IN_PROGRESS",
+          "RATE_LIMITED",
+          "INTERNAL_ERROR",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "title": "ErrorCode",
+        "type": "string"
+      },
+      "FieldError": {
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "location": {
+            "enum": [
+              "body",
+              "query",
+              "path",
+              "header",
+              "cookie"
+            ],
+            "title": "Location",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ValidationReason"
+          }
+        },
+        "required": [
+          "location",
+          "field",
+          "reason"
+        ],
+        "title": "FieldError",
+        "type": "object"
+      },
+      "Problem": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "default": "about:blank",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "request_id"
+        ],
+        "title": "Problem",
+        "type": "object"
+      },
+      "StaffMe": {
+        "additionalProperties": false,
+        "description": "The signed-in staff member.",
+        "properties": {
+          "email": {
+            "maxLength": 320,
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 200,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole"
+          }
+        },
+        "required": [
+          "id",
+          "full_name",
+          "email",
+          "role"
+        ],
+        "title": "StaffMe",
+        "type": "object"
+      },
+      "StaffRole": {
+        "enum": [
+          "admin",
+          "staff"
+        ],
+        "title": "StaffRole",
+        "type": "string"
+      },
+      "ValidationProblem": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "errors_truncated": {
+            "title": "Errors Truncated",
+            "type": "boolean"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "default": "about:blank",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "request_id",
+          "errors",
+          "errors_truncated"
+        ],
+        "title": "ValidationProblem",
+        "type": "object"
+      },
+      "ValidationReason": {
+        "description": "Why a field failed validation: our vocabulary, not the validation library's.",
+        "enum": [
+          "missing",
+          "unknown_field",
+          "too_long",
+          "too_short",
+          "out_of_range",
+          "invalid_type",
+          "invalid_format",
+          "not_allowed",
+          "invalid_json",
+          "invalid"
+        ],
+        "title": "ValidationReason",
+        "type": "string"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "description": "A Supabase access token",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Gize Admin API",
+    "version": "v1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/staff/me": {
+      "get": {
+        "description": "Your ID, name, email and role. The admin portal calls it after sign-in.",
+        "operationId": "staff_me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffMe"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The signed-in staff member",
+        "tags": [
+          "staff"
+        ]
+      }
+    }
+  }
+}

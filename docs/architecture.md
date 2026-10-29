@@ -53,7 +53,8 @@ src/gize_api/
     bootstrap.py          # one-off roles/schema/grants script, run by a human
     migrations.py         # migration settings, engine, lock (used by migrations/env.py)
     security.py           # JWT verification (Supabase JWKS), current_staff dependency, role guards
-    errors.py             # exception types → RFC 9457 problem+json responses
+    errors.py             # exception types → RFC 9457 problem+json responses; problem_responses()
+    contract.py           # finishes the OpenAPI document into the contract (error responses)
     logging.py            # structlog JSON, request context, PII masking
     telemetry.py          # OpenTelemetry setup (traces, metrics)
     sentry.py             # Sentry init and event scrubbing

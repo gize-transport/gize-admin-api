@@ -1,0 +1,152 @@
+# Releases the API contract when a merge to main changes openapi.json (GZ-015): tags
+# api-vX.Y.Z and attaches openapi.json to a GitHub release, which gize-admin-web syncs from
+# (docs/api-contract.md). The version comes from scripts/contract_version.py.
+# Two jobs: `version` works it out with a read-only token; only `release`, which runs no
+# project code, may write. Third-party actions are pinned to commit SHAs.
+name: Contract release
+
+on:
+  push:
+    branches: [main]
+    paths: [openapi.json]
+
+permissions:
+  contents: read
+
+concurrency:
+  # One release at a time, in merge order: each one compares with the tag before it.
+  group: contract-release
+  cancel-in-progress: false
+
+env:
+  UV_PYTHON: "3.12.16"
+  UV_VERSION: "0.11.30"
+  # Keep in step with ci.yml (checked by tests/test_ci_config.py).
+  OASDIFF_VERSION: "1.33.0"
+  OASDIFF_SHA256: "43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    name: Work out the contract version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read  # the merged PR's labels, for a breaking change
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      notes: ${{ steps.version.outputs.notes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # every api-v* tag and the files they point at
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.UV_PYTHON }}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        run: uv sync --locked
+      - name: Install oasdiff (pinned release, SHA-256 verified)
+        run: |
+          tarball="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location --max-time 60 --output "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/${tarball}"
+          echo "${OASDIFF_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum --check --strict
+          tar --extract --gzip --file "${RUNNER_TEMP}/${tarball}" --directory "${RUNNER_TEMP}" oasdiff
+      - name: Compare with the last release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          levels=.github/oasdiff-levels.txt
+          previous="$(git tag --list 'api-v*' | grep -E '^api-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          breaking=0
+          if [ -n "${previous}" ]; then
+            if ! git merge-base --is-ancestor "${previous}" "${GITHUB_SHA}"; then
+              echo "::warning::${previous} is not an ancestor of this commit (a re-run of an old run, or a tag placed off main): nothing released. Check the api-v* tags if this is the latest merge."
+              echo "tag=" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            git show "${previous}:openapi.json" > "${RUNNER_TEMP}/previous.json"
+            if cmp --silent "${RUNNER_TEMP}/previous.json" openapi.json; then
+              echo "openapi.json is unchanged since ${previous}: nothing to release."
+              echo "tag=" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            rc=0
+            "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN --severity-levels "${levels}" \
+              "${RUNNER_TEMP}/previous.json" openapi.json || rc=$?
+            if [ "${rc}" -gt 1 ]; then
+              echo "::error::oasdiff failed (exit ${rc})"
+              exit 1
+            fi
+            [ "${rc}" -eq 1 ] && breaking=1
+            codes=0
+            uv run --locked python -m scripts.contract_codes "${RUNNER_TEMP}/previous.json" openapi.json \
+              > "${RUNNER_TEMP}/codes.json" || codes=$?
+            if [ "${codes}" -gt 1 ]; then
+              echo "::error::the error-code comparison failed (exit ${codes})"
+              exit 1
+            fi
+            [ "${codes}" -eq 1 ] && breaking=1
+            "${RUNNER_TEMP}/oasdiff" changelog --format json --severity-levels "${levels}" \
+              "${RUNNER_TEMP}/previous.json" openapi.json > "${RUNNER_TEMP}/changelog.json"
+            "${RUNNER_TEMP}/oasdiff" changelog --severity-levels "${levels}" \
+              "${RUNNER_TEMP}/previous.json" openapi.json > "${RUNNER_TEMP}/notes.md"
+            if [ "${breaking}" -eq 1 ]; then
+              # CI let it through only with the owner's label; anything else needs a human.
+              approved="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                --jq '[.[].labels[].name] | index("breaking-change-approved") != null')"
+              if [ "${approved}" != "true" ]; then
+                echo "::error::Breaking contract change without the breaking-change-approved label: not released. Review it, then tag by hand."
+                exit 1
+              fi
+            fi
+          else
+            echo '[]' > "${RUNNER_TEMP}/changelog.json"
+            echo '{"removed": [], "added": []}' > "${RUNNER_TEMP}/codes.json"
+            echo "The first release of the Gize Admin API contract." > "${RUNNER_TEMP}/notes.md"
+          fi
+          tag="$(uv run --locked python -m scripts.contract_version --previous "${previous}" \
+            --breaking "${breaking}" --changelog "${RUNNER_TEMP}/changelog.json" --codes "${RUNNER_TEMP}/codes.json")"
+          echo "Releasing ${tag} (previous: ${previous:-none})"
+          delimiter="notes-$(openssl rand -hex 16)"
+          {
+            echo "tag=${tag}"
+            echo "notes<<${delimiter}"
+            cat "${RUNNER_TEMP}/notes.md"
+            echo "${delimiter}"
+          } >> "${GITHUB_OUTPUT}"
+
+  release:
+    name: Tag and release the API contract
+    needs: version
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write  # the tag and the release; nothing else in this repo may write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          NOTES: ${{ needs.version.outputs.notes }}
+        run: |
+          printf '%s\n' "${NOTES}" > "${RUNNER_TEMP}/notes.md"
+          gh release create "${TAG}" openapi.json \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "API contract ${TAG}" \
+            --notes-file "${RUNNER_TEMP}/notes.md"

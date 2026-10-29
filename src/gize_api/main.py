@@ -6,6 +6,7 @@ app: building one needs the environment, and importing this module must not.
 
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Any
 
 import structlog
 from fastapi import FastAPI
@@ -14,6 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
 from gize_api.core.config import Environment, Settings, load_settings
+from gize_api.core.contract import finish_contract
 from gize_api.core.db import create_engine, create_sessionmaker
 from gize_api.core.errors import HandledErrorGuard, LastResortGuard, install_exception_handlers
 from gize_api.core.jobs import create_job_redis
@@ -60,6 +62,12 @@ class GizeAPI(FastAPI):
     cors_allowed_origins: Sequence[str] = ()
     telemetry: Telemetry | None = None
 
+    def openapi(self) -> dict[str, Any]:
+        """The contract: FastAPI's schema with our error responses (core/contract.py)."""
+        if self.openapi_schema is None:
+            self.openapi_schema = finish_contract(super().openapi())
+        return self.openapi_schema
+
     def build_middleware_stack(self) -> ASGIApp:
         app: ASGIApp = HandledErrorGuard(super().build_middleware_stack())
         app = CORSMiddleware(
@@ -101,6 +109,7 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
             structlog.get_logger("gize_api.startup").warning("observability_disabled", setting=name)
     app = GizeAPI(
         title="Gize Admin API",
+        version="v1",  # each released contract is an api-vX.Y.Z tag (docs/api-contract.md)
         lifespan=_lifespan(settings),
         docs_url="/docs" if settings.docs_enabled else None,
         redoc_url="/redoc" if settings.docs_enabled else None,
