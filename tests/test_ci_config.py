@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CI = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+RELEASE = (ROOT / ".github" / "workflows" / "contract-release.yml").read_text()
 
 EXPECTED_CHECKS = {
     "lint": "Lint, types, dependency audit",
@@ -17,6 +18,7 @@ EXPECTED_CHECKS = {
     "test": "Tests and coverage gates",
     "migrations": "Migrations (upgrade, downgrade, upgrade)",
     "docker": "Docker image build",
+    "contract": "API contract (up to date, no breaking changes)",
 }
 
 
@@ -72,3 +74,23 @@ def test_ci_python_matches_docker_image() -> None:
     ci_python = _one(r'^  UV_PYTHON: "(3\.12\.\d+)"$', CI)
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert _one(r"^ARG PYTHON_IMAGE=python:([\d.]+)-slim", dockerfile) == ci_python
+
+
+def test_oasdiff_is_pinned_the_same_in_both_workflows() -> None:
+    for name in ("OASDIFF_VERSION", "OASDIFF_SHA256"):
+        pattern = rf'^  {name}: "([0-9a-f.]+)"$'
+        assert _one(pattern, CI) == _one(pattern, RELEASE)
+
+
+def test_the_breaking_change_gate_reruns_when_labels_change() -> None:
+    """The `breaking-change-approved` label is read from the event: CI must rerun on it."""
+    types = _one(r"^  pull_request:\n    types: \[([^\]]+)\]", CI)
+    assert {"labeled", "unlabeled", "opened", "synchronize", "reopened"} <= {
+        part.strip() for part in types.split(",")
+    }
+
+
+def test_only_the_release_job_may_write() -> None:
+    assert "contents: write" not in CI
+    assert _one(r"^permissions:\n  contents: (\w+)$", RELEASE) == "read"
+    assert RELEASE.count("contents: write") == 1

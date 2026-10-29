@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from http import HTTPStatus
-from typing import Literal
+from typing import Any, Literal
 
 import structlog
 from fastapi import FastAPI, Request
@@ -148,6 +148,28 @@ class AppError(Exception):
         super().__init__(code.value)
         self.code = code
         self.headers = headers
+
+
+def problem_responses(*codes: ErrorCode) -> dict[int | str, dict[str, Any]]:
+    """The error responses an operation documents, for a route's `responses=`.
+
+    Codes are grouped by status; core/contract.py adds the problem+json schema. A route's
+    entry for a status replaces its router's (FastAPI merges per status), so list every
+    code for that status in one place. 422 VALIDATION_FAILED, 413 and 500 are added for
+    every operation that can return them.
+    """
+    if not codes:
+        raise ValueError("problem_responses needs at least one error code")
+    by_status: dict[int, set[ErrorCode]] = {}
+    for code in codes:
+        by_status.setdefault(ERROR_SPECS[code].status, set()).add(code)
+    return {
+        status: {
+            "description": ", ".join(sorted({ERROR_SPECS[code].title for code in group})),
+            "x-error-codes": sorted(code.value for code in group),
+        }
+        for status, group in sorted(by_status.items())
+    }
 
 
 def problem_response(

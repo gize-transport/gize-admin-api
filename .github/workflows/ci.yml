@@ -1,4 +1,4 @@
-# Runs on every pull request and every push to main. All five checks must be present and
+# Runs on every pull request and every push to main. All six checks must be present and
 # green before a PR is merged (CLAUDE.md, "Merging without branch protection"); the list is
 # pinned in tests/test_ci_config.py and README.md.
 # Third-party actions are pinned to commit SHAs; the comment names the release.
@@ -6,6 +6,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]  # the contract job reads labels
   push:
     branches: [main]
 
@@ -25,6 +26,9 @@ env:
   # Keep in step with the gitleaks hook rev in .pre-commit-config.yaml.
   GITLEAKS_VERSION: "8.30.1"
   GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  # Keep in step with contract-release.yml (checked by tests/test_ci_config.py).
+  OASDIFF_VERSION: "1.33.0"
+  OASDIFF_SHA256: "43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247"
 
 defaults:
   run:
@@ -207,3 +211,62 @@ jobs:
         run: docker run --rm --entrypoint python gize-admin-api:ci -c "import gize_api.main"
       - name: Migrations ship in the image
         run: docker run --rm --entrypoint alembic gize-admin-api:ci heads
+
+  contract:
+    name: API contract (up to date, no breaking changes)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # the base branch's openapi.json
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.UV_PYTHON }}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        run: uv sync --locked
+      - name: openapi.json matches the code
+        run: uv run --locked python scripts/export_openapi.py --check
+      - name: Install oasdiff (pinned release, SHA-256 verified)
+        run: |
+          tarball="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location --max-time 60 --output "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/${tarball}"
+          echo "${OASDIFF_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum --check --strict
+          tar --extract --gzip --file "${RUNNER_TEMP}/${tarball}" --directory "${RUNNER_TEMP}" oasdiff
+      - name: The gate catches a breaking change (self-test on /v1/staff/me)
+        # Removing a response field must fail; adding an optional one must pass.
+        run: |
+          jq 'del(.components.schemas.StaffMe.properties.email)
+              | .components.schemas.StaffMe.required -= ["email"]' openapi.json > "${RUNNER_TEMP}/removed.json"
+          jq '.components.schemas.StaffMe.properties.nickname = {"type": "string"}' openapi.json > "${RUNNER_TEMP}/added.json"
+          if "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN openapi.json "${RUNNER_TEMP}/removed.json"; then
+            echo "::error::oasdiff did not flag a removed response field"
+            exit 1
+          fi
+          "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN openapi.json "${RUNNER_TEMP}/added.json"
+      - name: No breaking changes against the base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change-approved') }}
+        run: |
+          if ! git cat-file -e "origin/${BASE_REF}:openapi.json" 2>/dev/null; then
+            echo "The base branch has no openapi.json yet: nothing to compare."
+            exit 0
+          fi
+          git show "origin/${BASE_REF}:openapi.json" > "${RUNNER_TEMP}/base.json"
+          if "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN "${RUNNER_TEMP}/base.json" openapi.json; then
+            exit 0
+          fi
+          if [ "${APPROVED}" = "true" ]; then
+            echo "::warning::Breaking API changes, approved with the breaking-change-approved label"
+            exit 0
+          fi
+          echo "::error::Breaking API change. Follow docs/api-contract.md (deprecate first); the owner may approve with the breaking-change-approved label."
+          exit 1

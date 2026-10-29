@@ -242,12 +242,27 @@ The image declares a Docker `HEALTHCHECK` (every 10 s, 3 retries, 20 s start per
 | Tests and coverage gates | a failing test; total coverage < 85%; service modules < 90%; total coverage differs from `.coverage-baseline` |
 | Migrations (upgrade, downgrade, upgrade) | the bootstrap fails or changes on a second run (run as a non-superuser admin, as on Supabase), any migration fails, a downgrade cannot be undone, or models and migrations disagree (`alembic check`) |
 | Docker image build | the image does not build, does not run as uid 10001, or cannot import the app |
+| API contract (up to date, no breaking changes) | `openapi.json` differs from the code; the breaking-change gate's self-test fails; `oasdiff` finds a breaking change against the base branch and the PR lacks the `breaking-change-approved` label |
 
-There is no branch protection on our plan, so CLAUDE.md's merge rules are the protection. Before merging, confirm **all five checks above are listed and green** on the PR: `gh pr checks` only shows checks that ran, so a job deleted from the workflow would not show up as failing. `tests/test_ci_config.py` pins the job list, and any change under `.github/workflows/` needs an explicit reviewer look.
+There is no branch protection on our plan, so CLAUDE.md's merge rules are the protection. Before merging, confirm **all six checks above are listed and green** on the PR: `gh pr checks` only shows checks that ran, so a job deleted from the workflow would not show up as failing. `tests/test_ci_config.py` pins the job list, and any change under `.github/workflows/` needs an explicit reviewer look.
 
 **Coverage ratchet.** `.coverage-baseline` holds `main`'s total coverage. CI fails when coverage drops and also when it rises without the baseline being raised, so a later PR cannot quietly give the gain back. When coverage improves, run `uv run python -m scripts.check_coverage_baseline --update` and commit the file. Lowering it is a hand edit the PR must justify.
 
 **If gitleaks finds a real secret** that already reached `main`: rotate the secret first (it is compromised whatever happens to the history), then add the finding's fingerprint (printed by gitleaks) to `.gitleaksignore` with a comment naming the rotation, in its own PR.
+
+## API contract
+
+`openapi.json` at the repo root is the contract with the admin portal (`gize-admin-web`); the rules are in `docs/api-contract.md`.
+
+- **Regenerate it with every API change** and commit it: `uv run python scripts/export_openapi.py`. CI fails when it's out of date.
+- **Every operation** needs a stable `operationId` (`<domain>_<action>`, e.g. `staff_me`), a summary, a response model, and its errors via `problem_responses(...)` (`core/errors.py`). Staff routers already document 401/403/429/503; 422 (wherever there's input), 413 (wherever there's a body) and 500 are added for you (`core/contract.py`). Each error response is `application/problem+json` and lists its codes in `x-error-codes`. `tests/test_contract.py` holds every operation to this.
+- **Breaking changes fail CI** (`oasdiff breaking --fail-on WARN` against the base branch): removing or renaming anything, making a field required, changing a type, tightening a limit. Follow the deprecation steps in `docs/api-contract.md`. Only the owner adds the `breaking-change-approved` label to let one through.
+- **Releases are automatic.** When a merge to `main` changes `openapi.json`, `.github/workflows/contract-release.yml` tags `api-vX.Y.Z` and attaches the file to a GitHub release:
+  - minor for any change oasdiff reports (an added endpoint, field or enum value);
+  - patch for descriptions and summaries only;
+  - major for an approved breaking change.
+
+  The frontend syncs from these tags. The first release is `api-v1.0.0`.
 
 ## Working on a ticket
 

@@ -1,0 +1,91 @@
+# Releases the API contract when a merge to main changes openapi.json (GZ-015): tags
+# api-vX.Y.Z and attaches openapi.json to a GitHub release, which gize-admin-web syncs from
+# (docs/api-contract.md). The version comes from scripts/contract_version.py.
+# Third-party actions are pinned to commit SHAs; the comment names the release.
+name: Contract release
+
+on:
+  push:
+    branches: [main]
+    paths: [openapi.json]
+
+permissions:
+  contents: read
+
+concurrency:
+  # One release at a time, in merge order: each one compares with the tag before it.
+  group: contract-release
+  cancel-in-progress: false
+
+env:
+  UV_PYTHON: "3.12.16"
+  UV_VERSION: "0.11.30"
+  # Keep in step with ci.yml (checked by tests/test_ci_config.py).
+  OASDIFF_VERSION: "1.33.0"
+  OASDIFF_SHA256: "43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Tag and release the API contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write  # create the tag and the release; nothing else in this repo may write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # every api-v* tag and the files they point at
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.UV_PYTHON }}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        run: uv sync --locked
+      - name: Install oasdiff (pinned release, SHA-256 verified)
+        run: |
+          tarball="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location --max-time 60 --output "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/${tarball}"
+          echo "${OASDIFF_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum --check --strict
+          tar --extract --gzip --file "${RUNNER_TEMP}/${tarball}" --directory "${RUNNER_TEMP}" oasdiff
+      - name: Work out the next version
+        id: version
+        run: |
+          previous="$(git tag --list 'api-v*' --sort=-version:refname | head -n 1)"
+          breaking=0
+          if [ -n "${previous}" ]; then
+            git show "${previous}:openapi.json" > "${RUNNER_TEMP}/previous.json"
+            if cmp --silent "${RUNNER_TEMP}/previous.json" openapi.json; then
+              echo "openapi.json is unchanged since ${previous}: nothing to release."
+              echo "tag=" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN "${RUNNER_TEMP}/previous.json" openapi.json || breaking=1
+            "${RUNNER_TEMP}/oasdiff" changelog --format json "${RUNNER_TEMP}/previous.json" openapi.json > "${RUNNER_TEMP}/changelog.json"
+            "${RUNNER_TEMP}/oasdiff" changelog "${RUNNER_TEMP}/previous.json" openapi.json > "${RUNNER_TEMP}/notes.md"
+          else
+            echo "[]" > "${RUNNER_TEMP}/changelog.json"
+            echo "The first release of the Gize Admin API contract." > "${RUNNER_TEMP}/notes.md"
+          fi
+          tag="$(uv run --locked python -m scripts.contract_version \
+            --previous "${previous}" --breaking "${breaking}" --changelog "${RUNNER_TEMP}/changelog.json")"
+          echo "Releasing ${tag} (previous: ${previous:-none})"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+      - name: Tag and release
+        if: steps.version.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "${TAG}" openapi.json \
+            --target "${GITHUB_SHA}" \
+            --title "API contract ${TAG}" \
+            --notes-file "${RUNNER_TEMP}/notes.md"

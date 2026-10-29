@@ -57,7 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.config import Settings
 from gize_api.core.db import get_session
-from gize_api.core.errors import AppError, ErrorCode
+from gize_api.core.errors import AppError, ErrorCode, problem_responses
 from gize_api.core.http import OutboundClient, OutboundError
 from gize_api.core.logging import log_security_event, set_staff_id
 from gize_api.core.ratelimit import STAFF, Limit, Policy, RateLimiter, client_ip, rate_limited
@@ -398,10 +398,21 @@ def require_role(*roles: StaffRole) -> Callable[..., Awaitable[CurrentStaff]]:
 staff_rate_limit = rate_limited(STAFF, after=current_staff)
 
 
+# What every staff route can answer before its handler runs (documented in the contract).
+STAFF_ROUTE_ERRORS = problem_responses(
+    ErrorCode.UNAUTHENTICATED,
+    ErrorCode.FORBIDDEN,
+    ErrorCode.RATE_LIMITED,
+    ErrorCode.SERVICE_UNAVAILABLE,
+)
+
+
 def staff_router(**options: Any) -> APIRouter:  # noqa: ANN401 - APIRouter's options
-    """An APIRouter for staff routes: each one counts against the STAFF limit."""
+    """An APIRouter for staff routes: each one counts against the STAFF limit, and
+    documents the errors auth and rate limiting can return."""
     dependencies = [Depends(staff_rate_limit), *options.pop("dependencies", ())]
-    return APIRouter(dependencies=dependencies, **options)
+    responses = {**STAFF_ROUTE_ERRORS, **options.pop("responses", {})}
+    return APIRouter(dependencies=dependencies, responses=responses, **options)
 
 
 def _denied(event: str, *, reason: str, **fields: Any) -> NoReturn:  # noqa: ANN401

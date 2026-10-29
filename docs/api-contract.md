@@ -13,7 +13,8 @@
 - All endpoints are under `/v1/`. Within `/v1` only **additive, backward-compatible** changes are allowed: new endpoints, new optional request fields, new response fields, new enum values the frontend handles with a default.
 - **Breaking changes** (removing or renaming a field, endpoint or error code, making a field required, changing a type, tightening a limit) are blocked by CI (`oasdiff breaking`). They need: a ticket in both repos, a deprecation period (`deprecated: true` in OpenAPI for at least one release), and the frontend released first.
 - Error `code` values are stable identifiers. New codes may be added; existing ones are never renamed or reused.
-- The backend tags each merge to `main` that changes the API as `api-vX.Y.Z` (semver: minor = additive, patch = docs/examples).
+- The backend tags each merge to `main` that changes the API as `api-vX.Y.Z` (semver: minor = additive, patch = docs/examples; major only for a breaking change the owner approved with the `breaking-change-approved` PR label). The tag's GitHub release has `openapi.json` attached. Tagging is automatic (`.github/workflows/contract-release.yml`).
+- Error responses are `application/problem+json` (`Problem`, or `ValidationProblem` for `VALIDATION_FAILED`), and each one lists the codes it can carry in `x-error-codes`. `ErrorCode` is an enum in the schema.
 
 ## How the frontend stays in sync
 
