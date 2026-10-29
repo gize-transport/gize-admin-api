@@ -372,24 +372,33 @@ async def test_inbound_trace_headers_dropped_only_from_http(
 
 
 def test_process_exit_is_bounded_when_the_collector_hangs(blackhole_url: str) -> None:
-    """The await returning is not enough: the process must also exit within the budget."""
+    """The await returning is not enough: the process must also exit within the budget.
+
+    Timed from the start of shutdown, so a slow interpreter start-up is not counted.
+    """
     script = f"""
 import asyncio
+import time
 from gize_api.core.config import Settings
 from gize_api.core.telemetry import configure_telemetry
 
 settings = Settings(app_env="test", redis_url="redis://127.0.0.1:1/0",
                     database_url="postgresql://gize_app:x@127.0.0.1:1/gize",
+                    supabase_url="https://abcdefghijklmnopqrst.supabase.co",
                     otel_exporter_otlp_endpoint="{blackhole_url}")
 telemetry = configure_telemetry(settings)
 with telemetry.tracer_provider.get_tracer("t").start_as_current_span("pending"):
     pass
 telemetry.meter_provider.get_meter("t").create_counter("c").add(1)
+print("shutdown-started", time.monotonic(), flush=True)
 asyncio.run(telemetry.shutdown(budget_seconds=1.0))
 """
-    started = time.monotonic()
-    subprocess.run([sys.executable, "-c", script], check=True, timeout=30)  # noqa: S603
-    assert time.monotonic() - started < 4.0
+    finished = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], check=True, timeout=30, capture_output=True, text=True
+    )
+    # time.monotonic is one system-wide clock, shared with the child process.
+    (marker,) = [line for line in finished.stdout.splitlines() if line.startswith("shutdown-")]
+    assert time.monotonic() - float(marker.split()[1]) < 3.0
 
 
 async def test_unknown_methods_named_other(

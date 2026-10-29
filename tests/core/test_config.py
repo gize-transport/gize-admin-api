@@ -9,6 +9,7 @@ REQUIRED = {
     "APP_ENV": "test",
     "REDIS_URL": "redis://:s3cret-redis-pass@127.0.0.1:6379/0",
     "DATABASE_URL": "postgresql://gize_app:s3cret-db-pass@127.0.0.1:5432/gize?ssl=verify-full",
+    "SUPABASE_URL": "https://abcdefghijklmnopqrst.supabase.co",
 }
 
 
@@ -468,3 +469,50 @@ def test_client_ip_header_must_be_a_header_name(clean_env: pytest.MonkeyPatch, v
     _set(clean_env, CLIENT_IP_HEADER=value)
     with pytest.raises(ConfigError, match="client_ip_header"):
         load_settings()
+
+
+def test_supabase_url_gives_the_token_issuer_and_key_set(clean_env: pytest.MonkeyPatch) -> None:
+    _set(clean_env, SUPABASE_URL="https://abcdefghijklmnopqrst.supabase.co/")
+    settings = load_settings()
+    assert settings.supabase_url == "https://abcdefghijklmnopqrst.supabase.co"
+    assert settings.supabase_auth_issuer == "https://abcdefghijklmnopqrst.supabase.co/auth/v1"
+    assert settings.supabase_jwks_url == (
+        "https://abcdefghijklmnopqrst.supabase.co/auth/v1/.well-known/jwks.json"
+    )
+    assert settings.supabase_host == "abcdefghijklmnopqrst.supabase.co"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://abcdefghijklmnopqrst.supabase.co",  # https only: the outbound client needs it
+        "https://user:pw@abcdefghijklmnopqrst.supabase.co",
+        "https://abcdefghijklmnopqrst.supabase.co/auth/v1",  # the project URL, not a path
+        "https://abcdefghijklmnopqrst.supabase.co?x=1",
+        "abcdefghijklmnopqrst.supabase.co",
+        "https://abcdefghijklmnopqrst.supabase.co/?",  # an empty query is still a query
+        "https://abcdefghijklmnopqrst.supabase.co/#",
+        "https://abcdefghijklmnopqrst.supabase.co:443",  # the issuer never names a port
+        "https://abcdefghijklmnopqrst.supabase.co:8443",
+        "https://[::1]",
+        "https://203.0.113.5",
+        "https://bücher.example",
+    ],
+)
+def test_supabase_url_must_be_the_project_url(clean_env: pytest.MonkeyPatch, value: str) -> None:
+    _set(clean_env, SUPABASE_URL=value)
+    with pytest.raises(ConfigError, match="supabase_url") as exc_info:
+        load_settings()
+    assert "pw" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["https://ABCDEFGHIJKLMNOPQRST.supabase.co", "https://abcdefghijklmnopqrst.supabase.co."],
+)
+def test_supabase_url_is_normalised_to_the_issuer_supabase_writes(
+    clean_env: pytest.MonkeyPatch, value: str
+) -> None:
+    """A different spelling of the host would make every token's issuer mismatch."""
+    _set(clean_env, SUPABASE_URL=value)
+    assert load_settings().supabase_url == "https://abcdefghijklmnopqrst.supabase.co"

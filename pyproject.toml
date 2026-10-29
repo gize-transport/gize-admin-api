@@ -19,6 +19,7 @@ dependencies = [
     "pydantic-settings>=2.7",
     # Arq (background jobs) supports only redis-py < 6 (as of arq 0.28); owner-approved
     # downgrade at GZ-008. Move up when Arq allows it.
+    "pyjwt[crypto]>=2.10,<3",
     "redis>=5.3,<6",
     "sentry-sdk>=2.18",
     "sqlalchemy[asyncio]>=2.0.36",

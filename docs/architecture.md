@@ -79,7 +79,7 @@ Dockerfile                # multi-stage, non-root user, healthcheck
 ## Authentication and authorization
 
 1. Staff log in to Supabase Auth from the admin portal; the portal sends `Authorization: Bearer <access token>`.
-2. `core/security.py` verifies signature (via the project's JWKS / signing key), `exp`, `aud`, `iss`. Cache the JWKS with a timeout and refresh on unknown `kid`. Verify against the method the Supabase project actually uses (check in GZ-010).
+2. `core/security.py` verifies the signature against the project's JWKS (asymmetric ES256/RS256 keys only; the project must use Supabase signing keys, not the legacy shared secret), plus `exp`, `aud`, `iss`, `sub` and `role`. The JWKS is cached for 10 minutes and refreshed on an unknown `kid` at most every 30 s.
 3. The token's `sub` is looked up in `gize.staff`; the account must exist and be active. Role (`admin` | `staff`) comes **from our table, never from the token**.
 4. Services check the role for the action **and** that the target object exists, is not soft-deleted and may be acted on. Missing or forbidden objects return the same 404 to avoid leaking existence where appropriate.
 5. Public endpoints (registration, waitlist sign-up, phone verification) are unauthenticated, rate-limited per IP and per phone, and require a verified phone token from the OTP flow.
