@@ -39,6 +39,8 @@ class _FixedSettings(Settings):
 
 
 def render_contract() -> str:
+    # The contract must not vary by environment: if a route ever became environment-
+    # conditional, production's API would differ from this document. Don't do that.
     settings = _FixedSettings(
         app_env=Environment.TEST,
         redis_url=SecretStr("redis://127.0.0.1:1/0"),

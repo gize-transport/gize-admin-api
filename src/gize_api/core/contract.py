@@ -11,8 +11,14 @@ so every operation's error responses are rewritten here:
 - `ErrorCode`, `Problem`, `ValidationProblem` and their parts are components, and
   FastAPI's `HTTPValidationError`/`ValidationError` are gone.
 
-Routes declare the rest with `problem_responses(...)`. tests/test_contract.py holds every
-operation to this shape; `scripts/export_openapi.py` writes the result to openapi.json.
+Routes declare the rest with `problem_responses(...)`; any other 4xx/5xx entry (a bare
+description, a `model`, `4XX` or `default`) is refused with an error naming the operation.
+tests/test_contract.py holds every operation to this shape; `scripts/export_openapi.py`
+writes the result to openapi.json.
+
+Not documented (yet): response headers (`WWW-Authenticate`, `Retry-After`, `X-Request-ID`),
+and the 413 the body-size middleware can also return for an operation without a body.
+Adding them later is an additive change.
 """
 
 from typing import Any
@@ -26,6 +32,7 @@ PROBLEM_REF = REF.format(model="Problem")
 VALIDATION_PROBLEM_REF = REF.format(model="ValidationProblem")
 PROBLEM_JSON = "application/problem+json"
 FASTAPI_ERROR_SCHEMAS = ("HTTPValidationError", "ValidationError")
+HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
 
 def finish_contract(schema: dict[str, Any]) -> dict[str, Any]:
@@ -35,8 +42,9 @@ def finish_contract(schema: dict[str, Any]) -> dict[str, Any]:
         components.pop(name, None)
     components.update(_error_schemas())
     for path_item in schema.get("paths", {}).values():
-        for operation in path_item.values():
-            _finish_operation(operation)
+        for method, operation in path_item.items():
+            if method in HTTP_METHODS:
+                _finish_operation(operation)
     return schema
 
 
@@ -63,8 +71,13 @@ def _finish_operation(operation: dict[str, Any]) -> None:
         if code.value not in response["x-error-codes"]:
             response["x-error-codes"] = sorted([*response["x-error-codes"], code.value])
     for status, response in responses.items():
-        if not status.startswith(("4", "5")):
+        if status.startswith(("1", "2", "3")):
             continue
+        if not status.isdigit() or "x-error-codes" not in response or "content" in response:
+            raise ValueError(
+                f"{operation.get('operationId')}: declare the {status} response with "
+                "problem_responses(...): error responses are problem+json with their codes"
+            )
         codes = [ErrorCode(code) for code in response["x-error-codes"]]
         response["description"] = ", ".join(sorted({ERROR_SPECS[code].title for code in codes}))
         response["content"] = {PROBLEM_JSON: {"schema": _problem_schema(codes)}}

@@ -94,3 +94,22 @@ def test_only_the_release_job_may_write() -> None:
     assert "contents: write" not in CI
     assert _one(r"^permissions:\n  contents: (\w+)$", RELEASE) == "read"
     assert RELEASE.count("contents: write") == 1
+    release_job = RELEASE.split("\n  release:\n", 1)[1]
+    assert "contents: write" in release_job
+    assert "uv " not in release_job  # the job with the write token runs no project code
+
+
+def test_both_workflows_use_the_severity_levels() -> None:
+    """New response enum values (error codes, roles) are additive per docs/api-contract.md;
+    oasdiff 1.33 calls them breaking. No comments allowed: oasdiff reads every line."""
+    levels = (ROOT / ".github" / "oasdiff-levels.txt").read_text()
+    assert levels == "response-property-enum-value-added info\n"
+    for workflow in (CI, RELEASE):
+        calls = [
+            line
+            for line in workflow.splitlines()
+            if 'oasdiff" breaking' in line or 'oasdiff" changelog' in line
+        ]
+        assert calls
+        for line in calls:
+            assert "--severity-levels" in line, line

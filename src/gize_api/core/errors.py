@@ -16,7 +16,7 @@ from typing import Any, Literal
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
@@ -129,6 +129,9 @@ class FieldError(BaseModel):
 
 
 class Problem(BaseModel):
+    # Always sent, so the contract lists `type` as required although it has a default.
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
     type: str = "about:blank"
     title: str
     status: int

@@ -58,19 +58,47 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_the_command_prints_the_next_tag(tmp_path: Path) -> None:
-    changelog = tmp_path / "changelog.json"
-    changelog.write_text(json.dumps([{"id": "response-optional-property-added"}]))
-    result = _run("--previous", "api-v1.0.0", "--breaking", "0", "--changelog", str(changelog))
+def _files(tmp_path: Path, changelog: object, codes: object) -> list[str]:
+    changelog_file, codes_file = tmp_path / "changelog.json", tmp_path / "codes.json"
+    changelog_file.write_text(json.dumps(changelog))
+    codes_file.write_text(json.dumps(codes))
+    return ["--changelog", str(changelog_file), "--codes", str(codes_file)]
+
+
+NO_CODES: dict[str, list[str]] = {"removed": [], "added": []}
+
+
+@pytest.mark.parametrize(
+    ("previous", "breaking", "changelog", "codes", "expected"),
+    [
+        ("api-v1.0.0", "0", [{"id": "endpoint-added"}], NO_CODES, "api-v1.1.0"),
+        ("", "0", [], NO_CODES, "api-v1.0.0"),
+        ("api-v1.0.0", "0", [], NO_CODES, "api-v1.0.1"),
+        # oasdiff cannot see error codes: scripts/contract_codes.py can
+        ("api-v1.0.0", "0", [], {"removed": [], "added": ["ErrorCode CONFLICT"]}, "api-v1.1.0"),
+        ("api-v1.0.0", "0", [], {"removed": ["ErrorCode X"], "added": []}, "api-v2.0.0"),
+        ("api-v1.0.0", "1", [], NO_CODES, "api-v2.0.0"),
+    ],
+)
+def test_the_command_prints_the_next_tag(
+    tmp_path: Path, previous: str, breaking: str, changelog: object, codes: object, expected: str
+) -> None:
+    result = _run(
+        "--previous", previous, "--breaking", breaking, *_files(tmp_path, changelog, codes)
+    )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "api-v1.1.0\n"
-    first = _run("--previous", "", "--breaking", "0", "--changelog", str(changelog))
-    assert first.stdout == "api-v1.0.0\n"
+    assert result.stdout == f"{expected}\n"
 
 
-def test_the_command_refuses_bad_input(tmp_path: Path) -> None:
-    changelog = tmp_path / "changelog.json"
-    changelog.write_text("{}")
-    result = _run("--previous", "api-v1.0.0", "--breaking", "0", "--changelog", str(changelog))
+@pytest.mark.parametrize(
+    ("changelog", "codes", "message"),
+    [({}, NO_CODES, "changelog"), ([], {"removed": "x"}, "codes"), ([], [], "codes")],
+)
+def test_the_command_refuses_bad_input(
+    tmp_path: Path, changelog: object, codes: object, message: str
+) -> None:
+    result = _run(
+        "--previous", "api-v1.0.0", "--breaking", "0", *_files(tmp_path, changelog, codes)
+    )
     assert result.returncode == 2
-    assert "changelog" in result.stderr
+    assert message in result.stderr

@@ -239,29 +239,62 @@ jobs:
             "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/${tarball}"
           echo "${OASDIFF_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum --check --strict
           tar --extract --gzip --file "${RUNNER_TEMP}/${tarball}" --directory "${RUNNER_TEMP}" oasdiff
-      - name: The gate catches a breaking change (self-test on /v1/staff/me)
-        # Removing a response field must fail; adding an optional one must pass.
+      - name: The gate catches breaking changes and allows additive ones (self-test)
+        # On /v1/staff/me. oasdiff exits 1 for a breaking change and >1 for its own errors,
+        # so only 1 counts as "caught". .github/oasdiff-levels.txt: see README, "API contract".
         run: |
+          oasdiff() { "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN --severity-levels .github/oasdiff-levels.txt openapi.json "$1"; }
           jq 'del(.components.schemas.StaffMe.properties.email)
               | .components.schemas.StaffMe.required -= ["email"]' openapi.json > "${RUNNER_TEMP}/removed.json"
-          jq '.components.schemas.StaffMe.properties.nickname = {"type": "string"}' openapi.json > "${RUNNER_TEMP}/added.json"
-          if "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN openapi.json "${RUNNER_TEMP}/removed.json"; then
-            echo "::error::oasdiff did not flag a removed response field"
+          jq '.paths["/v1/staff/me"].get.parameters = [{"name": "since", "in": "query", "required": true, "schema": {"type": "string"}}]' \
+            openapi.json > "${RUNNER_TEMP}/required.json"
+          jq '.components.schemas.StaffMe.properties.nickname = {"type": "string"}
+              | .components.schemas.ErrorCode.enum += ["SOMETHING_NEW"]
+              | .components.schemas.StaffRole.enum += ["auditor"]
+              | .paths["/v1/staff/new"] = .paths["/v1/staff/me"]
+              | .paths["/v1/staff/new"].get.operationId = "staff_new"' openapi.json > "${RUNNER_TEMP}/added.json"
+          for breaking in removed required; do
+            rc=0; oasdiff "${RUNNER_TEMP}/${breaking}.json" || rc=$?
+            if [ "${rc}" -ne 1 ]; then
+              echo "::error::the gate did not catch the ${breaking} change (exit ${rc})"
+              exit 1
+            fi
+          done
+          oasdiff "${RUNNER_TEMP}/added.json"
+          # Error codes, which oasdiff cannot see: a removal must fail, an addition pass.
+          jq '.components.schemas.ErrorCode.enum -= ["FORBIDDEN"]' openapi.json > "${RUNNER_TEMP}/code-removed.json"
+          rc=0; uv run --locked python -m scripts.contract_codes openapi.json "${RUNNER_TEMP}/code-removed.json" || rc=$?
+          if [ "${rc}" -ne 1 ]; then
+            echo "::error::the error-code check did not catch a removed code (exit ${rc})"
             exit 1
           fi
-          "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN openapi.json "${RUNNER_TEMP}/added.json"
-      - name: No breaking changes against the base branch
+          uv run --locked python -m scripts.contract_codes openapi.json "${RUNNER_TEMP}/added.json"
+      - name: No breaking changes against the PR's base
         if: github.event_name == 'pull_request'
         env:
-          BASE_REF: ${{ github.base_ref }}
           APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change-approved') }}
+        # HEAD is the merge commit; its first parent is exactly the base it was built on
+        # (origin/<base> may have moved since, e.g. on "Re-run jobs").
         run: |
-          if ! git cat-file -e "origin/${BASE_REF}:openapi.json" 2>/dev/null; then
-            echo "The base branch has no openapi.json yet: nothing to compare."
+          if [ -z "$(git ls-tree --name-only HEAD^1 -- openapi.json)" ]; then
+            echo "The base has no openapi.json yet (the PR that introduces it): nothing to compare."
             exit 0
           fi
-          git show "origin/${BASE_REF}:openapi.json" > "${RUNNER_TEMP}/base.json"
-          if "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN "${RUNNER_TEMP}/base.json" openapi.json; then
+          git show HEAD^1:openapi.json > "${RUNNER_TEMP}/base.json"
+          rc=0
+          "${RUNNER_TEMP}/oasdiff" breaking --fail-on WARN --severity-levels .github/oasdiff-levels.txt \
+            "${RUNNER_TEMP}/base.json" openapi.json || rc=$?
+          if [ "${rc}" -gt 1 ]; then
+            echo "::error::oasdiff failed (exit ${rc})"
+            exit 1
+          fi
+          codes=0
+          uv run --locked python -m scripts.contract_codes "${RUNNER_TEMP}/base.json" openapi.json || codes=$?
+          if [ "${codes}" -gt 1 ]; then
+            echo "::error::the error-code comparison failed (exit ${codes})"
+            exit 1
+          fi
+          if [ "${rc}" -eq 0 ] && [ "${codes}" -eq 0 ]; then
             exit 0
           fi
           if [ "${APPROVED}" = "true" ]; then

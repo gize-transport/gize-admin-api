@@ -15,14 +15,27 @@ import pytest
 from fastapi import Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from gize_api.core.contract import finish_contract
 from gize_api.core.errors import ERROR_SPECS, ErrorCode, problem_responses
 from gize_api.core.security import CurrentStaff, current_staff, staff_router
 from gize_api.main import GizeAPI, create_app
 from scripts.export_openapi import CONTRACT_PATH, render_contract
 from tests.support import ROOT, SettingsFactory
 
+
+class WidgetError(BaseModel):
+    message: str
+
+
 OPERATION_ID = re.compile(r"[a-z][a-z0-9]*_[a-z][a-z0-9_]*")
 PROBLEM_REFS = {"#/components/schemas/Problem", "#/components/schemas/ValidationProblem"}
+
+
+def _problem_refs(response: dict[str, Any]) -> set[str]:
+    schema = response["content"]["application/problem+json"]["schema"]
+    refs = [schema] if "$ref" in schema else schema["anyOf"]
+    assert refs
+    return {ref["$ref"] for ref in refs}
 
 
 def _operations(schema: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
@@ -61,6 +74,15 @@ def app_with_inputs(make_settings: SettingsFactory) -> GizeAPI:
     ) -> WidgetCreate:
         return body
 
+    @router.get(
+        "",
+        operation_id="widgets_list",
+        summary="List widgets",
+        responses=problem_responses(ErrorCode.INVALID_CURSOR),
+    )
+    async def widgets(cursor: str | None = Query(default=None, max_length=200)) -> list[int]:
+        return []
+
     app.include_router(router)
     return app
 
@@ -86,9 +108,7 @@ def test_every_operation_meets_the_contract(app_with_inputs: GizeAPI) -> None:
             assert codes, f"{where} {status}"
             assert {ERROR_SPECS[ErrorCode(code)].status for code in codes} == {int(status)}
             assert set(response["content"]) == {"application/problem+json"}, f"{where} {status}"
-            assert response["content"]["application/problem+json"]["schema"]["$ref"] in (
-                PROBLEM_REFS
-            )
+            assert _problem_refs(response) <= PROBLEM_REFS, f"{where} {status}"
         assert "500" in responses, where  # anything can fail
 
 
@@ -239,3 +259,48 @@ def test_the_script_writes_the_contract(tmp_path: Any) -> None:  # noqa: ANN401
     result = _script("--output", str(target))
     assert result.returncode == 0, result.stderr
     assert target.read_text() == render_contract()
+
+
+@pytest.mark.parametrize(
+    "responses",
+    [
+        {404: {"description": "Not found"}},  # no codes: use problem_responses
+        {409: {"description": "Conflict", "model": WidgetError}},  # not our error shape
+        {"4XX": {"description": "Some error"}},
+        {"default": {"description": "Anything"}},
+    ],
+)
+def test_error_responses_must_be_declared_with_problem_responses(
+    make_settings: SettingsFactory, responses: dict[int | str, dict[str, Any]]
+) -> None:
+    app = create_app(make_settings())
+    router = staff_router(prefix="/v1/odd")
+
+    @router.get("", operation_id="odd_get", summary="Odd", responses=responses)
+    async def odd() -> list[int]:
+        return []
+
+    app.include_router(router)
+    with pytest.raises(ValueError, match=r"odd_get.*problem_responses"):
+        app.openapi()
+
+
+def test_problem_type_is_always_present(schema: dict[str, Any]) -> None:
+    """It is always sent, so generated clients must not see it as optional."""
+    assert "type" in schema["components"]["schemas"]["Problem"]["required"]
+
+
+def test_path_level_keys_are_left_alone() -> None:
+    """OpenAPI allows `parameters` or `summary` beside the operations of a path."""
+    shared = [{"name": "id", "in": "path", "required": True, "schema": {"type": "string"}}]
+    schema = {
+        "paths": {
+            "/v1/x/{id}": {
+                "parameters": shared,
+                "get": {"operationId": "x_get", "responses": {"200": {"description": "OK"}}},
+            }
+        }
+    }
+    finished = finish_contract(schema)
+    assert finished["paths"]["/v1/x/{id}"]["parameters"] == shared
+    assert set(finished["paths"]["/v1/x/{id}"]["get"]["responses"]) == {"200", "500"}

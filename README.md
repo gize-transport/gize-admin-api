@@ -256,13 +256,19 @@ There is no branch protection on our plan, so CLAUDE.md's merge rules are the pr
 
 - **Regenerate it with every API change** and commit it: `uv run python scripts/export_openapi.py`. CI fails when it's out of date.
 - **Every operation** needs a stable `operationId` (`<domain>_<action>`, e.g. `staff_me`), a summary, a response model, and its errors via `problem_responses(...)` (`core/errors.py`). Staff routers already document 401/403/429/503; 422 (wherever there's input), 413 (wherever there's a body) and 500 are added for you (`core/contract.py`). Each error response is `application/problem+json` and lists its codes in `x-error-codes`. `tests/test_contract.py` holds every operation to this.
-- **Breaking changes fail CI** (`oasdiff breaking --fail-on WARN` against the base branch): removing or renaming anything, making a field required, changing a type, tightening a limit. Follow the deprecation steps in `docs/api-contract.md`. Only the owner adds the `breaking-change-approved` label to let one through.
-- **Releases are automatic.** When a merge to `main` changes `openapi.json`, `.github/workflows/contract-release.yml` tags `api-vX.Y.Z` and attaches the file to a GitHub release:
-  - minor for any change oasdiff reports (an added endpoint, field or enum value);
-  - patch for descriptions and summaries only;
-  - major for an approved breaking change.
+- **Breaking changes fail CI**, compared with the PR's base:
+  - `oasdiff breaking --fail-on WARN`: removing or renaming anything, making a field or parameter required, changing a type, tightening a limit;
+  - `scripts/contract_codes.py`: removing an error code, or dropping one from an operation. oasdiff can't see these (`x-error-codes` is our own extension).
 
-  The frontend syncs from these tags. The first release is `api-v1.0.0`.
+  New response enum values (an error code, a role) are allowed by `docs/api-contract.md`, but oasdiff 1.33 counts them as breaking. `.github/oasdiff-levels.txt` lowers that one check to info; it can't hold comments, oasdiff reads every line.
+
+  Follow the deprecation steps in `docs/api-contract.md`. Only the owner adds the `breaking-change-approved` label to let one through. The approval sticks to the PR: after pushing more commits, remove and re-add the label so it covers what was added. "Re-run jobs" uses the labels from the original run.
+- **Releases are automatic.** When a merge to `main` changes `openapi.json`, `.github/workflows/contract-release.yml` tags `api-vX.Y.Z` and attaches the file to a GitHub release:
+  - minor for any change oasdiff reports (an added endpoint, field or enum value) or an added error code;
+  - patch for descriptions and summaries only;
+  - major for a breaking change, and only if the merged PR carries `breaking-change-approved`. Otherwise the release fails for a human to review and tag by hand.
+
+  A re-run of an old release run does nothing once a newer tag exists. The frontend syncs from these tags. The first release is `api-v1.0.0`.
 
 ## Working on a ticket
 
