@@ -47,7 +47,10 @@ def create_job_redis(
             url, timeout=timeout, max_connections=max_connections, client_name=client_name
         ),
     )
-    return ArqRedis(pool, job_serializer=serialize_job, job_deserializer=deserialize_job)
+    client = ArqRedis(pool, job_serializer=serialize_job, job_deserializer=deserialize_job)
+    # redis-py leaves a pool passed in from outside open on aclose(); this client owns it.
+    client.auto_close_connection_pool = True
+    return client
 
 
 class JobFailedError(RuntimeError):
@@ -82,9 +85,12 @@ async def enqueue(
     function: str,
     *args: Any,  # noqa: ANN401 - job arguments (IDs)
     job_id: str,
-    telemetry: Telemetry | None = None,
+    telemetry: Telemetry | None,
 ) -> bool:
-    """Queue `function(*args)`; False if a job with this ID is already queued or done."""
+    """Queue `function(*args)`; False if a job with this ID is already queued or done.
+
+    `telemetry` is required (pass `request.app.telemetry`) so every call is measured.
+    """
     if database_transaction_open():
         raise OpenTransactionError("enqueue jobs after the transaction has committed")
     started = time.perf_counter()

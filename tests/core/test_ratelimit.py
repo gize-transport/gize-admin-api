@@ -136,10 +136,11 @@ async def test_staff_are_counted_separately_and_by_id_not_ip(
             for _ in range(3)
         ]
         bob = (await client.get("/_test/staff", headers={"x-test-staff": "bob"})).status_code
-        anonymous = (await client.get("/_test/staff")).status_code  # same IP, counted by IP
+        # Without a staff ID, by IP: a bucket of its own, exhausted separately.
+        anonymous = [(await client.get("/_test/staff")).status_code for _ in range(3)]
     assert alice == [200, 200, 429]
     assert bob == 200
-    assert anonymous == 200
+    assert anonymous == [200, 200, 429]
 
 
 async def test_clients_are_counted_by_socket_address_by_default(
@@ -178,7 +179,10 @@ async def test_the_configured_header_names_the_client(
     ("header_value", "expected"),
     [
         ("198.51.100.9", "198.51.100.9"),
-        (" 2001:db8::5 ", "2001:db8::5"),
+        (" 2001:db8::5 ", "2001:db8::/64"),  # a client holds a whole /64
+        ("2001:db8::6", "2001:db8::/64"),  # same network, same key
+        ("::ffff:198.51.100.9", "198.51.100.9"),  # one address, one key
+        ("fe80::1%eth0", "fe80::/64"),
         ("not an ip", "203.0.113.7"),  # unusable: the socket address
         ("198.51.100.9, 10.0.0.1", "203.0.113.7"),  # a list is not what the proxy writes
         (None, "203.0.113.7"),  # a request that bypassed the proxy
@@ -238,11 +242,14 @@ async def test_concurrent_requests_are_counted_exactly(
     assert outcomes.count(True) == 10
 
 
-async def _allowed(limiter: RateLimiter, policy: Policy) -> bool:
+async def _allowed(limiter: RateLimiter, policy: Policy, ip: str = "198.51.100.1") -> bool:
+    """True if allowed, False if limited; any other outcome (503) fails the test."""
     try:
-        await limiter.check(policy, ip="198.51.100.1")
+        await limiter.check(policy, ip=ip)
     except AppError as exc:
-        return exc.code is not ErrorCode.RATE_LIMITED  # any other error counts as allowed
+        if exc.code is not ErrorCode.RATE_LIMITED:
+            raise
+        return False
     return True
 
 
@@ -357,9 +364,13 @@ async def test_retry_after_falls_back_to_the_window_length(
     """If Redis fails right after the hit, the caller is told the whole window."""
     from limits import parse
 
+    from gize_api.core.ratelimit import _Exceeded
+
     down = limiter_for("redis://127.0.0.1:1/0")
+    exceeded = _Exceeded(Limit("3/minute", "ip"), parse("3/minute"), ("p", "0", "k"))
+    deadline = asyncio.get_running_loop().time() + 1
     try:
-        assert await down._retry_after(parse("3/minute"), ("p", "0", "k")) == 60
+        assert await down._retry_after(exceeded, deadline) == 60
     finally:
         await down.aclose()
 
@@ -373,3 +384,130 @@ async def test_closing_tolerates_a_storage_without_a_client(
     await limiter.aclose()
     limiter._storage = SimpleNamespace()  # type: ignore[assignment]
     await limiter.aclose()  # nothing to close, no error
+
+
+async def test_more_concurrent_checks_than_connections_wait_instead_of_failing(
+    limiter_for: Callable[..., RateLimiter], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full pool is a queue, never "Redis down" (GZ-009 review: 22 of 100 got 503)."""
+    monkeypatch.setattr("gize_api.core.ratelimit.REDIS_MAX_CONNECTIONS", 2)
+    wide = Policy("test_wide", (Limit("1000/minute", "ip"),), fail_open=False)
+    narrow = Policy("test_narrow", (Limit("5/minute", "ip"),), fail_open=True)
+    limiter = limiter_for()
+    try:
+        wide_outcomes = await asyncio.gather(*(_allowed(limiter, wide) for _ in range(40)))
+        narrow_outcomes = await asyncio.gather(*(_allowed(limiter, narrow) for _ in range(40)))
+    finally:
+        await limiter.aclose()
+    assert all(wide_outcomes)  # no 503: _allowed raises on anything but RATE_LIMITED
+    assert narrow_outcomes.count(True) == 5  # no fail-open bypass under load
+
+
+async def test_auth_declared_as_a_parameter_still_runs_first(
+    make_settings: SettingsFactory, limiter_for: Callable[..., RateLimiter]
+) -> None:
+    """FastAPI runs decorator dependencies before parameter ones; `after=` fixes the order."""
+    app = create_app(make_settings())
+
+    async def current_staff(request: Request) -> str | None:  # GZ-010's auth, in spirit
+        staff = request.headers.get("x-test-staff")
+        set_staff_id(staff)
+        return staff
+
+    @app.get(
+        "/_test/auth", dependencies=[Depends(rate_limited(TWO_PER_MINUTE, after=current_staff))]
+    )
+    async def handler(staff: str | None = Depends(current_staff)) -> dict[str, str | None]:
+        return {"staff": staff}
+
+    async for client in _client_for(app, limiter_for()):
+        alice = [
+            (await client.get("/_test/auth", headers={"x-test-staff": "alice"})).status_code
+            for _ in range(3)
+        ]
+        bob = (await client.get("/_test/auth", headers={"x-test-staff": "bob"})).status_code
+    assert alice == [200, 200, 429]
+    assert bob == 200  # counted by staff ID, not the shared IP
+
+
+async def test_a_rejected_request_still_counts_against_the_limits_before(
+    limiter_for: Callable[..., RateLimiter],
+) -> None:
+    """Pinned: limits are checked in order and each check counts (the safe direction)."""
+    policy = Policy(
+        "test_order", (Limit("2/minute", "ip"), Limit("1/minute", "phone")), fail_open=False
+    )
+    limiter = limiter_for()
+    try:
+        await limiter.check(policy, ip="198.51.100.1", phone="+251911000001")
+        with pytest.raises(AppError):  # the phone limit rejects; the IP limit counted it
+            await limiter.check(policy, ip="198.51.100.1", phone="+251911000001")
+        with pytest.raises(AppError):  # so the IP limit is now spent, for any phone
+            await limiter.check(policy, ip="198.51.100.1", phone="+251911000002")
+    finally:
+        await limiter.aclose()
+
+
+async def test_one_deadline_covers_the_whole_check(
+    make_settings: SettingsFactory,
+    limiter_for: Callable[..., RateLimiter],
+    blackhole_url: str,
+) -> None:
+    two_limits = Policy(
+        "test_two_limits", (Limit("5/minute", "ip"), Limit("5/minute", "phone")), fail_open=True
+    )
+    limiter = limiter_for("redis://" + blackhole_url.removeprefix("http://") + "/0")
+    started = time.monotonic()
+    try:
+        await limiter.check(two_limits, ip="198.51.100.1", phone="+251911000001")
+    finally:
+        await limiter.aclose()
+    assert time.monotonic() - started < 1.5
+
+
+async def test_the_limiters_redis_calls_are_traced_without_keys_in_clear(
+    make_settings: SettingsFactory, test_redis_url: str, prefix: str
+) -> None:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    spans = InMemorySpanExporter()
+    telemetry = configure_telemetry(make_settings(), span_exporter=spans)
+    limiter = RateLimiter.for_settings(
+        make_settings(redis_url=test_redis_url), telemetry=telemetry, key_prefix=prefix
+    )
+    try:
+        await limiter.check(PHONE, ip="198.51.100.1", phone="+251911223344")
+    finally:
+        await limiter.aclose()
+    redis_spans = [
+        s for s in spans.get_finished_spans() if (s.attributes or {}).get("db.system") == "redis"
+    ]
+    assert redis_spans
+    assert "911223344" not in str([dict(s.attributes or {}) for s in redis_spans])
+
+
+def test_an_unknown_client_address_is_logged(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every such request shares one bucket: a misconfigured server, worth saying."""
+    from gize_api.core.logging import configure_logging
+
+    monkeypatch.setattr("gize_api.core.ratelimit._unknown_client_logged_at", {})
+    configure_logging("INFO")
+    assert client_ip(Request({"type": "http", "headers": []}), None) == "unknown"
+    assert any("client_address_unknown" in line for line in capsys.readouterr().err.splitlines())
+
+
+async def test_a_failing_limiter_close_does_not_stop_shutdown(
+    make_settings: SettingsFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def failing(self: RateLimiter) -> None:
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(RateLimiter, "aclose", failing)
+    app = create_app(make_settings())
+    async with app.router.lifespan_context(app):
+        pass
+    assert '"rate_limiter_close_failed"' in capsys.readouterr().err

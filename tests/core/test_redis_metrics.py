@@ -83,3 +83,20 @@ async def test_the_readiness_ping_is_measured(
         finally:
             await readiness.close()
     assert _redis_points(metrics) == [("ping", "error"), ("ping", "ok")]
+
+
+async def test_closing_the_job_client_closes_its_connections(test_redis_url: str) -> None:
+    """redis-py leaves a pool passed in from outside open on close; ours must not."""
+    from redis.asyncio import Redis
+
+    name = f"gize-test-close-{uuid.uuid4().hex[:8]}"
+    client = create_job_redis(test_redis_url, client_name=name)
+    await client.ping()
+    await client.aclose()
+    async with Redis.from_url(test_redis_url) as observer:
+        names = [entry["name"] for entry in await observer.client_list()]
+        for _ in range(20):  # Redis drops a closed client on its next pass; no sleeping
+            if name not in names:
+                break
+            names = [entry["name"] for entry in await observer.client_list()]
+    assert name not in names
