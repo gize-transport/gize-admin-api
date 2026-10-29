@@ -33,8 +33,8 @@ Who the caller is *in Gize* (GZ-011):
   and would read the staff row twice.
 - **`require_role(...)`**: `current_staff` plus a role check, 403 otherwise.
 - **`staff_router(...)`**: an APIRouter whose routes count against the STAFF limit, per
-  staff member. Every `/v1` route needs `current_staff` and that limit unless it is listed
-  as public (a test enforces it).
+  staff member. Every route the app serves needs `current_staff` and that limit unless its
+  method and path are on the public list (a test enforces it).
 - **Object-level checks** belong in services, inside the block that reads or writes the
   object: a missing object and one the caller may not touch give the same 404.
 """
