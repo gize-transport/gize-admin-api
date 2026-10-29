@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 import jwt
 import pytest
+import structlog
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi import Depends
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
@@ -521,3 +522,59 @@ async def test_expired_and_missing_tokens_do_not_count_as_attacks(
     statuses = [(await http.get("/_test/me", headers=expired)).status_code for _ in range(4)]
     statuses += [(await http.get("/_test/me")).status_code for _ in range(4)]
     assert statuses == [401] * 8
+
+
+class BrokenKeys(FakeKeys):
+    """A fetch failing in a way the client does not map, e.g. a deeply nested JSON body."""
+
+    async def __call__(self) -> Any:  # noqa: ANN401 - JSON
+        self.fetches += 1
+        if self.failing:
+            raise RecursionError("maximum recursion depth exceeded")
+        return self.key_set
+
+
+async def test_an_unexpected_fetch_error_is_unavailable_and_logged() -> None:
+    keys = BrokenKeys()
+    keys.failing = True
+    with structlog.testing.capture_logs() as logs, pytest.raises(KeysUnavailableError):
+        await _verifier(keys).verify(_token())
+    assert [log["event"] for log in logs] == ["signing_keys_refresh_failed"]
+
+
+async def test_an_unexpected_error_in_a_background_refresh_is_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = BrokenKeys()
+    verifier = _verifier(keys)
+    await verifier.verify(_token())
+    monkeypatch.setattr("gize_api.core.security.KEYS_TTL_SECONDS", 0.0)  # now stale
+    monkeypatch.setattr("gize_api.core.security.REFRESH_MIN_INTERVAL_SECONDS", 0.0)
+    keys.failing = True
+    with structlog.testing.capture_logs() as logs:
+        assert (await verifier.verify(_token())).subject == uuid.UUID(int=7)  # cached key
+        await asyncio.sleep(0.01)  # let the background refresh fail
+    assert [log["event"] for log in logs] == ["signing_keys_refresh_failed"]
+    assert keys.fetches == 2
+
+
+async def test_shutdown_during_a_refresh_answers_unavailable() -> None:
+    """Requests waiting on a refresh that shutdown cancels get a 503, not a cancellation."""
+    keys = FakeKeys(delay=10.0)
+    verifier = _verifier(keys)
+    waiting = asyncio.create_task(verifier.verify(_token()))
+    await asyncio.sleep(0.01)  # the request is now waiting on the refresh
+    await verifier.aclose()
+    with pytest.raises(KeysUnavailableError):
+        await waiting
+
+
+async def test_a_cancelled_request_waiting_on_a_refresh_still_ends() -> None:
+    keys = FakeKeys(delay=10.0)
+    verifier = _verifier(keys)
+    waiting = asyncio.create_task(verifier.verify(_token()))
+    await asyncio.sleep(0.01)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    await verifier.aclose()  # the shared refresh outlived the request

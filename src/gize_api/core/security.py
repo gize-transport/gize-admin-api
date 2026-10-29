@@ -188,7 +188,14 @@ class TokenVerifier:
             # Wait only when the answer depends on it: no usable keys yet, or a key ID
             # we have never seen (perhaps just rotated in). Otherwise serve what we have.
             if not self._usable() or kid not in self._keys:
-                await asyncio.shield(refresh)
+                try:
+                    await asyncio.shield(refresh)
+                except asyncio.CancelledError:
+                    # Shutdown stopped the refresh: answer from what we have (503 if
+                    # nothing). A cancelled request still ends.
+                    current = asyncio.current_task()
+                    if not refresh.cancelled() or current is None or current.cancelling():
+                        raise
         if not self._usable():
             raise KeysUnavailableError("no usable signing keys")
         if kid not in self._keys:
@@ -223,7 +230,7 @@ class TokenVerifier:
     async def _refresh(self) -> None:
         try:
             keys = _usable_keys(await self._fetch_keys())
-        except KeysUnavailableError as exc:
+        except Exception as exc:  # any failure leaves the cache as it was; logged
             logger.warning("signing_keys_refresh_failed", exc_info=exc)
             return
         self._keys, self._fetched_at = keys, time.monotonic()
