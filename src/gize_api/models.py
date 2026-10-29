@@ -6,5 +6,6 @@ Import each domain package's models module here when it is created, e.g.
 
 from gize_api.core import idempotency  # gize.idempotency_keys
 from gize_api.core.models import Base
+from gize_api.staff import models as staff_models  # gize.staff
 
-__all__ = ["Base", "idempotency"]
+__all__ = ["Base", "idempotency", "staff_models"]

@@ -87,16 +87,17 @@ Status: done · Depends on: GZ-008
 ## M1 – Authentication, staff and contract publishing
 
 ### GZ-010 · Supabase token verification
-Status: in review · Depends on: GZ-004, GZ-006
+Status: done · Depends on: GZ-004, GZ-006
 - Verify access tokens against the Supabase project's signing method (confirm JWKS vs shared secret for the project and document it); check `exp`, `aud`, `iss`; JWKS cached with timeout and refresh on unknown key.
 - Acceptance: expired, wrong-audience, tampered and unsigned tokens rejected (401) and logged as security events.
 - Decisions at M1 planning: asymmetric signing keys only (JWKS; no shared secret in the API), PyJWT with `cryptography`, new setting `SUPABASE_URL`. Failed tokens are throttled per IP (`TOKEN_FAILURES`, the GZ-009 hand-off).
 
 ### GZ-011 · Staff accounts and role guards
-Status: todo · Depends on: GZ-010
+Status: in review · Depends on: GZ-010
 - `staff` table (id = Supabase user id, role `admin`/`staff`, is_active). `current_staff` dependency; `require_role` guard; documented pattern for object-level checks in services.
 - `GET /v1/staff/me` returns the caller's id, name, email and role (used by the admin portal after sign-in).
 - Acceptance: valid token for an unknown or inactive staff → 403; role taken from our table even if the token claims otherwise.
+- Built: `gize.staff` (migration 0003; email lower-case and unique; role and non-blank checks), `current_staff` → `CurrentStaff(id, role)`, `require_role`, `staff_router` (STAFF limit), a test that every served route is guarded unless its method and path are listed as public, `GET /v1/staff/me` (`operationId` `staff_me`). Refusals of non-staff and deactivated staff count toward `TOKEN_FAILURES`. Hand-offs: GZ-013 stores emails trimmed and lower-case (the table refuses anything else) and re-reads the caller and target rows inside its own block (deactivation and last-admin checks); owner: turn off public sign-ups in Supabase.
 
 ### GZ-012 · Audit log
 Status: todo · Depends on: GZ-011

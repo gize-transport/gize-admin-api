@@ -20,8 +20,23 @@
   event (the reason only, never the token; Sentry once a minute per reason and process).
   Rejections that look like forgery (not a missing or expired token) count against
   TOKEN_FAILURES per client IP: a flood of forged tokens gets 429.
-- Who the caller is *in Gize* (staff row, role) is GZ-011's `current_staff`, built on
-  `verified_token`.
+
+Who the caller is *in Gize* (GZ-011):
+
+- **`current_staff`**: the token's `sub` must be an active row in `gize.staff`, else 403.
+  The role comes from that row, never from the token. It sets the staff ID for logs and
+  rate limits, and hands on a `CurrentStaff` (ID and role), not the ORM row (the session
+  rule, architecture.md). Refusals count against TOKEN_FAILURES like rejected tokens:
+  strangers (Supabase may let anyone sign up) and dismissed staff, whose tokens stay
+  valid for up to an hour. Only refusals are counted, so active staff never are.
+  Use it through `Depends`: `Security(current_staff, scopes=...)` is cached separately
+  and would read the staff row twice.
+- **`require_role(...)`**: `current_staff` plus a role check, 403 otherwise.
+- **`staff_router(...)`**: an APIRouter whose routes count against the STAFF limit, per
+  staff member. Every route the app serves needs `current_staff` and that limit unless its
+  method and path are on the public list (a test enforces it).
+- **Object-level checks** belong in services, inside the block that reads or writes the
+  object: a missing object and one the caller may not touch give the same 404.
 """
 
 import asyncio
@@ -32,19 +47,23 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Self
+from typing import Any, NoReturn, Self
 
 import jwt
 import structlog
-from fastapi import Depends, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.config import Settings
+from gize_api.core.db import get_session
 from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.http import OutboundClient, OutboundError
-from gize_api.core.logging import log_security_event
-from gize_api.core.ratelimit import Limit, Policy, RateLimiter, client_ip
+from gize_api.core.logging import log_security_event, set_staff_id
+from gize_api.core.ratelimit import STAFF, Limit, Policy, RateLimiter, client_ip, rate_limited
 from gize_api.core.telemetry import Telemetry
+from gize_api.staff.models import StaffRole
+from gize_api.staff.repository import get_staff
 
 SUPPORTED_ALGORITHMS = frozenset({"ES256", "RS256"})
 AUDIENCE = "authenticated"
@@ -312,9 +331,7 @@ async def verified_token(
 
 async def _rejected(request: Request, reason: str) -> None:
     if reason in SUSPICIOUS_REASONS:
-        limiter: RateLimiter = request.app.state.rate_limiter
-        settings: Settings = request.app.state.settings
-        await limiter.check(TOKEN_FAILURES, ip=client_ip(request, settings.client_ip_header))
+        await _count_failure(request)
     log_security_event(
         "token_rejected",
         sentry=RateLimiter._due(_reported_at, reason, SENTRY_INTERVAL_SECONDS),
@@ -322,3 +339,76 @@ async def _rejected(request: Request, reason: str) -> None:
     )
     challenge = "Bearer" if reason == "missing" else 'Bearer error="invalid_token"'
     raise AppError(ErrorCode.UNAUTHENTICATED, headers={"WWW-Authenticate": challenge})
+
+
+async def _count_failure(request: Request) -> None:
+    limiter: RateLimiter = request.app.state.rate_limiter
+    settings: Settings = request.app.state.settings
+    await limiter.check(TOKEN_FAILURES, ip=client_ip(request, settings.client_ip_header))
+
+
+@dataclass(frozen=True)
+class CurrentStaff:
+    """The signed-in staff member, as read at the start of this request."""
+
+    id: uuid.UUID
+    role: StaffRole
+
+
+async def current_staff(
+    request: Request,
+    token: VerifiedToken = Depends(verified_token),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> CurrentStaff:
+    """FastAPI dependency: the caller as active staff, or 401/403/429/503."""
+    async with session.begin():
+        staff = await get_staff(session, token.subject)
+        found = None if staff is None else (staff.is_active, CurrentStaff(staff.id, staff.role))
+    if found is None:
+        await _count_failure(request)  # a valid token, but not ours: maybe open sign-ups
+        _denied("staff_access_denied", reason="not_staff", user_id=str(token.subject))
+    is_active, caller = found
+    if not is_active:
+        await _count_failure(request)  # dismissed: the token is valid until it expires
+        _denied("staff_access_denied", reason="inactive", user_id=str(token.subject))
+    set_staff_id(str(caller.id))
+    return caller
+
+
+def require_role(*roles: StaffRole) -> Callable[..., Awaitable[CurrentStaff]]:
+    """FastAPI dependency: `current_staff` in one of `roles`, or 403."""
+    if not roles:
+        raise ValueError("require_role needs at least one role")
+    allowed = frozenset(roles)
+
+    async def dependency(caller: CurrentStaff = Depends(current_staff)) -> CurrentStaff:  # noqa: B008
+        if caller.role not in allowed:
+            _denied(
+                "permission_denied",
+                reason="role",
+                role=caller.role.value,
+                required_roles=sorted(allowed),
+            )
+        return caller
+
+    return dependency
+
+
+# Counted after `current_staff`, so per staff member, not per office IP.
+staff_rate_limit = rate_limited(STAFF, after=current_staff)
+
+
+def staff_router(**options: Any) -> APIRouter:  # noqa: ANN401 - APIRouter's options
+    """An APIRouter for staff routes: each one counts against the STAFF limit."""
+    dependencies = [Depends(staff_rate_limit), *options.pop("dependencies", ())]
+    return APIRouter(dependencies=dependencies, **options)
+
+
+def _denied(event: str, *, reason: str, **fields: Any) -> NoReturn:  # noqa: ANN401
+    log_security_event(
+        event,
+        sentry=RateLimiter._due(_reported_at, f"{event}:{reason}", SENTRY_INTERVAL_SECONDS),
+        reason=reason,
+        **fields,
+    )
+    raise AppError(ErrorCode.FORBIDDEN)

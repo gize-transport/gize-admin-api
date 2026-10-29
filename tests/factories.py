@@ -14,10 +14,12 @@ flushed (so server defaults such as `id` are loaded), never committed by the fac
 """
 
 import itertools
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.models import Base
+from gize_api.staff.models import Staff, StaffRole
 
 _sequence = itertools.count(1)
 
@@ -38,3 +40,17 @@ class Factory[M: Base]:
 
     async def create_batch(self, session: AsyncSession, count: int, **overrides: object) -> list[M]:
         return [await self.create(session, **overrides) for _ in range(count)]
+
+
+class StaffFactory(Factory[Staff]):
+    """Staff members; `id` is the Supabase user ID, so pass the token's `sub` to sign in."""
+
+    model = Staff
+
+    def defaults(self, sequence: int) -> dict[str, object]:
+        return {
+            "id": uuid.uuid4(),
+            "full_name": f"Staff Member {sequence}",
+            "email": f"staff{sequence}@example.com",
+            "role": StaffRole.STAFF,
+        }

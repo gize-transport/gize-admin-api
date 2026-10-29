@@ -5,11 +5,13 @@ import contextlib
 import os
 import secrets
 import socket
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
 import asyncpg
+import httpx
 import pytest
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from gize_api.core.bootstrap import bootstrap
 from gize_api.core.config import Settings
 from gize_api.core.db import GizeSession, create_engine, create_sessionmaker, get_session
+from gize_api.core.ratelimit import RateLimiter
 from gize_api.core.rls import row_level_security_statements
 from gize_api.main import GizeAPI, create_app
 from tests.support import (
@@ -31,6 +34,7 @@ from tests.support import (
     run_migrations,
     server_lock_path,
 )
+from tests.tokens import fake_verifier
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -218,6 +222,47 @@ def app_with_db_session(make_settings: SettingsFactory, db_session: AsyncSession
 
     app.dependency_overrides[get_session] = override
     return app
+
+
+@pytest.fixture
+async def api_app(
+    app_with_db_session: GizeAPI, make_settings: SettingsFactory, test_redis_url: str
+) -> AsyncIterator[GizeAPI]:
+    """`app_with_db_session` ready for authenticated requests, still without the lifespan.
+
+    Tokens are signed with tests/tokens.py's keys (`make_token(sub=str(staff.id))`), and
+    rate limits count in the test Redis under a key prefix of this test's own.
+    """
+    app = app_with_db_session
+    app.state.token_verifier = fake_verifier()
+    app.state.rate_limiter = RateLimiter.for_settings(
+        make_settings(redis_url=test_redis_url),
+        telemetry=None,
+        key_prefix=f"gize-test-{uuid.uuid4()}",
+    )
+    try:
+        yield app
+    finally:
+        await app.state.rate_limiter.aclose()
+
+
+@pytest.fixture
+async def api(api_app: GizeAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """An HTTP client for `api_app`: a 500 comes back as a response, as in production."""
+    transport = httpx.ASGITransport(app=api_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        yield http
+
+
+@pytest.fixture
+async def unreachable_sessions(make_settings: SettingsFactory) -> AsyncIterator[AsyncSession]:
+    """A session on a database that refuses connections: override `get_session` with it."""
+    engine = create_engine(make_settings(database_url=UNREACHABLE_DATABASE_URL))
+    try:
+        async with create_sessionmaker(engine)() as session:
+            yield session
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture
