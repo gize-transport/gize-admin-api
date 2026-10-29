@@ -2,10 +2,20 @@
 
 import uuid
 
-from sqlalchemy import exists, select
+from sqlalchemy import Select, exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.staff.models import Staff, StaffRole
+
+# Every change to staff (an invite, a role or status change, the first-admin command) runs
+# under this transaction-level lock, so checks such as "another active admin remains" see
+# nothing change before the write commits. Staff changes are rare: one at a time is fine.
+STAFF_CHANGES_LOCK_ID = 0x67697A6561646D  # "gizeadm"
+
+
+async def lock_staff_changes(session: AsyncSession) -> None:
+    """Wait (up to the role's lock_timeout, then 503) for other staff changes to commit."""
+    await session.execute(select(func.pg_advisory_xact_lock(STAFF_CHANGES_LOCK_ID)))
 
 
 async def get_staff(session: AsyncSession, staff_id: uuid.UUID) -> Staff | None:
@@ -19,3 +29,35 @@ async def get_staff_by_email(session: AsyncSession, email: str) -> Staff | None:
 async def admin_exists(session: AsyncSession) -> bool:
     """Any admin, active or not."""
     return bool(await session.scalar(select(exists().where(Staff.role == StaffRole.ADMIN))))
+
+
+async def other_signed_in_admin_exists(session: AsyncSession, staff_id: uuid.UUID) -> bool:
+    """An active admin other than `staff_id` who has signed in at least once (an invited
+    admin who never accepts can't run anything)."""
+    others = exists().where(
+        Staff.role == StaffRole.ADMIN,
+        Staff.is_active,
+        Staff.first_signed_in_at.is_not(None),
+        Staff.id != staff_id,
+    )
+    return bool(await session.scalar(select(others)))
+
+
+async def record_first_sign_in(session: AsyncSession, staff_id: uuid.UUID) -> None:
+    """Set `first_signed_in_at` unless it is set (two first requests at once: one wins),
+    and only while they are active (deactivated meanwhile: not a sign-in)."""
+    await session.execute(
+        update(Staff)
+        .where(Staff.id == staff_id, Staff.is_active, Staff.first_signed_in_at.is_(None))
+        .values(first_signed_in_at=func.now())
+    )
+
+
+def staff_members(*, role: StaffRole | None, is_active: bool | None) -> Select[Staff]:
+    """The filtered members, unordered: `paginate` orders and bounds them."""
+    statement = select(Staff)
+    if role is not None:
+        statement = statement.where(Staff.role == role)
+    if is_active is not None:
+        statement = statement.where(Staff.is_active.is_(is_active))
+    return statement

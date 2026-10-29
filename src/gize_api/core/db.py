@@ -9,8 +9,9 @@ SERVICE_UNAVAILABLE with Retry-After (core/errors.py).
 The session rule: every use of a session is inside `async with session.begin():`, one block
 per unit of work. Autobegin is off, so a query outside a block fails at once (but
 `session.add()` does not: add objects inside the block that should save them). A dependency
-that reads (auth) uses its own short block, finished before the service opens its own, and
-hands on plain values (IDs, role), not ORM objects. Every ORM query and `get()` refreshes
+(auth) uses its own short block, finished before the service opens its own, and hands on
+plain values (IDs, role), not ORM objects. `current_staff`'s block reads, and once per
+member writes `first_signed_in_at`. Every ORM query and `get()` refreshes
 rows the session already holds (GizeSession), so a later block never sees stale data; role and
 ownership checks still belong in the service's block, next to the write they protect.
 Never hold a block open across an outbound call (SMS, HTTP).

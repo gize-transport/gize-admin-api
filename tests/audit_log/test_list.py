@@ -44,8 +44,10 @@ class Seed:
         staff_id = uuid.uuid4()
         self.staff_ids.append(staff_id)
         await self.conn.execute(
-            "INSERT INTO gize.staff (id, full_name, email, role, is_active)"
-            " VALUES ($1, 'Abebe Kebede', $2, $3, $4)",
+            # Signed in before: a first sign-in would update this committed row from the
+            # test's open transaction, and the clean-up's DELETE would wait on it.
+            "INSERT INTO gize.staff (id, full_name, email, role, is_active, first_signed_in_at)"
+            " VALUES ($1, 'Abebe Kebede', $2, $3, $4, now())",
             staff_id,
             f"{staff_id}@example.com",
             role,

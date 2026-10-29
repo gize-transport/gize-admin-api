@@ -99,13 +99,15 @@ Dockerfile                # multi-stage, non-root user, healthcheck
 
 Login rate limits for Supabase Auth are configured in the Supabase dashboard (Auth → Rate limits), not in this API.
 
+Staff changes (invites, role and status changes, the first-admin command) all take one transaction-level advisory lock (`staff.repository.lock_staff_changes`), so rules that span rows, such as "at least one active admin", are checked with nothing changing underneath. A service that must call an outside service before writing (a staff invite calls Supabase) does it between two transactions: a short read block that also `peek`s the idempotency key, the call, then the write block that claims the key.
+
 ## Data model (MVP – refine in the plan for each ticket)
 
 All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC, timestamptz) on every table. Soft delete via `deleted_at` on business tables; default queries exclude deleted rows. Money as integer whole birr. Phones stored E.164 (`+2519…` / `+2517…`).
 
 | Table | Key columns |
 | --- | --- |
-| `staff` | id (= Supabase user id), full_name, email, role (`admin`/`staff`), is_active |
+| `staff` | id (= Supabase user id), full_name, email, role (`admin`/`staff`), is_active, first_signed_in_at (null until the first request: an invitation not yet accepted) |
 | `audit_log` | id, actor_staff_id, action, entity_type, entity_id, before (jsonb), after (jsonb), request_id, created_at – append-only |
 | `idempotency_keys` | key, actor, request_hash, response_status, response_body, created_at (purged after 24 h) |
 | `corridors` | id, name, origin_area, destination_area, waitlist_threshold |

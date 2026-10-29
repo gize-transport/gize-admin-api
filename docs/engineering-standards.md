@@ -39,6 +39,7 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
 - Limits via `limits` (async) with Redis storage, keyed by **staff user ID**, falling back to client IP: the header named in `CLIENT_IP_HEADER` (`CF-Connecting-IP` behind Cloudflare), otherwise the socket address – never trust any other forwarded header. (slowapi was replaced at GZ-009: it calls Redis synchronously and would stall every request while Redis is slow.)
 - Defaults:
   - Staff endpoints: 120 requests/minute per user.
+  - Staff invites (each sends an email): 20/hour per admin, on top of the staff limit.
   - Public registration and waitlist sign-up: 5/hour per IP and 3/day per phone.
   - Phone verification SMS: 3/hour per phone and 10/hour per IP (each SMS costs money). Code entry: 5 attempts per code, then the code is invalidated.
   - Expensive endpoints (exports, bulk actions): per-endpoint limits stated in the ticket plan.

@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+import asyncpg
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -76,6 +77,25 @@ class DatabaseUrls:
     admin: str
     migrator: str
     app: str
+
+
+async def wait_for_lock_waiters(database: DatabaseUrls, count: int = 1) -> None:
+    """Poll Postgres until `count` backends wait on a lock: requests are blocked where a
+    test wants them, with no timing guess."""
+    admin = await asyncpg.connect(database.admin, timeout=3)
+    try:
+        for _ in range(500):
+            waiting = await admin.fetchval(
+                "SELECT count(*) FROM pg_stat_activity"
+                " WHERE datname = $1 AND wait_event_type = 'Lock'",
+                database.name,
+            )
+            if waiting >= count:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"expected {count} backend(s) waiting on a lock")
+    finally:
+        await admin.close()
 
 
 # Passwords for the throwaway test roles only; the real ones come from the URLs in .env.

@@ -26,7 +26,8 @@ Who the caller is *in Gize* (GZ-011):
 - **`current_staff`**: the token's `sub` must be an active row in `gize.staff`, else 403.
   The role comes from that row, never from the token. It sets the staff ID for logs and
   rate limits, and hands on a `CurrentStaff` (ID and role), not the ORM row (the session
-  rule, architecture.md). Refusals count against TOKEN_FAILURES like rejected tokens:
+  rule, architecture.md). A member's first request also records `first_signed_in_at`
+  (one UPDATE, once per member). Refusals count against TOKEN_FAILURES like rejected tokens:
   strangers (Supabase may let anyone sign up) and dismissed staff, whose tokens stay
   valid for up to an hour. Only refusals are counted, so active staff never are.
   Use it through `Depends`: `Security(current_staff, scopes=...)` is cached separately
@@ -63,7 +64,7 @@ from gize_api.core.logging import log_security_event, set_staff_id
 from gize_api.core.ratelimit import STAFF, Limit, Policy, RateLimiter, client_ip, rate_limited
 from gize_api.core.telemetry import Telemetry
 from gize_api.staff.models import StaffRole
-from gize_api.staff.repository import get_staff
+from gize_api.staff.repository import get_staff, record_first_sign_in
 
 SUPPORTED_ALGORITHMS = frozenset({"ES256", "RS256"})
 AUDIENCE = "authenticated"
@@ -364,6 +365,8 @@ async def current_staff(
     async with session.begin():
         staff = await get_staff(session, token.subject)
         found = None if staff is None else (staff.is_active, CurrentStaff(staff.id, staff.role))
+        if staff is not None and staff.is_active and staff.first_signed_in_at is None:
+            await record_first_sign_in(session, staff.id)  # once: they accepted the invite
     if found is None:
         await _count_failure(request)  # a valid token, but not ours: maybe open sign-ups
         _denied("staff_access_denied", reason="not_staff", user_id=str(token.subject))

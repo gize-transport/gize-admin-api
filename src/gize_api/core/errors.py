@@ -56,6 +56,9 @@ class ErrorCode(StrEnum):
     IDEMPOTENCY_KEY_MISMATCH = "IDEMPOTENCY_KEY_MISMATCH"
     IDEMPOTENCY_IN_PROGRESS = "IDEMPOTENCY_IN_PROGRESS"
     RATE_LIMITED = "RATE_LIMITED"
+    STAFF_EMAIL_TAKEN = "STAFF_EMAIL_TAKEN"
+    AUTH_ACCOUNT_EXISTS = "AUTH_ACCOUNT_EXISTS"
+    LAST_ACTIVE_ADMIN = "LAST_ACTIVE_ADMIN"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -95,6 +98,9 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.IDEMPOTENCY_KEY_MISMATCH: ErrorSpec(422, "Idempotency Key Mismatch"),
     ErrorCode.IDEMPOTENCY_IN_PROGRESS: ErrorSpec(409, "Request In Progress"),
     ErrorCode.RATE_LIMITED: ErrorSpec(429, "Too Many Requests"),
+    ErrorCode.STAFF_EMAIL_TAKEN: ErrorSpec(409, "Email Already Used By Staff"),
+    ErrorCode.AUTH_ACCOUNT_EXISTS: ErrorSpec(409, "Sign-In Account Already Exists"),
+    ErrorCode.LAST_ACTIVE_ADMIN: ErrorSpec(409, "Last Active Admin"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

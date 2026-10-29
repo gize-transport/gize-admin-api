@@ -50,7 +50,7 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL (with `rediss`, the server's certificate and host name are checked). |
 | `SUPABASE_URL` | yes | The Supabase project URL, `https://<project-ref>.supabase.co` (Project Settings → API). Sign-in tokens are verified against its public signing keys and must name its Auth service as issuer. |
-| `SUPABASE_SECRET_KEY` | for the first-admin command (and staff invites, GZ-013) | **Secret.** The project's secret API key, `sb_secret_...` (Project Settings → API Keys → Secret keys). It can read and create users: keep it in `.env` or the host's secret store, never in chat, code or the frontend. The legacy `service_role` JWT is refused. |
+| `SUPABASE_SECRET_KEY` | for the first-admin command and staff invites (without it, invites answer `503`) | **Secret.** The project's secret API key, `sb_secret_...` (Project Settings → API Keys → Secret keys). It can read and create users: keep it in `.env` or the host's secret store, never in chat, code or the frontend. The legacy `service_role` JWT is refused. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, or Cloudflare's authenticated origin pulls): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
@@ -148,7 +148,7 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
   - Services check phone limits with `await request.app.state.rate_limiter.check(POLICY, phone=...)`, passing a normalised E.164 number: `0911…` and `+251911…` would otherwise be separate counters.
   - IPv6 clients are counted by their /64; IPv4-mapped addresses as IPv4.
   - Limits are checked in order and each check counts, so a request rejected by a later limit still uses up the earlier ones.
-  - Policies (engineering-standards.md): `STAFF` 120/min, `PUBLIC_SIGNUP` 5/hour per IP and 3/day per phone, `SMS` 10/hour per IP and 3/hour per phone. An expensive endpoint defines its own.
+  - Policies (engineering-standards.md): `STAFF` 120/min, `STAFF_INVITE` 20/hour per admin (each invite sends an email), `PUBLIC_SIGNUP` 5/hour per IP and 3/day per phone, `SMS` 10/hour per IP and 3/hour per phone. An expensive endpoint defines its own.
   - Over the limit: `429 RATE_LIMITED` with `Retry-After`, logged as a security event (the policy, never the key). Sentry hears at most once a minute per policy and process.
   - Redis unavailable: staff policies allow the request (logged once a minute per process, and counted as `outcome=error` in `db.client.operation.duration`: alert on it); public and SMS policies answer `503` with `Retry-After`. A busy connection pool waits instead of failing; one 1 s deadline covers each check.
   - Keys reach Redis hashed, so no phone number or IP is stored in clear. The hash is not secret, so it stops casual reading only.
@@ -181,11 +181,37 @@ A valid token only proves someone has a Supabase account. Whether they are Gize 
   - a deactivated row → `403`, reason `inactive`. **Deactivating someone locks them out on their next request,** even though their token is still valid;
   - both refusals count toward the per-IP token throttle (30 a minute), so a stranger or a dismissed employee can't send unlimited requests. Only refusals count: active staff are never throttled by it;
   - the role (`admin` or `staff`) always comes from the table, never from the token.
+  - a member's first request records `first_signed_in_at` (once): until then, an invited member hasn't accepted. The staff list shows it.
 - **`require_role(StaffRole.ADMIN)`** → `403`, security event `permission_denied`, for any other role.
 - **Staff routes** are built on `staff_router(...)`, which applies the `STAFF` limit (120 a minute per staff member; Redis down → allowed). A test fails if any route the app serves lacks `current_staff` or that limit, unless its method and path are on the public list (health checks, the local and staging docs, and later the public sign-up routes).
 - **Object-level checks** live in services (see `docs/architecture.md`).
 - **`GET /v1/staff/me`** returns the caller's `id`, `full_name`, `email` and `role` (`Cache-Control: no-store`). The admin portal calls it after sign-in.
-- **Supabase sign-ups:** staff are added by admins (GZ-013). In the Supabase dashboard (Authentication → Sign In / Providers), turn off **Allow new users to sign up**, so strangers can't even get a token. For the very first admin, create the user in the dashboard (Authentication → Users → Add user), then make them admin with the GZ-014 command.
+- **Supabase sign-ups:** staff are added by admins (below). In the Supabase dashboard (Authentication → Sign In / Providers), turn off **Allow new users to sign up**, so strangers can't even get a token. For the very first admin, create the user in the dashboard (Authentication → Users → Add user), then make them admin with the GZ-014 command.
+
+## Staff management
+
+Admins manage staff under `/v1/staff` (GZ-013). Every route is for **active admins only**; personal data, so `Cache-Control: no-store`.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/staff` (`staff_invite`) | Body `{email, full_name, role}`. Supabase emails them an invitation; they are active staff in that role at once and can sign in when they have accepted. `201` with `Location`. Requires `Idempotency-Key`; 20 invites an hour per admin (refusals and replays don't count). |
+| `GET /v1/staff` (`staff_list`) | Newest first, cursor-paginated, filtered by `role` and `is_active`. Deactivated members are listed; `first_signed_in_at` is null while an invitation is pending. |
+| `GET /v1/staff/{staff_id}` (`staff_get`) | One member, or `404`. |
+| `PATCH /v1/staff/{staff_id}` (`staff_update`) | Body `{role?, is_active?}`, at least one, never `null`. Promote, demote, deactivate (locks them out on their next request) or reactivate. No key needed: setting what is already there changes nothing. |
+
+- **Emails** are stored trimmed and lower-case. An email already on staff, active or not, is `409 STAFF_EMAIL_TAKEN`: reactivate the person instead.
+- **Existing sign-in accounts:** an email that already has a confirmed Supabase account is `409 AUTH_ACCOUNT_EXISTS` (owner decision, GZ-013). Turning an existing account into staff is deliberate work for an operator, not a side effect of an invite.
+  - **Recovery** (for example, someone accepted an invite whose write then failed, so they have an account but no staff row and get `403`): in the Supabase dashboard (Authentication → Users) delete that user, then invite them again. Check first that the account is the stranded invitee and not someone else's.
+- **Public sign-ups must stay off** (see "Staff and roles"). An invite to an email with an *unconfirmed* Supabase account re-sends to that account; with sign-ups on, a stranger could create that account first with a password of their own.
+- **Always an admin:** no change may leave the system without an active admin who has signed in at least once (`409 LAST_ACTIVE_ADMIN`). An invited admin who hasn't accepted yet doesn't count: with a mistyped email they never will, and nobody could sign in as admin (owner decision, GZ-013). Every staff change, and the first-admin command, holds one database lock (`lock_staff_changes`), so two admins stepping down at once can't both succeed. The service re-reads the caller under that lock: an admin demoted or deactivated a moment ago is refused.
+- **Invites and failures:** Supabase is called between two transactions, never inside one.
+  - A retry of a finished invite (same key) replays the stored response without calling Supabase.
+  - If Supabase answered but the database write failed, a retry invites again: Supabase returns the same user (a second email arrives) and the write completes.
+  - Supabase unreachable or refusing gives `503`; nothing is stored. `Retry-After` is 30 s for a passing failure and Supabase's own wait (at most an hour) when its email limit is reached. There is none when only a configuration fix helps (the secret key refused or missing, custom SMTP needed). The log line `supabase_invite_failed` says why (for example, Supabase's built-in email refusing an address outside the project team).
+- **Audit and alerts:** `staff.invited`, `staff.role_changed`, `staff.deactivated`, `staff.reactivated` in the audit log (role and status by value, name and email redacted). The matching security events carry IDs and roles only. Making someone an admin, by invite, promotion or reactivation, also alerts in Sentry.
+- **Supabase setup before real invites** (owner, in the Supabase dashboard):
+  - **Site URL** (Authentication → URL Configuration): the admin portal's page where invited staff set their password, once the portal has it. Until then invite links land on Supabase's default.
+  - **Custom SMTP** (Authentication → Emails → SMTP Settings): Supabase's built-in email only reaches addresses of the project's team, with a very low hourly limit.
 
 ## Audit log
 
@@ -236,11 +262,11 @@ Admins add staff in the admin portal, so the very first admin is made by a comma
    ```
    On a host, run it inside the running API container (`docker exec <container> python -m gize_api.cli.first_admin ...`). The image's entrypoint only starts `api`, `worker` or `migrate`, so `docker run` with this command doesn't work.
 
-The command reads the user from Supabase (it must exist, have a confirmed email, and not be banned, deleted or anonymous). It then makes them an active admin in one transaction, and refuses if any admin already exists, active or not. Two runs at once can't both succeed. It prints only the user ID, never names or emails. It records the new admin in the audit log (action `staff.first_admin_created`, no actor) and reports it to Sentry (a `first_admin_created` security event).
+The command reads the user from Supabase (it must exist, have a confirmed email, and not be banned, deleted or anonymous). It then makes them an active admin in one transaction, and refuses if any admin already exists, active or not. It holds the lock every staff change takes, so two runs at once can't both succeed, nor can a run and an admin's change in the portal interleave. It prints only the user ID, never names or emails. It records the new admin in the audit log (action `staff.first_admin_created`, no actor) and reports it to Sentry (a `first_admin_created` security event).
 
 Exit codes:
 - `0`: done.
-- `1`: refused, another run in progress, or Supabase or the database unavailable. If the database dropped mid-run, the change may or may not have been saved; running the command again is safe, since it refuses once an admin exists.
+- `1`: refused, another staff change in progress, or Supabase or the database unavailable. If the database dropped mid-run, the change may or may not have been saved; running the command again is safe, since it refuses once an admin exists.
 - `2`: wrong arguments or settings.
 
 ## Health checks

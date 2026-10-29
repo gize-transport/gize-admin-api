@@ -21,6 +21,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.core.db import get_session
+from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.idempotency import (
     MAX_STORED_BODY_BYTES,
     IdempotencyKey,
@@ -28,13 +29,14 @@ from gize_api.core.idempotency import (
     StoredResponse,
     claim,
     idempotent_request,
+    peek,
     purge_expired,
     record,
     replay_response,
 )
 from gize_api.main import create_app
 from tests.db.widgets import Widget
-from tests.support import DatabaseUrls, SettingsFactory
+from tests.support import DatabaseUrls, SettingsFactory, wait_for_lock_waiters
 
 pytestmark = pytest.mark.usefixtures("widgets_table")
 
@@ -100,23 +102,6 @@ def _app(make_settings: SettingsFactory, database: DatabaseUrls) -> FastAPI:
         return await create(body, request, idempotent, session)
 
     return app
-
-
-async def _wait_until_a_backend_waits_on_a_lock(database: DatabaseUrls) -> None:
-    """Poll Postgres until another request is blocked on the key's row (no timing guess)."""
-    admin = await asyncpg.connect(database.admin, timeout=3)
-    try:
-        for _ in range(500):
-            waiting = await admin.fetchval(
-                "SELECT count(*) FROM pg_stat_activity"
-                " WHERE datname = current_database() AND wait_event_type = 'Lock'"
-            )
-            if waiting:
-                return
-            await asyncio.sleep(0.01)
-        raise AssertionError("the second request never waited on the key")
-    finally:
-        await admin.close()
 
 
 @pytest.fixture
@@ -216,7 +201,7 @@ async def test_parallel_requests_with_one_key_execute_once(
     second = asyncio.create_task(
         client.post("/_test/widgets", json={"label": "a"}, headers=_headers(key))
     )
-    await _wait_until_a_backend_waits_on_a_lock(database)
+    await wait_for_lock_waiters(database)
     release_gates["double"].set()
     responses = await asyncio.gather(first, second)
     assert [response.status_code for response in responses] == [201, 201]
@@ -463,3 +448,40 @@ async def test_only_replayable_headers_are_recorded(db_session: AsyncSession) ->
         with pytest.raises(ValueError, match="only these headers"):
             await record(db_session, claimed, status=201, body={}, headers={"Set-Cookie": "x"})
         await record(db_session, claimed, status=201, body={}, headers={"ETag": '"v1"'})
+
+
+async def test_peek_finds_a_recorded_response_without_claiming(db_session: AsyncSession) -> None:
+    """GZ-013: a request that calls an outside service first looks for a stored response,
+    so a retry of a finished request never repeats the call."""
+    request = IdempotentRequest(key=IdempotencyKey(uuid.uuid4()), fingerprint="f" * 64)
+    async with db_session.begin():
+        assert await peek(db_session, scope="test", request=request) is None
+        claimed = await claim(db_session, scope="test", request=request)
+        await record(db_session, claimed, status=201, body={"n": 1}, headers={"Location": "/x/1"})
+    async with db_session.begin():  # commits: peek leaves nothing to record
+        stored = await peek(db_session, scope="test", request=request)
+    assert stored == StoredResponse(status=201, body={"n": 1}, headers={"Location": "/x/1"})
+
+
+async def test_peek_with_another_body_is_422(db_session: AsyncSession) -> None:
+    request = IdempotentRequest(key=IdempotencyKey(uuid.uuid4()), fingerprint="a" * 64)
+    async with db_session.begin():
+        claimed = await claim(db_session, scope="test", request=request)
+        await record(db_session, claimed, status=201, body={})
+    other = IdempotentRequest(key=request.key, fingerprint="b" * 64)
+    async with db_session.begin():
+        with pytest.raises(AppError) as raised:
+            await peek(db_session, scope="test", request=other)
+    assert raised.value.code is ErrorCode.IDEMPOTENCY_KEY_MISMATCH
+
+
+async def test_peek_ignores_expired_keys_and_other_callers(db_session: AsyncSession) -> None:
+    request = IdempotentRequest(key=IdempotencyKey(uuid.uuid4()), fingerprint="a" * 64)
+    async with db_session.begin():
+        claimed = await claim(db_session, scope="staff:a", request=request)
+        await record(db_session, claimed, status=201, body={})
+        assert await peek(db_session, scope="staff:b", request=request) is None
+        await db_session.execute(
+            text("UPDATE gize.idempotency_keys SET expires_at = now() - interval '1 second'")
+        )
+        assert await peek(db_session, scope="staff:a", request=request) is None

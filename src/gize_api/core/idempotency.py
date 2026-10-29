@@ -24,6 +24,10 @@ user action. The service claims the key **in the same transaction as its busines
 - Keys are scoped per caller (`scope`), so two callers' keys never meet. The fingerprint
   covers the method, the endpoint, the actual path (its IDs), the query and the body.
 - A replay returns the recorded status, body and headers (Location, Content-Location, ETag).
+- A request that calls an outside service before its transaction (never inside one) first
+  calls `peek` in a short block of its own: a retry of a finished request is answered from
+  the stored response instead of repeating the call. It still claims the key in its write
+  block, which settles a race between two requests that both found nothing.
 
 `purge_expired` is the worker's cleanup job.
 """
@@ -42,6 +46,8 @@ from fastapi import Header, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import (
     DateTime,
+    Row,
+    Select,
     SmallInteger,
     String,
     Table,
@@ -177,30 +183,47 @@ async def claim(session: AsyncSession, *, scope: str, request: IdempotentRequest
     if claimed_key is not None:
         session.sync_session.info.setdefault(_PENDING, set()).add((scope, request.key))
         return Claimed(scope=scope, key=request.key, stored=None)
-    existing = (
-        await session.execute(
-            select(
-                table.c.fingerprint,
-                table.c.response_status,
-                table.c.response_body,
-                table.c.response_headers,
-            ).where(table.c.scope == scope, table.c.key == request.key)
-        )
-    ).one()
+    existing = (await session.execute(_stored_row(scope, request))).one()
+    return Claimed(scope=scope, key=request.key, stored=_replay(existing, scope, request))
+
+
+async def peek(
+    session: AsyncSession, *, scope: str, request: IdempotentRequest
+) -> StoredResponse | None:
+    """The stored response for this key, or None (unused or expired); claims nothing.
+
+    The same key with a different request is 422, as in `claim`.
+    """
+    table = cast(Table, IdempotencyRecord.__table__)
+    statement = _stored_row(scope, request).where(table.c.expires_at >= func.now())
+    existing = (await session.execute(statement)).one_or_none()
+    return None if existing is None else _replay(existing, scope, request)
+
+
+def _stored_row(scope: str, request: IdempotentRequest) -> Select[tuple[str, int | None, Any, Any]]:
+    table = cast(Table, IdempotencyRecord.__table__)
+    return select(
+        table.c.fingerprint,
+        table.c.response_status,
+        table.c.response_body,
+        table.c.response_headers,
+    ).where(table.c.scope == scope, table.c.key == request.key)
+
+
+def _replay(
+    existing: Row[tuple[str, int | None, Any, Any]], scope: str, request: IdempotentRequest
+) -> StoredResponse:
+    """The stored response to replay; the same key with another request is 422."""
     if existing.fingerprint != request.fingerprint:
         logger.warning("idempotency_key_mismatch", scope=scope)
         raise AppError(ErrorCode.IDEMPOTENCY_KEY_MISMATCH)
     if existing.response_status is None:  # pragma: no cover - prevented by the commit check
         raise RuntimeError("idempotency key committed without a response")
     logger.info("idempotent_replay", scope=scope)
-    return Claimed(
-        scope=scope,
-        key=request.key,
-        stored=StoredResponse(
-            status=existing.response_status,
-            body=existing.response_body,
-            headers=existing.response_headers or {},
-        ),
+    return StoredResponse(
+        status=existing.response_status,
+        body=existing.response_body,
+        headers=existing.response_headers or {},
     )
 
 

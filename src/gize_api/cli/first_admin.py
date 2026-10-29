@@ -5,8 +5,9 @@
 Create the user in the Supabase dashboard first (Authentication → Users → Add user); its
 ID is the user's UID there. The command reads the user from Supabase's admin API (needs
 SUPABASE_SECRET_KEY), then, in one transaction, refuses if any admin exists and otherwise
-creates the user as an active admin (or promotes their staff row). Runs hold an advisory
-lock across the check and the write, so two at once cannot both succeed. Afterwards admins
+creates the user as an active admin (or promotes their staff row). It holds the lock every
+staff change takes across the check and the write, so two runs at once cannot both
+succeed, nor can a run and an admin's change in the portal interleave. Afterwards admins
 add staff in the admin portal (GZ-013).
 
 Exit codes: 0 done, 1 refused or a dependency failed (nothing changed), 2 usage or settings.
@@ -15,12 +16,10 @@ Exit codes: 0 done, 1 refused or a dependency failed (nothing changed), 2 usage 
 import argparse
 import asyncio
 import sys
-import unicodedata
 import uuid
 from collections.abc import Sequence
 from typing import Protocol
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.core.audit import record, snapshot
@@ -43,9 +42,14 @@ from gize_api.staff.models import (
     Staff,
     StaffRole,
 )
-from gize_api.staff.repository import admin_exists, get_staff, get_staff_by_email
+from gize_api.staff.repository import (
+    admin_exists,
+    get_staff,
+    get_staff_by_email,
+    lock_staff_changes,
+)
+from gize_api.staff.schemas import check_full_name
 
-FIRST_ADMIN_LOCK_ID = 0x67697A6561646D  # "gizeadm"
 LOCK_NOT_AVAILABLE = "55P03"  # the role's lock_timeout ran out
 
 
@@ -67,7 +71,7 @@ async def create_first_admin(
     # Supabase first: never hold a transaction open across an outside call.
     email = _eligible_email(await auth.get_user(user_id))
     async with sessions() as session, session.begin():
-        await session.execute(select(func.pg_advisory_xact_lock(FIRST_ADMIN_LOCK_ID)))
+        await lock_staff_changes(session)  # the lock every staff change takes
         if await admin_exists(session):
             raise FirstAdminRefusedError("an admin already exists: add staff in the admin portal")
         other = await get_staff_by_email(session, email)
@@ -118,9 +122,10 @@ def _full_name(value: str) -> str:
     name = value.strip()
     if not name or len(name) > FULL_NAME_MAX_LENGTH:
         raise argparse.ArgumentTypeError(f"must be 1 to {FULL_NAME_MAX_LENGTH} characters")
-    if any(unicodedata.category(char).startswith("C") for char in name):
-        raise argparse.ArgumentTypeError("must not contain control characters")
-    return name
+    try:
+        return check_full_name(name)  # the rule the API applies to names
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
 
 
 async def _run(settings: Settings, user_id: uuid.UUID, full_name: str) -> None:
@@ -140,7 +145,7 @@ async def _run(settings: Settings, user_id: uuid.UUID, full_name: str) -> None:
 def _database_problem(exc: Exception) -> str | None:
     """What to tell the operator about a database failure, or None if it is not one."""
     if database_sqlstate(exc) == LOCK_NOT_AVAILABLE:
-        return "another first-admin run is in progress; try again in a moment"
+        return "another staff change is in progress; try again in a moment"
     if not is_database_unavailable(exc):
         return None
     if is_database_misconfigured(exc):

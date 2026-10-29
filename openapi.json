@@ -138,6 +138,9 @@
           "IDEMPOTENCY_KEY_MISMATCH",
           "IDEMPOTENCY_IN_PROGRESS",
           "RATE_LIMITED",
+          "STAFF_EMAIL_TAKEN",
+          "AUTH_ACCOUNT_EXISTS",
+          "LAST_ACTIVE_ADMIN",
           "INTERNAL_ERROR",
           "SERVICE_UNAVAILABLE"
         ],
@@ -213,6 +216,34 @@
         "title": "Problem",
         "type": "object"
       },
+      "StaffInvite": {
+        "additionalProperties": false,
+        "description": "Who to invite. Supabase emails them a link to set a password; they are active staff\nfrom the start, and can sign in once they have accepted.",
+        "properties": {
+          "email": {
+            "maxLength": 320,
+            "pattern": "^[A-Za-z0-9.!#$%&'*+\\/=?^_`\\{\\|\\}~\\-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?)+$",
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole"
+          }
+        },
+        "required": [
+          "email",
+          "full_name",
+          "role"
+        ],
+        "title": "StaffInvite",
+        "type": "object"
+      },
       "StaffMe": {
         "additionalProperties": false,
         "description": "The signed-in staff member.",
@@ -245,6 +276,100 @@
         "title": "StaffMe",
         "type": "object"
       },
+      "StaffPage": {
+        "description": "A page of staff members (a named schema: generated clients keep the name).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StaffRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "StaffPage",
+        "type": "object"
+      },
+      "StaffRead": {
+        "additionalProperties": false,
+        "description": "A staff member as admins see them.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "maxLength": 320,
+            "title": "Email",
+            "type": "string"
+          },
+          "first_signed_in_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until their first sign-in: an invitation not yet accepted.",
+            "title": "First Signed In At"
+          },
+          "full_name": {
+            "maxLength": 200,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "id": {
+            "description": "Their Supabase user ID.",
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "description": "False: deactivated, locked out until reactivated.",
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "full_name",
+          "email",
+          "role",
+          "is_active",
+          "first_signed_in_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "StaffRead",
+        "type": "object"
+      },
       "StaffRole": {
         "enum": [
           "admin",
@@ -252,6 +377,22 @@
         ],
         "title": "StaffRole",
         "type": "string"
+      },
+      "StaffUpdate": {
+        "additionalProperties": false,
+        "description": "What to change: leave a field out to keep it, and send at least one. Deactivating\nsomeone locks them out on their next request; `is_active: true` reactivates them.",
+        "minProperties": 1,
+        "properties": {
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole"
+          }
+        },
+        "title": "StaffUpdate",
+        "type": "object"
       },
       "ValidationProblem": {
         "properties": {
@@ -534,6 +675,373 @@
         ]
       }
     },
+    "/v1/staff": {
+      "get": {
+        "description": "Every staff member, deactivated ones included unless filtered out.",
+        "operationId": "staff_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "role",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/StaffRole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Role"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_active",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Active"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid Cursor, Validation Failed",
+            "x-error-codes": [
+              "INVALID_CURSOR",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Staff members, newest first (admins only)",
+        "tags": [
+          "staff"
+        ]
+      },
+      "post": {
+        "description": "Supabase emails them a link to set a password. They are active staff in `role` at\nonce, and can sign in when they have accepted. Requires `Idempotency-Key`. Each admin\nmay send 20 invites an hour (refusals and replays do not count).\n\n- 409 STAFF_EMAIL_TAKEN: a staff member, active or not, has this email (reactivate them).\n- 409 AUTH_ACCOUNT_EXISTS: the email already has a sign-in account. An operator deletes\n  that Supabase user if it should not exist, then the invite can be sent (README).\n- 503: Supabase could not send the invite; retrying with the same key is safe.",
+        "operationId": "staff_invite",
+        "parameters": [
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffInvite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffRead"
+                }
+              }
+            },
+            "description": "Invited",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Present on a retry answered with the stored response.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "description": "The new member: `/v1/staff/{id}`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Email Already Used By Staff, Request In Progress, Sign-In Account Already Exists",
+            "x-error-codes": [
+              "AUTH_ACCOUNT_EXISTS",
+              "IDEMPOTENCY_IN_PROGRESS",
+              "STAFF_EMAIL_TAKEN"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Idempotency Key Mismatch, Validation Failed",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Invite a staff member (admins only)",
+        "tags": [
+          "staff"
+        ]
+      }
+    },
     "/v1/staff/me": {
       "get": {
         "description": "Your ID, name, email and role. The admin portal calls it after sign-in.",
@@ -621,6 +1129,299 @@
           }
         ],
         "summary": "The signed-in staff member",
+        "tags": [
+          "staff"
+        ]
+      }
+    },
+    "/v1/staff/{staff_id}": {
+      "get": {
+        "operationId": "staff_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "staff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Staff Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "One staff member (admins only)",
+        "tags": [
+          "staff"
+        ]
+      },
+      "patch": {
+        "description": "Promote, demote, deactivate or reactivate. No Idempotency-Key: setting a value that\nis already there changes nothing.\n\n- 409 LAST_ACTIVE_ADMIN: the change would leave no active admin.",
+        "operationId": "staff_update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "staff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Staff Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Last Active Admin",
+            "x-error-codes": [
+              "LAST_ACTIVE_ADMIN"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Change a staff member's role or status (admins only)",
         "tags": [
           "staff"
         ]

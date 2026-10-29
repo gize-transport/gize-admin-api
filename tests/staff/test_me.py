@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -9,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.db import get_session
 from gize_api.main import GizeAPI, create_app
-from gize_api.staff.models import StaffRole
+from gize_api.staff.models import Staff, StaffRole
 from tests.factories import StaffFactory
 from tests.support import SettingsFactory
 from tests.tokens import bearer, make_token
@@ -92,3 +93,35 @@ def test_me_is_in_the_contract(make_settings: SettingsFactory) -> None:
     me = schema["components"]["schemas"]["StaffMe"]
     assert set(me["properties"]) == {"id", "full_name", "email", "role"}
     assert me["additionalProperties"] is False
+
+
+async def test_the_first_request_records_the_first_sign_in(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """GZ-013: an invited member who has signed in has accepted their invitation."""
+    async with db_session.begin():
+        staff = await StaffFactory().create(db_session)
+        staff_id = staff.id
+        assert staff.first_signed_in_at is None
+    assert (await api.get(ME, headers=bearer(make_token(sub=str(staff_id))))).status_code == 200
+    async with db_session.begin():
+        assert (await db_session.get_one(Staff, staff_id)).first_signed_in_at is not None
+
+
+async def test_the_first_sign_in_is_kept(api: httpx.AsyncClient, db_session: AsyncSession) -> None:
+    first = datetime(2026, 10, 1, 8, 0, tzinfo=UTC)
+    async with db_session.begin():
+        staff_id = (await StaffFactory().create(db_session, first_signed_in_at=first)).id
+    assert (await api.get(ME, headers=bearer(make_token(sub=str(staff_id))))).status_code == 200
+    async with db_session.begin():
+        assert (await db_session.get_one(Staff, staff_id)).first_signed_in_at == first
+
+
+async def test_a_refused_request_records_no_sign_in(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    async with db_session.begin():
+        staff_id = (await StaffFactory().create(db_session, is_active=False)).id
+    assert (await api.get(ME, headers=bearer(make_token(sub=str(staff_id))))).status_code == 403
+    async with db_session.begin():
+        assert (await db_session.get_one(Staff, staff_id)).first_signed_in_at is None
