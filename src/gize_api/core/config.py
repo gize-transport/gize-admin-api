@@ -5,6 +5,7 @@ refuses to start without them. Errors name the setting and the problem, never it
 a malformed URL can carry a password.
 """
 
+import ipaddress
 import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -129,18 +130,23 @@ class Settings(BaseSettings):
     @field_validator("supabase_url")
     @classmethod
     def _supabase_url_shape(cls, value: str) -> str:
+        """Rebuilt from its host: the token issuer must match it character for character."""
         parts = _safe_split(value)
+        host = (parts.hostname or "").rstrip(".") if parts is not None else ""
         if (
             parts is None
             or parts.scheme != "https"
-            or not parts.hostname
+            or not host
+            or not host.isascii()
+            or _is_ip_literal(host)
+            or parts.port is not None
             or parts.username is not None
             or parts.path not in {"", "/"}
-            or parts.query
-            or parts.fragment
+            or "?" in value
+            or "#" in value
         ):
             raise ValueError("must be the project URL, e.g. https://<project-ref>.supabase.co")
-        return value.rstrip("/")
+        return f"https://{host}"
 
     @field_validator("sentry_dsn")
     @classmethod
@@ -312,6 +318,14 @@ def _safe_split(url: str) -> SplitResult | None:
     except ValueError:
         return None
     return parts
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _is_bare_origin(origin: str) -> bool:

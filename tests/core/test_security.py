@@ -5,6 +5,7 @@ key set is served by a fake fetcher, or through the real outbound client on a mo
 transport.
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -66,18 +67,26 @@ def _token(key: Any = EC_KEY, kid: str = "ec-1", alg: str = "ES256", **claims: A
 
 
 class FakeKeys:
-    """Serves a key set and counts fetches; can fail on demand."""
+    """Serves a key set and counts fetches; can fail, slowly if asked, like a real outage."""
 
-    def __init__(self, key_set: dict[str, Any] | None = None) -> None:
+    def __init__(self, key_set: Any = None, delay: float = 0.0) -> None:  # noqa: ANN401
         self.key_set = key_set if key_set is not None else KEY_SET
         self.fetches = 0
         self.failing = False
+        self.delay = delay
 
     async def __call__(self) -> Any:  # noqa: ANN401 - JSON
         self.fetches += 1
+        if self.delay:
+            await asyncio.sleep(self.delay)  # a slow fetch is the behaviour under test
         if self.failing:
             raise KeysUnavailableError("down")
         return self.key_set
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sentry_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("gize_api.core.security._reported_at", {})
 
 
 def _verifier(keys: FakeKeys | None = None) -> TokenVerifier:
@@ -110,6 +119,9 @@ async def test_a_valid_rs256_token() -> None:
         (lambda: _token(sub="not-a-uuid"), "claims"),
         (lambda: _token(role="service_role"), "claims"),
         (lambda: _token(role="anon"), "claims"),
+        (lambda: _token(is_anonymous=True), "claims"),  # an anonymous sign-in is no one
+        (lambda: _token(exp=10**12), "claims"),  # past what a date can hold
+        (lambda: _token(exp=10**300), "claims"),
         (lambda: _token(RSA_KEY, "ec-1", "RS256"), "algorithm"),  # alg differs from the key's
         (
             lambda: jwt.encode(
@@ -226,6 +238,11 @@ async def test_no_keys_at_all_is_unavailable_not_a_bad_token() -> None:
         {"keys": [{"kty": "oct", "k": "c2VjcmV0", "kid": "ec-1", "alg": "HS256"}]},
         {"not": "a key set"},
         ["not", "an", "object"],
+        {"keys": [{**KEY_SET["keys"][0], "use": "enc"}]},  # an encryption key
+        {"keys": [{**KEY_SET["keys"][0], "key_ops": ["encrypt"]}]},
+        {"keys": [{**KEY_SET["keys"][0], "d": "cHJpdmF0ZQ"}]},  # private material: refused
+        {"keys": ["not a key", 42]},
+        {"keys": [{"kty": "EC", "crv": "P-256", "x": "!!", "y": "!!", "kid": "x", "alg": "ES256"}]},
     ],
 )
 async def test_unusable_key_sets_are_unavailable(key_set: Any) -> None:  # noqa: ANN401
@@ -440,3 +457,67 @@ async def test_a_failing_verifier_close_does_not_stop_shutdown(
     async with app.router.lifespan_context(app):
         pass
     assert '"token_verifier_close_failed"' in capsys.readouterr().err
+
+
+async def test_an_outage_never_queues_requests_behind_failed_fetches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stale keys are served at once while one refresh runs in the background (review:
+    each request used to wait for its own failed fetch, N requests taking N times 10 s)."""
+    keys = FakeKeys()
+    verifier = _verifier(keys)
+    await verifier.verify(_token())
+    monkeypatch.setattr("gize_api.core.security.KEYS_TTL_SECONDS", 0.0)  # now stale
+    monkeypatch.setattr("gize_api.core.security.REFRESH_MIN_INTERVAL_SECONDS", 0.0)
+    keys.failing, keys.delay = True, 1.0
+    started = time.monotonic()
+    results = await asyncio.gather(*(verifier.verify(_token()) for _ in range(10)))
+    assert time.monotonic() - started < 0.5
+    assert {result.subject for result in results} == {uuid.UUID(int=7)}
+    assert keys.fetches == 2  # the first fetch, plus one shared background refresh
+    await verifier.aclose()  # cancels the refresh still running
+
+
+async def test_a_cold_start_during_an_outage_makes_one_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = FakeKeys(delay=0.5)
+    keys.failing = True
+    verifier = _verifier(keys)
+    started = time.monotonic()
+    outcomes = await asyncio.gather(
+        *(verifier.verify(_token()) for _ in range(10)), return_exceptions=True
+    )
+    assert time.monotonic() - started < 1.0  # one shared fetch, not ten in a row
+    assert all(isinstance(outcome, KeysUnavailableError) for outcome in outcomes)
+    assert keys.fetches == 1
+    started = time.monotonic()
+    with pytest.raises(KeysUnavailableError):  # and no new fetch inside the interval
+        await verifier.verify(_token())
+    assert time.monotonic() - started < 0.1
+    assert keys.fetches == 1
+
+
+async def test_a_duplicated_key_id_keeps_the_first_key() -> None:
+    impostor = _jwk(OTHER_EC_KEY, "ec-1", "ES256")
+    verifier = _verifier(FakeKeys({"keys": [*KEY_SET["keys"], impostor]}))
+    assert (await verifier.verify(_token())).subject == uuid.UUID(int=7)
+    with pytest.raises(InvalidTokenError):
+        await verifier.verify(_token(OTHER_EC_KEY))
+
+
+async def test_expired_and_missing_tokens_do_not_count_as_attacks(
+    client: tuple[httpx.AsyncClient, FakeKeys], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale tab in a shared office must not get every colleague a 429 (review)."""
+    from gize_api.core.ratelimit import Limit, Policy
+
+    monkeypatch.setattr(
+        "gize_api.core.security.TOKEN_FAILURES",
+        Policy("test_token_failures", (Limit("2/minute", "ip"),), fail_open=True),
+    )
+    http, _ = client
+    expired = _bearer(_token(exp=int(time.time()) - 600))
+    statuses = [(await http.get("/_test/me", headers=expired)).status_code for _ in range(4)]
+    statuses += [(await http.get("/_test/me")).status_code for _ in range(4)]
+    assert statuses == [401] * 8

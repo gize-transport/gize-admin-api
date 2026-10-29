@@ -490,6 +490,13 @@ def test_supabase_url_gives_the_token_issuer_and_key_set(clean_env: pytest.Monke
         "https://abcdefghijklmnopqrst.supabase.co/auth/v1",  # the project URL, not a path
         "https://abcdefghijklmnopqrst.supabase.co?x=1",
         "abcdefghijklmnopqrst.supabase.co",
+        "https://abcdefghijklmnopqrst.supabase.co/?",  # an empty query is still a query
+        "https://abcdefghijklmnopqrst.supabase.co/#",
+        "https://abcdefghijklmnopqrst.supabase.co:443",  # the issuer never names a port
+        "https://abcdefghijklmnopqrst.supabase.co:8443",
+        "https://[::1]",
+        "https://203.0.113.5",
+        "https://bücher.example",
     ],
 )
 def test_supabase_url_must_be_the_project_url(clean_env: pytest.MonkeyPatch, value: str) -> None:
@@ -497,3 +504,15 @@ def test_supabase_url_must_be_the_project_url(clean_env: pytest.MonkeyPatch, val
     with pytest.raises(ConfigError, match="supabase_url") as exc_info:
         load_settings()
     assert "pw" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["https://ABCDEFGHIJKLMNOPQRST.supabase.co", "https://abcdefghijklmnopqrst.supabase.co."],
+)
+def test_supabase_url_is_normalised_to_the_issuer_supabase_writes(
+    clean_env: pytest.MonkeyPatch, value: str
+) -> None:
+    """A different spelling of the host would make every token's issuer mismatch."""
+    _set(clean_env, SUPABASE_URL=value)
+    assert load_settings().supabase_url == "https://abcdefghijklmnopqrst.supabase.co"

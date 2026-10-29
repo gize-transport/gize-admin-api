@@ -157,14 +157,19 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
 
 Staff sign in to Supabase Auth in the admin portal, which sends `Authorization: Bearer <access token>`. `core/security.py` verifies it, and `verified_token` is the FastAPI dependency (GZ-011's `current_staff` builds on it).
 
-- **Asymmetric signing keys only** (ES256 or RS256). In the Supabase dashboard (Project Settings → JWT Keys) the project must use signing keys, not the legacy shared JWT secret: the API never holds a secret that could create tokens. A project still on the shared secret publishes no public keys, and every request gets 503.
+- **Asymmetric signing keys only** (ES256 or RS256). In the Supabase dashboard (Project Settings → JWT Keys) the project must use signing keys, not the legacy shared JWT secret: the API never holds a secret that could create tokens. A project still on the shared secret issues HS256 tokens, which are all rejected (`401`, reason `algorithm`).
 - **Checked:**
   - the signature against the project's key set (`/auth/v1/.well-known/jwks.json`);
   - `exp` and `nbf` with 30 s of clock difference;
   - `aud = authenticated` and `iss = <project>/auth/v1`;
-  - a UUID `sub`, and `role = authenticated` (no anon or service-role tokens).
-- **Keys** are fetched through the guarded outbound client and cached for 10 minutes. An unknown key ID triggers at most one refresh every 30 s. While Supabase is unreachable, cached keys keep working for up to 24 hours; without any, requests get `503` with `Retry-After`.
-- **Rejected tokens** get `401 UNAUTHENTICATED` with `WWW-Authenticate: Bearer`. Each is logged as a `token_rejected` security event (the reason only, never the token; Sentry at most once a minute per reason and process). After 30 rejections a minute from one IP, that IP gets `429`. Valid tokens are never counted.
+  - a UUID `sub`, `role = authenticated` (no anon or service-role tokens), and not an anonymous sign-in.
+  - Not checked: `aal` (MFA). A token stays valid after sign-out until it expires (1 h by default); GZ-011's active-staff check on every request is what revokes access.
+- **Keys** are fetched through the guarded outbound client and cached for 10 minutes. Only public signature keys count.
+  - Refreshes happen at most every 30 s, one at a time, shared by concurrent requests. Forged key IDs can't flood Supabase.
+  - During an outage, cached keys are served at once while one refresh runs in the background, for up to 24 hours. Without any, requests get `503` with `Retry-After` at once.
+  - **Revoking a key urgently:** a key revoked in Supabase stays trusted until the next successful refresh (within 10 minutes, or 24 hours if Supabase is unreachable). Restarting the API instances drops it immediately.
+- **Rejected tokens** get `401 UNAUTHENTICATED` with `WWW-Authenticate: Bearer`. Each is logged as a `token_rejected` security event (the reason only, never the token; Sentry at most once a minute per reason and process).
+- **Throttle:** after 30 *forged-looking* rejections a minute from one IP (bad signature, unknown key, wrong audience or issuer, malformed), that IP gets `429`. Missing or expired tokens (a stale tab) and valid tokens are never counted, so one stale tab can't lock out an office.
 
 ## Health checks
 

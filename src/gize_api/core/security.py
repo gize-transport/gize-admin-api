@@ -5,19 +5,28 @@
   algorithm that does not match the key are refused before the signature is checked.
 - **Checked:** signature, `exp` and `nbf` (with LEEWAY_SECONDS of clock difference),
   `aud = authenticated`, `iss = <project>/auth/v1`, a UUID `sub`, `role = authenticated`
-  (no anon or service_role tokens), and the presence of `exp`, `iat`, `sub`, `aud`, `iss`.
-- **Keys** come through the guarded outbound client and are cached for KEYS_TTL_SECONDS.
-  An unknown key ID triggers one refresh, at most every REFRESH_MIN_INTERVAL_SECONDS, so
-  forged key IDs cannot flood Supabase. While Supabase is unreachable, cached keys keep
-  working for up to KEYS_MAX_STALE_SECONDS; with none, requests get 503.
+  (no anon or service_role tokens), not an anonymous sign-in, and the presence of `exp`,
+  `iat`, `sub`, `aud`, `iss`. Not checked: `aal` (MFA). A token stays valid after sign-out
+  until it expires; GZ-011's active-staff check on every request is the real revocation.
+- **Keys** are the key set's signature keys (`use` absent or `sig`, no private material;
+  for a duplicated key ID the first wins). They come through the guarded outbound client
+  and are cached for KEYS_TTL_SECONDS. Refreshes happen at most every
+  REFRESH_MIN_INTERVAL_SECONDS, one at a time, shared by concurrent requests: forged key
+  IDs cannot flood Supabase, and an outage never queues requests behind failed fetches.
+  Stale keys are served at once while a refresh runs in the background; they keep working
+  for up to KEYS_MAX_STALE_SECONDS. With none, requests get 503 at once. A revoked key
+  stays trusted until the next successful refresh (restart the instances to drop it).
 - **Rejected tokens:** 401 UNAUTHENTICATED with `WWW-Authenticate: Bearer`, a security
-  event (the reason only, never the token; Sentry once a minute per reason and process),
-  and a count against TOKEN_FAILURES per client IP: a flood of bad tokens gets 429.
+  event (the reason only, never the token; Sentry once a minute per reason and process).
+  Rejections that look like forgery (not a missing or expired token) count against
+  TOKEN_FAILURES per client IP: a flood of forged tokens gets 429.
 - Who the caller is *in Gize* (staff row, role) is GZ-011's `current_staff`, built on
   `verified_token`.
 """
 
 import asyncio
+import contextlib
+import contextvars
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -49,6 +58,10 @@ SENTRY_INTERVAL_SECONDS = 60.0
 UNAVAILABLE_RETRY_AFTER_SECONDS = "5"
 # Counted only when a token is rejected: valid callers never use it up.
 TOKEN_FAILURES = Policy("token_failures", (Limit("30/minute", "ip"),), fail_open=True)
+# Missing, expired or not-yet-valid tokens are ordinary (a stale tab), never counted.
+SUSPICIOUS_REASONS = frozenset(
+    {"malformed", "algorithm", "unknown_key", "signature", "audience", "issuer", "claims"}
+)
 
 KeyFetcher = Callable[[], Awaitable[Any]]
 
@@ -90,7 +103,7 @@ class TokenVerifier:
         self._keys: dict[str, jwt.PyJWK] = {}
         self._fetched_at: float | None = None
         self._attempted_at: float | None = None
-        self._lock = asyncio.Lock()
+        self._refreshing: asyncio.Task[None] | None = None
 
     @classmethod
     def for_settings(
@@ -119,6 +132,10 @@ class TokenVerifier:
         return cls(issuer=settings.supabase_auth_issuer, fetch_keys=fetch, close=client.aclose)
 
     async def aclose(self) -> None:
+        if self._refreshing is not None and not self._refreshing.done():
+            self._refreshing.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._refreshing
         if self._close is not None:
             await self._close()
 
@@ -159,20 +176,21 @@ class TokenVerifier:
             raise InvalidTokenError("signature") from None
         except jwt.MissingRequiredClaimError:
             raise InvalidTokenError("claims") from None
-        except jwt.InvalidTokenError:  # e.g. a non-numeric `iat`
+        except jwt.PyJWTError:  # e.g. a non-numeric `iat`, or a key PyJWT cannot use
             raise InvalidTokenError("malformed") from None
         return _verified(claims)
 
     async def _key(self, kid: str) -> jwt.PyJWK:
         if kid in self._keys and self._fresh():
             return self._keys[kid]
-        async with self._lock:
-            if not (kid in self._keys and self._fresh()) and self._may_refresh(kid):
-                await self._refresh()
-            if self._fetched_at is None or (
-                time.monotonic() - self._fetched_at > KEYS_MAX_STALE_SECONDS
-            ):
-                raise KeysUnavailableError("no usable signing keys")
+        if self._due():
+            refresh = self._start_refresh()
+            # Wait only when the answer depends on it: no usable keys yet, or a key ID
+            # we have never seen (perhaps just rotated in). Otherwise serve what we have.
+            if not self._usable() or kid not in self._keys:
+                await asyncio.shield(refresh)
+        if not self._usable():
+            raise KeysUnavailableError("no usable signing keys")
         if kid not in self._keys:
             raise InvalidTokenError("unknown_key")
         return self._keys[kid]
@@ -182,17 +200,27 @@ class TokenVerifier:
             time.monotonic() - self._fetched_at < KEYS_TTL_SECONDS
         )
 
-    def _may_refresh(self, kid: str) -> bool:
-        """Due when stale; for an unknown key ID, at most once per interval."""
-        if not self._fresh():
-            return True
-        return self._attempted_at is None or (
-            kid not in self._keys
-            and time.monotonic() - self._attempted_at >= REFRESH_MIN_INTERVAL_SECONDS
+    def _usable(self) -> bool:
+        return self._fetched_at is not None and (
+            time.monotonic() - self._fetched_at <= KEYS_MAX_STALE_SECONDS
         )
 
+    def _due(self) -> bool:
+        """A refresh is running (join it) or the last attempt is old enough to try again."""
+        if self._refreshing is not None and not self._refreshing.done():
+            return True
+        return self._attempted_at is None or (
+            time.monotonic() - self._attempted_at >= REFRESH_MIN_INTERVAL_SECONDS
+        )
+
+    def _start_refresh(self) -> "asyncio.Task[None]":
+        if self._refreshing is None or self._refreshing.done():
+            self._attempted_at = time.monotonic()
+            # A clean context: the fetch outlives the request that started it.
+            self._refreshing = asyncio.create_task(self._refresh(), context=contextvars.Context())
+        return self._refreshing
+
     async def _refresh(self) -> None:
-        self._attempted_at = time.monotonic()
         try:
             keys = _usable_keys(await self._fetch_keys())
         except KeysUnavailableError as exc:
@@ -202,35 +230,56 @@ class TokenVerifier:
 
 
 def _usable_keys(key_set: Any) -> dict[str, jwt.PyJWK]:  # noqa: ANN401 - JSON
-    """The set's signature keys with a key ID and a supported algorithm."""
-    if not isinstance(key_set, Mapping):
-        raise KeysUnavailableError("the key set is not an object")
-    try:
-        parsed = jwt.PyJWKSet.from_dict(dict(key_set))
-    except (jwt.PyJWKSetError, jwt.InvalidKeyError, ValueError, TypeError):
-        raise KeysUnavailableError("the key set holds no usable key") from None
-    keys = {
-        key.key_id: key
-        for key in parsed.keys
-        if key.key_id and key.algorithm_name in SUPPORTED_ALGORITHMS
-    }
+    """The set's public signature keys with a key ID and a supported algorithm."""
+    members = key_set.get("keys") if isinstance(key_set, Mapping) else None
+    if not isinstance(members, list):
+        raise KeysUnavailableError("the key set is not a key set")
+    keys: dict[str, jwt.PyJWK] = {}
+    for member in members:
+        if not _signature_key(member):
+            continue
+        try:
+            key = jwt.PyJWK(member)
+        except (jwt.PyJWTError, ValueError, TypeError, KeyError):
+            continue
+        if not key.key_id or key.algorithm_name not in SUPPORTED_ALGORITHMS:
+            continue
+        if key.key_id in keys:
+            logger.warning("signing_key_id_duplicated")  # the first one stays trusted
+            continue
+        keys[key.key_id] = key
     if not keys:  # e.g. a project still on the shared secret publishes no public keys
         raise KeysUnavailableError("the key set holds no asymmetric signing key")
     return keys
 
 
+def _signature_key(member: Any) -> bool:  # noqa: ANN401 - JSON
+    if not isinstance(member, Mapping) or "d" in member:  # private material: never trusted
+        return False
+    if member.get("use") not in (None, "sig"):
+        return False
+    operations = member.get("key_ops")
+    return operations is None or (isinstance(operations, list) and "verify" in operations)
+
+
 def _verified(claims: Mapping[str, Any]) -> VerifiedToken:
     if claims.get("role") != AUDIENCE:  # an anon or service_role token
+        raise InvalidTokenError("claims")
+    if claims.get("is_anonymous") is True:  # an anonymous sign-in is no one
         raise InvalidTokenError("claims")
     try:
         subject = uuid.UUID(str(claims["sub"]))
     except ValueError:
         raise InvalidTokenError("claims") from None
     session_id = claims.get("session_id")
+    try:
+        expires_at = datetime.fromtimestamp(int(claims["exp"]), UTC)
+    except (OverflowError, ValueError, OSError):
+        raise InvalidTokenError("claims") from None
     return VerifiedToken(
         subject=subject,
         session_id=session_id if isinstance(session_id, str) else None,
-        expires_at=datetime.fromtimestamp(int(claims["exp"]), UTC),
+        expires_at=expires_at,
     )
 
 
@@ -255,9 +304,10 @@ async def verified_token(
 
 
 async def _rejected(request: Request, reason: str) -> None:
-    limiter: RateLimiter = request.app.state.rate_limiter
-    settings: Settings = request.app.state.settings
-    await limiter.check(TOKEN_FAILURES, ip=client_ip(request, settings.client_ip_header))
+    if reason in SUSPICIOUS_REASONS:
+        limiter: RateLimiter = request.app.state.rate_limiter
+        settings: Settings = request.app.state.settings
+        await limiter.check(TOKEN_FAILURES, ip=client_ip(request, settings.client_ip_header))
     log_security_event(
         "token_rejected",
         sentry=RateLimiter._due(_reported_at, reason, SENTRY_INTERVAL_SECONDS),
