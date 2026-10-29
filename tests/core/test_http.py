@@ -48,7 +48,7 @@ def _client(
     return OutboundClient(
         allowed_hosts={HOST},
         resolver=_resolver(*(addresses or (PUBLIC_IP,))),
-        transport=httpx.MockTransport(handler),
+        transport_factory=lambda: httpx.MockTransport(handler),
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -107,6 +107,12 @@ async def test_destinations_off_the_allowlist_are_blocked(url: str) -> None:
         "fc00::1",
         "::ffff:127.0.0.1",  # IPv4-mapped loopback
         "224.0.0.1",
+        "64:ff9b::7f00:1",  # NAT64 of 127.0.0.1
+        "64:ff9b::a9fe:a9fe",  # NAT64 of the cloud metadata address
+        "64:ff9b:1::1",  # local-use NAT64
+        "::7f00:1",  # IPv4-compatible (deprecated)
+        "fec0::1",  # site-local (deprecated)
+        "2002:7f00:1::1",  # 6to4 of 127.0.0.1
     ],
 )
 async def test_private_and_special_addresses_are_blocked(address: str) -> None:
@@ -128,7 +134,11 @@ async def test_ipv6_public_address_is_bracketed() -> None:
         seen.append(request)
         return httpx.Response(204)
 
-    async with _client(handler, "2606:2800:220:1:248:1893:25c8:1946") as client:
+    async with OutboundClient(
+        allowed_hosts={f"{HOST}:8443"},
+        resolver=_resolver("2606:2800:220:1:248:1893:25c8:1946"),
+        transport_factory=lambda: httpx.MockTransport(handler),
+    ) as client:
         await client.request("GET", f"https://{HOST}:8443/x")
     assert seen[0].url.host == "2606:2800:220:1:248:1893:25c8:1946"
     assert seen[0].url.port == 8443
@@ -161,7 +171,9 @@ async def test_the_whole_call_is_bounded(monkeypatch: pytest.MonkeyPatch) -> Non
         return httpx.Response(200)  # pragma: no cover - never reached
 
     async with OutboundClient(
-        allowed_hosts={HOST}, resolver=_resolver(PUBLIC_IP), transport=httpx.MockTransport(slow)
+        allowed_hosts={HOST},
+        resolver=_resolver(PUBLIC_IP),
+        transport_factory=lambda: httpx.MockTransport(slow),
     ) as client:
         loop = asyncio.get_running_loop()
         started = loop.time()
@@ -233,7 +245,7 @@ async def test_resolution_failure_is_unavailable() -> None:
         raise OSError("no such host")
 
     async with OutboundClient(
-        allowed_hosts={HOST}, resolver=failing, transport=httpx.MockTransport(_ok)
+        allowed_hosts={HOST}, resolver=failing, transport_factory=lambda: httpx.MockTransport(_ok)
     ) as client:
         with pytest.raises(OutboundUnavailableError):
             await client.request("GET", f"https://{HOST}/x")
@@ -338,3 +350,70 @@ async def test_the_default_resolver_returns_addresses() -> None:
     from gize_api.core.http import _resolve
 
     assert "127.0.0.1" in await _resolve("127.0.0.1", 443)
+
+
+async def test_nat64_of_a_public_address_is_allowed() -> None:
+    async with _client(_ok, "64:ff9b::5db8:d822") as client:  # 93.184.216.34
+        assert (await client.request("GET", f"https://{HOST}/x")).status == 200
+
+
+async def test_only_port_443_unless_the_allowlist_names_the_port() -> None:
+    async with _client(_ok) as client:
+        with pytest.raises(BlockedDestinationError):
+            await client.request("GET", f"https://{HOST}:8443/x")
+
+
+@pytest.mark.parametrize(
+    "name", ["Host", "host", "Content-Length", "transfer-encoding", "Connection", "TE", "Upgrade"]
+)
+async def test_callers_cannot_set_framing_headers(name: str) -> None:
+    """Two Host headers or a false length would desynchronise a kept-alive connection."""
+    async with _client(_ok) as client:
+        with pytest.raises(ValueError, match="set by the client"):
+            await client.request("GET", f"https://{HOST}/x", headers={name: "1"})
+
+
+async def test_each_host_has_its_own_connections() -> None:
+    """Connections go to an address; two hosts on one address (a CDN) must not share one,
+    or the second host's certificate would never be checked."""
+    made: list[int] = []
+
+    def factory() -> httpx.AsyncBaseTransport:
+        made.append(1)
+        return httpx.MockTransport(_ok)
+
+    async with OutboundClient(
+        allowed_hosts={HOST, "api.example.com"},
+        resolver=_resolver(PUBLIC_IP),
+        transport_factory=factory,
+    ) as client:
+        await client.request("GET", f"https://{HOST}/a")
+        await client.request("GET", f"https://{HOST}/b")
+        await client.request("GET", "https://api.example.com/c")
+    assert len(made) == 2
+
+
+async def test_responses_are_requested_and_read_uncompressed() -> None:
+    """A compressed response could expand far past the cap before it is counted."""
+    seen: list[httpx.Request] = []
+
+    def compressed(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=b"x", headers={"Content-Encoding": "gzip"})
+
+    async with _client(compressed) as client:
+        with pytest.raises(OutboundUnavailableError):
+            await client.request("GET", f"https://{HOST}/x")
+    assert seen[0].headers["Accept-Encoding"] == "identity"
+
+
+async def test_a_blocked_call_is_logged_once(capsys: pytest.CaptureFixture[str]) -> None:
+    from gize_api.core.logging import configure_logging
+
+    configure_logging("INFO")
+    async with _client(_ok, "10.0.0.5") as client:
+        with pytest.raises(BlockedDestinationError):
+            await client.request("GET", f"https://{HOST}/x")
+    lines = [line for line in capsys.readouterr().err.splitlines() if "outbound_request" in line]
+    assert len(lines) == 1
+    assert "outbound_request_blocked" in lines[0]

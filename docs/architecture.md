@@ -61,7 +61,8 @@ src/gize_api/
     idempotency.py        # Idempotency-Key handling (Postgres table)
     http.py               # outbound HTTP client with timeouts + host allowlist (SSRF guard)
     pagination.py         # cursor encode/decode, Page[T] schema
-    jobs.py               # enqueue background jobs (after commit, de-duplicated by job ID)
+    jobs.py               # enqueue background jobs (after commit, de-duplicated by job ID, JSON)
+    redis_options.py      # timeouts and TLS name checks for every Redis client
     audit.py              # audit log writer used by services
   health/router.py        # /health/live, /health/ready
   staff/  routes/  riders/  waitlists/  drivers/  verification/   # domain slices

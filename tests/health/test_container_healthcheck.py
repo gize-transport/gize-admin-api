@@ -1,5 +1,6 @@
 """GZ-007: the image's HEALTHCHECK probes liveness, and only in the API container."""
 
+import asyncio
 import http.server
 import threading
 from collections.abc import Iterator
@@ -99,11 +100,41 @@ def test_unhealthy_when_live_fails_or_nothing_listens(
     assert main(_cmdline(tmp_path, ("uvicorn",)), url=blackhole_url, timeout=0.2) == 1
 
 
-def test_other_containers_are_healthy_without_probing(tmp_path: Path) -> None:
-    assert main(_cmdline(tmp_path, ("arq",)), url="http://127.0.0.1:1/never") == 0
+def test_a_worker_container_is_never_probed_over_http(
+    tmp_path: Path, server: tuple[str, type[_Handler]]
+) -> None:
+    """It serves no HTTP: only its health key in Redis counts (see the worker test below)."""
+    url, _ = server  # an answering /health/live must not make a silent worker healthy
+    assert main(_cmdline(tmp_path, ("arq",)), url=url, redis_url="redis://127.0.0.1:1/0") == 1
 
 
 def test_dockerfile_declares_the_healthcheck() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert "HEALTHCHECK" in dockerfile
     assert '"python", "-m", "gize_api.healthcheck"' in dockerfile
+
+
+async def test_a_worker_is_healthy_only_while_it_reports_in(
+    tmp_path: Path, test_redis_url: str
+) -> None:
+    """The worker writes Arq's health key every 10 s; a hung worker stops writing it."""
+    from redis.asyncio import Redis
+
+    from gize_api.healthcheck import WORKER_HEALTH_KEY
+
+    worker = _cmdline(tmp_path, ("python", "-m", "gize_api.worker"))
+    redis = Redis.from_url(test_redis_url)
+    try:
+        await redis.delete(WORKER_HEALTH_KEY)
+        assert await asyncio.to_thread(main, worker, redis_url=test_redis_url) == 1
+        await redis.set(WORKER_HEALTH_KEY, b"j_complete=0", px=5000)
+        assert await asyncio.to_thread(main, worker, redis_url=test_redis_url) == 0
+    finally:
+        await redis.delete(WORKER_HEALTH_KEY)
+        await redis.aclose()
+    assert main(worker, redis_url="redis://127.0.0.1:1/0") == 1  # Redis unreachable
+
+
+def test_a_migration_container_is_healthy_without_probing(tmp_path: Path) -> None:
+    migrate = _cmdline(tmp_path, ("python3", "/opt/venv/bin/alembic", "upgrade", "head"))
+    assert main(migrate, url="http://127.0.0.1:1/never", redis_url="redis://127.0.0.1:1/0") == 0

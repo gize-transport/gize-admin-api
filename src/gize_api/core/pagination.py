@@ -16,7 +16,7 @@ import binascii
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Query
@@ -82,10 +82,11 @@ def decode_cursor(token: str) -> Cursor:
         created_at_text, id_text = json.loads(raw.decode())
         created_at = datetime.fromisoformat(created_at_text)
         cursor_id = uuid.UUID(id_text)
-    except (binascii.Error, ValueError, TypeError, UnicodeDecodeError):
+        if not token or created_at.tzinfo is None:
+            raise ValueError("no time zone")
+        created_at = created_at.astimezone(UTC)  # out-of-range instants fail here, not in SQL
+    except (binascii.Error, ValueError, TypeError, UnicodeDecodeError, OverflowError):
         raise AppError(ErrorCode.INVALID_CURSOR) from None
-    if not token or created_at.tzinfo is None:
-        raise AppError(ErrorCode.INVALID_CURSOR)
     return Cursor(created_at=created_at, id=cursor_id)
 
 
@@ -98,8 +99,11 @@ async def paginate[M](
     id: InstrumentedAttribute[uuid.UUID],
     newest_first: bool = False,
 ) -> Slice[M]:
-    """One page of `statement` (filters already applied), fetching one row extra to learn
-    whether another page exists. Call inside the session's transaction block."""
+    """One page of `statement`, fetching one row extra to learn whether another page exists.
+
+    `statement` selects one entity with its filters applied and no ORDER BY (the order is
+    set here). Call inside the session's transaction block.
+    """
     after = params.after
     if after is not None:
         position = tuple_(created_at, id)

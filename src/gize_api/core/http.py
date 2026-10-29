@@ -1,15 +1,19 @@
 """The only way to call outside services (SMS gateway, Supabase): guarded and bounded.
 
 - **Where:** https only, to hosts on the caller's allowlist (each integration passes its
-  own, from its settings). No credentials in URLs, no redirects followed, no proxies or
-  netrc from the environment.
+  own, from its settings), on port 443 unless the entry names another (`host:port`). No
+  credentials in URLs, no redirects followed, no proxies or netrc from the environment.
+  Callers cannot set framing headers (Host, Content-Length, Transfer-Encoding, ...).
 - **Which address:** the host is resolved here and every address must be public (no
   private, loopback, link-local, shared, reserved or multicast ranges, IPv4-mapped forms
   included). The connection goes to the address that was checked, with the real name for
   TLS (certificate checked against it) and the Host header, so DNS cannot swap in a private
-  address between the check and the connection.
+  address between the check and the connection. Each host has its own connection pool:
+  connections are keyed by address, and two hosts sharing one (a CDN) must each have their
+  certificate checked. NAT64 and 6to4 addresses are judged by the IPv4 address they carry.
 - **How long:** 3 s to connect, 10 s for the whole call including retries; responses are
-  capped at 1 MB.
+  capped at 1 MB, requested and read uncompressed (a compressed body could expand far past
+  the cap before it was counted).
 - **Retries:** only for methods that are safe to repeat (never POST: an SMS must not be
   sent twice), on connection errors and 502/503/504, at most 3 attempts, with exponential
   backoff and jitter.
@@ -47,6 +51,28 @@ MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 0.2
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 RETRY_STATUSES = frozenset({502, 503, 504})
+# Set by this client (or httpx) only: a caller's value could duplicate or contradict them.
+RESERVED_HEADERS = frozenset(
+    {
+        "host",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+        "te",
+        "trailer",
+        "upgrade",
+        "proxy-authorization",
+        "proxy-connection",
+        "accept-encoding",
+    }
+)
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_NEVER_PUBLIC_V6 = (
+    ipaddress.ip_network("::/96"),  # IPv4-compatible (deprecated)
+    ipaddress.ip_network("64:ff9b:1::/48"),  # local-use NAT64
+    ipaddress.ip_network("fec0::/10"),  # site-local (deprecated)
+)
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 
@@ -111,17 +137,13 @@ class OutboundClient:
         allowed_hosts: Collection[str],
         telemetry: Telemetry | None = None,
         resolver: Resolver | None = None,
-        transport: httpx.AsyncBaseTransport | None = None,
+        transport_factory: Callable[[], httpx.AsyncBaseTransport] | None = None,
     ) -> None:
-        self._allowed_hosts = frozenset(host.lower() for host in allowed_hosts)
+        self._allowed = frozenset(_allowed_destination(entry) for entry in allowed_hosts)
         self._telemetry = telemetry
         self._resolve = resolver or _resolve
-        self._client = httpx.AsyncClient(
-            transport=transport or httpx.AsyncHTTPTransport(retries=0),
-            timeout=httpx.Timeout(TOTAL_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS),
-            follow_redirects=False,
-            trust_env=False,
-        )
+        self._new_transport = transport_factory or (lambda: httpx.AsyncHTTPTransport(retries=0))
+        self._clients: dict[tuple[str, int], httpx.AsyncClient] = {}
 
     async def __aenter__(self) -> Self:
         return self
@@ -135,7 +157,21 @@ class OutboundClient:
         await self.aclose()
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        clients, self._clients = list(self._clients.values()), {}
+        for client in clients:
+            await client.aclose()
+
+    def _client_for(self, target: "_Target") -> httpx.AsyncClient:
+        """One client, so one connection pool, per destination host."""
+        key = (target.host, target.port)
+        if key not in self._clients:
+            self._clients[key] = httpx.AsyncClient(
+                transport=self._new_transport(),
+                timeout=httpx.Timeout(TOTAL_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS),
+                follow_redirects=False,
+                trust_env=False,
+            )
+        return self._clients[key]
 
     async def request(
         self,
@@ -148,6 +184,9 @@ class OutboundClient:
         if database_transaction_open():
             raise OpenTransactionError("commit before calling an outside service, or enqueue a job")
         method = method.upper()
+        reserved = sorted({name.lower() for name in headers or {}} & RESERVED_HEADERS)
+        if reserved:
+            raise ValueError(f"headers set by the client, not callers: {', '.join(reserved)}")
         target = self._target(url)
         started = time.perf_counter()
         span = self._start_span(method, target.host)
@@ -178,7 +217,7 @@ class OutboundClient:
             parts.scheme != "https"
             or parts.username is not None
             or parts.password is not None
-            or host not in self._allowed_hosts
+            or (host, port or 443) not in self._allowed
         ):
             self._blocked(host, "not_allowed")
         return _Target(
@@ -225,18 +264,22 @@ class OutboundClient:
         request_headers["Host"] = (
             f"{target.host}:{target.port}" if target.explicit_port else target.host
         )
+        request_headers["Accept-Encoding"] = "identity"
         try:
-            async with self._client.stream(
+            async with self._client_for(target).stream(
                 method,
                 urlunsplit(("https", netloc, target.path, target.query, "")),
                 json=body,
                 headers=request_headers,
                 extensions={"sni_hostname": target.host},
             ) as response:
+                if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                    raise OutboundUnavailableError("the service sent a compressed response")
                 declared = response.headers.get("Content-Length", "")
                 if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
                     raise ResponseTooLargeError("response too large")
                 content = bytearray()
+                # Uncompressed (checked above), so these bytes are exactly what arrived.
                 async for chunk in response.aiter_bytes():
                     content += chunk
                     if len(content) > MAX_RESPONSE_BYTES:
@@ -288,6 +331,7 @@ class OutboundClient:
             outcome["http.response.status_code"] = status
         if error is not None:
             outcome["error.type"] = type(error).__name__
+        if error is not None and not isinstance(error, BlockedDestinationError):  # logged
             logger.warning(
                 "outbound_request_failed", host=host, method=method, error_type=type(error).__name__
             )
@@ -301,10 +345,23 @@ class OutboundClient:
 
 
 def is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """Globally routable and unicast; an IPv4-mapped IPv6 address is judged as IPv4."""
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
+    """Globally routable and unicast. IPv6 forms that carry an IPv4 address (mapped, NAT64,
+    6to4) are judged by that address; deprecated and local-use forms are never public."""
+    if isinstance(address, ipaddress.IPv6Address):
+        if any(address in network for network in _NEVER_PUBLIC_V6):
+            return False
+        embedded = address.ipv4_mapped or address.sixtofour
+        if address in _NAT64:
+            embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        if embedded is not None:
+            address = embedded
     return address.is_global and not address.is_multicast
+
+
+def _allowed_destination(entry: str) -> tuple[str, int]:
+    """`host` (port 443) or `host:port`, lower-cased."""
+    host, separator, port = entry.lower().rpartition(":")
+    return (host, int(port)) if separator and port.isdigit() else (entry.lower(), 443)
 
 
 async def _resolve(host: str, port: int) -> list[str]:

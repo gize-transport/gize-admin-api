@@ -8,7 +8,6 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 import structlog
-from arq.connections import ArqRedis
 from fastapi import FastAPI
 from fastapi.telemetry import TelemetryConfig
 from starlette.middleware.cors import CORSMiddleware
@@ -17,6 +16,7 @@ from starlette.types import ASGIApp
 from gize_api.core.config import Environment, Settings, load_settings
 from gize_api.core.db import create_engine, create_sessionmaker
 from gize_api.core.errors import HandledErrorGuard, LastResortGuard, install_exception_handlers
+from gize_api.core.jobs import create_job_redis
 from gize_api.core.logging import AccessLogMiddleware, configure_logging
 from gize_api.core.middleware import (
     BodySizeLimitMiddleware,
@@ -122,10 +122,9 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
         # A startup failure is logged here as type and frames; uvicorn's own report of it
         # (formatted traceback text) is suppressed by the logging filter.
         try:
-            redis = ArqRedis.from_url(  # a Redis client that can also enqueue jobs
+            redis = create_job_redis(  # a Redis client that can also enqueue jobs
                 settings.redis_url.get_secret_value(),
-                socket_timeout=REDIS_TIMEOUT_SECONDS,
-                socket_connect_timeout=REDIS_TIMEOUT_SECONDS,
+                timeout=REDIS_TIMEOUT_SECONDS,
                 max_connections=REDIS_MAX_CONNECTIONS,
                 client_name=REDIS_CLIENT_NAME,
             )

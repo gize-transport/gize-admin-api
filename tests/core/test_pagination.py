@@ -48,6 +48,8 @@ def _token(payload: object) -> str:
         _token(["yesterday", str(uuid.uuid4())]),
         _token(["2026-10-28T06:30:00+00:00", str(uuid.uuid4()), "extra"]),
         base64.urlsafe_b64encode(b"\xff\xfe").decode(),
+        _token(["0001-01-01T00:00:00+14:00", str(uuid.uuid4())]),  # outside timestamptz
+        _token(["9999-12-31T23:59:59-14:00", str(uuid.uuid4())]),
         "",
     ],
 )

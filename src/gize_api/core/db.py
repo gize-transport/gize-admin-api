@@ -20,9 +20,10 @@ Connect directly or through Supabase's session-mode pooler (port 5432). Transact
 connection, which transaction mode shares between clients.
 """
 
-import contextvars
+import asyncio
 import ssl
 import traceback
+import weakref
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import FrameType
@@ -103,9 +104,11 @@ class GizeSession(Session):
         return super().get(*args, **kwargs)
 
 
-# Open GizeSession transactions in the current task's context, for the outbound HTTP guard.
-_open_transactions: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "gize_open_transactions", default=0
+# Open GizeSession transactions per asyncio task, for the outbound HTTP and enqueue guards.
+# Per task, not per context: a task started inside a block copies the context but is not
+# holding the transaction. Raw engine connections are not tracked: app code uses sessions.
+_open_transactions: "weakref.WeakKeyDictionary[asyncio.Task[Any], int]" = (
+    weakref.WeakKeyDictionary()
 )
 
 
@@ -114,20 +117,34 @@ class OpenTransactionError(RuntimeError):
 
 
 def database_transaction_open() -> bool:
-    """True inside `async with session.begin():` (any GizeSession) in the current context."""
-    return _open_transactions.get() > 0
+    """True inside `async with session.begin():` (any GizeSession) in the current task."""
+    task = _current_task()
+    return task is not None and _open_transactions.get(task, 0) > 0
+
+
+def _current_task() -> "asyncio.Task[Any] | None":
+    try:
+        return asyncio.current_task()
+    except RuntimeError:  # no running event loop (sync code)
+        return None
 
 
 @event.listens_for(GizeSession, "after_transaction_create")
 def _transaction_opened(session: Session, transaction: SessionTransaction) -> None:
-    if transaction.parent is None:
-        _open_transactions.set(_open_transactions.get() + 1)
+    task = _current_task()
+    if transaction.parent is None and task is not None:
+        _open_transactions[task] = _open_transactions.get(task, 0) + 1
 
 
 @event.listens_for(GizeSession, "after_transaction_end")
 def _transaction_closed(session: Session, transaction: SessionTransaction) -> None:
-    if transaction.parent is None:
-        _open_transactions.set(max(0, _open_transactions.get() - 1))
+    task = _current_task()
+    if transaction.parent is None and task is not None and task in _open_transactions:
+        remaining = _open_transactions[task] - 1
+        if remaining > 0:
+            _open_transactions[task] = remaining
+        else:
+            del _open_transactions[task]
 
 
 @event.listens_for(GizeSession, "do_orm_execute")

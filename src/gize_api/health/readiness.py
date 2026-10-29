@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from gize_api.core.config import Settings
 from gize_api.core.db import create_engine
+from gize_api.core.redis_options import connection_options
 from gize_api.core.telemetry import Telemetry
 
 READINESS_TIMEOUT_SECONDS = 1.0
@@ -54,12 +55,15 @@ class Readiness:
     def for_settings(cls, settings: Settings, telemetry: Telemetry | None) -> "Readiness":
         """With one Postgres and one Redis connection of its own (each instance's budget)."""
         engine = create_engine(settings, pool_size=1, max_overflow=0)
+        url = settings.redis_url.get_secret_value()
         redis = Redis.from_url(
-            settings.redis_url.get_secret_value(),
-            socket_timeout=READINESS_TIMEOUT_SECONDS,
-            socket_connect_timeout=READINESS_TIMEOUT_SECONDS,
-            max_connections=1,
-            client_name=REDIS_CLIENT_NAME,
+            url,
+            **connection_options(
+                url,
+                timeout=READINESS_TIMEOUT_SECONDS,
+                max_connections=1,
+                client_name=REDIS_CLIENT_NAME,
+            ),
         )
         return cls(engine, redis, telemetry)
 

@@ -30,6 +30,7 @@ def upgrade() -> None:
         sa.Column("fingerprint", sa.String(length=64), nullable=False),
         sa.Column("response_status", sa.SmallInteger(), nullable=True),
         sa.Column("response_body", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("response_headers", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

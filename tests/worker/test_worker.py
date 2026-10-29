@@ -12,12 +12,12 @@ from typing import Any
 
 import pytest
 from arq import Retry
-from arq.connections import ArqRedis, RedisSettings
+from arq.connections import ArqRedis
 from arq.worker import Worker
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.errors import AppError, ErrorCode
-from gize_api.core.jobs import enqueue
+from gize_api.core.jobs import create_job_redis, enqueue
 from gize_api.worker import (
     SHUTDOWN_WAIT_SECONDS,
     job,
@@ -27,6 +27,8 @@ from gize_api.worker import (
 from tests.support import DatabaseUrls, SettingsFactory
 
 calls: list[str] = []
+# Set by `slow` once it runs: tests wait on it, not on time. Made per test (event loop).
+slow_started: asyncio.Event
 
 
 @job
@@ -48,6 +50,7 @@ async def broken(ctx: dict[str, Any]) -> None:
 
 @job
 async def slow(ctx: dict[str, Any], seconds: float) -> None:
+    slow_started.set()
     await asyncio.sleep(seconds)
     calls.append(f"slow {seconds}")
 
@@ -55,7 +58,9 @@ async def slow(ctx: dict[str, Any], seconds: float) -> None:
 @pytest.fixture
 async def queue(test_redis_url: str) -> AsyncIterator[str]:
     name = f"gize-test-{uuid.uuid4()}"
+    global slow_started
     calls.clear()
+    slow_started = asyncio.Event()
     yield name
     pool = ArqRedis.from_url(test_redis_url)
     try:
@@ -89,7 +94,7 @@ def _worker(
 
 
 async def _pool(test_redis_url: str, queue: str) -> ArqRedis:
-    pool: ArqRedis = ArqRedis.from_url(test_redis_url)
+    pool = create_job_redis(test_redis_url)  # the API's own client, JSON job format
     pool.default_queue_name = queue
     return pool
 
@@ -176,7 +181,7 @@ async def test_shutdown_lets_a_short_job_finish(
         make_settings, test_redis_url, database, queue, burst=False, job_completion_wait=2
     )
     run = asyncio.create_task(worker.async_run())
-    await asyncio.sleep(0.15)  # the job is running
+    await asyncio.wait_for(slow_started.wait(), 10)  # the job is running (never hang)
     worker.handle_sig_wait_for_completion(signal.SIGTERM)
     with pytest.raises(asyncio.CancelledError):
         await run
@@ -194,7 +199,7 @@ async def test_shutdown_requeues_a_job_that_cannot_finish_in_time(
             make_settings, test_redis_url, database, queue, burst=False, job_completion_wait=0.2
         )
         run = asyncio.create_task(worker.async_run())
-        await asyncio.sleep(0.15)
+        await asyncio.wait_for(slow_started.wait(), 10)
         worker.handle_sig_wait_for_completion(signal.SIGTERM)
         with pytest.raises(asyncio.CancelledError):
             await run
@@ -210,16 +215,14 @@ async def test_shutdown_requeues_a_job_that_cannot_finish_in_time(
 
 def test_worker_settings(make_settings: SettingsFactory) -> None:
     settings = worker_settings(make_settings(redis_url="rediss://:secret@cache.example.com:6380/2"))
-    redis = settings["redis_settings"]
-    assert isinstance(redis, RedisSettings)
-    assert (redis.host, redis.port, redis.database, redis.ssl) == (
-        "cache.example.com",
-        6380,
-        2,
-        True,
-    )
-    assert redis.conn_timeout == 1
-    assert settings["job_completion_wait"] == SHUTDOWN_WAIT_SECONDS < 30  # inside the grace period
+    options = settings["redis_pool"].connection_pool.connection_kwargs
+    assert (options["host"], options["port"], options["db"]) == ("cache.example.com", 6380, 2)
+    assert options["ssl_check_hostname"] is True  # redis-py 5 would not check by default
+    assert options["socket_timeout"] == options["socket_connect_timeout"] == 1
+    # Waiting for jobs, re-queueing, closing the database and flushing telemetry (5 s)
+    # all fit in the 30 s between SIGTERM and SIGKILL.
+    assert settings["job_completion_wait"] == SHUTDOWN_WAIT_SECONDS == 20
+    assert settings["health_check_interval"] == 10
     assert settings["max_tries"] == 3
     assert settings["job_timeout"] == 60
     assert [cron.name for cron in settings["cron_jobs"]] == ["cron:purge_idempotency_keys"]
@@ -314,3 +317,60 @@ async def test_jobs_are_measured_and_telemetry_is_shut_down(
     assert points == [{"job": "record_call", "outcome": "succeeded"}]
     ctx["engine"] = create_engine(make_settings(database_url=database.app))
     await shutdown(ctx)
+
+
+async def test_jobs_travel_as_json_never_pickle(test_redis_url: str, queue: str) -> None:
+    """Pickle would let anyone who can write to Redis run code in the worker."""
+    pool = await _pool(test_redis_url, queue)
+    try:
+        await enqueue(pool, "record_call", "x", job_id="json-1")
+        raw = await pool.get("arq:job:json-1")
+    finally:
+        await pool.aclose()
+    assert raw is not None
+    assert json.loads(raw)["a"] == ["x"]
+
+
+async def test_a_failed_job_leaves_no_message_text_in_redis_and_reaches_sentry(
+    make_settings: SettingsFactory,
+    test_redis_url: str,
+    database: DatabaseUrls,
+    queue: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reported: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "gize_api.worker.report_exception",
+        lambda exc, **kwargs: reported.append((type(exc).__name__, kwargs["route"])),
+    )
+    pool = await _pool(test_redis_url, queue)
+    try:
+        await enqueue(pool, "broken", job_id="broken-2")
+        worker = _worker(make_settings, test_redis_url, database, queue)
+        try:
+            await worker.async_run()
+        finally:
+            await worker.close()
+        stored = await pool.get("arq:result:broken-2")
+    finally:
+        await pool.aclose()
+    assert stored is not None
+    assert b"0911223344" not in stored
+    assert json.loads(stored)["s"] is False
+    assert reported == [("ValueError", "job:broken")]
+
+
+def test_the_api_job_client_checks_tls_names() -> None:
+    secure = create_job_redis("rediss://:pw@cache.example.com:6380/0")
+    plain = create_job_redis("redis://127.0.0.1:6379/0")
+    assert secure.connection_pool.connection_kwargs["ssl_check_hostname"] is True
+    assert "ssl_check_hostname" not in plain.connection_pool.connection_kwargs
+
+
+def test_job_data_is_json_with_ids_only() -> None:
+    from gize_api.core.jobs import deserialize_job, serialize_job
+
+    rider = uuid.uuid4()
+    assert deserialize_job(serialize_job({"a": [rider]})) == {"a": [str(rider)]}
+    with pytest.raises(TypeError, match="JSON"):
+        serialize_job({"a": [object()]})

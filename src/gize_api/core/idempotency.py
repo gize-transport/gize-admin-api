@@ -16,7 +16,12 @@ user action. The service claims the key **in the same transaction as its busines
   response; if the first is still running after the lock timeout, it gets 409.
 - The same key with a different body or endpoint is 422; an expired key (24 h) is free.
 - A claim that is never recorded makes the commit fail (a bug caught before it is stored).
-- Keys are scoped per caller (`scope`), so two callers' keys never meet.
+  So a failure must raise (an AppError for a client error): it rolls the claim back.
+- `claim` comes first in the block: a replay returns from the block, which commits, and
+  earlier writes would be committed with it. Writing before the claim raises.
+- Keys are scoped per caller (`scope`), so two callers' keys never meet. The fingerprint
+  covers the method, the endpoint, the actual path (its IDs), the query and the body.
+- A replay returns the recorded status, body and headers (Location, Content-Location, ETag).
 
 `purge_expired` is the worker's cleanup job.
 """
@@ -24,9 +29,11 @@ user action. The service claims the key **in the same transaction as its busines
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Annotated, Any, NewType, cast
+from urllib.parse import parse_qsl, urlencode
 
 import structlog
 from fastapi import Header, Request
@@ -48,13 +55,14 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import Mapped, Session, mapped_column
+from sqlalchemy.orm import Mapped, Session, SessionTransaction, mapped_column
 
 from gize_api.core.db import GizeSession, database_sqlstate
 from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.models import Base
 
 IDEMPOTENCY_TTL = timedelta(hours=24)
+REPLAYED_HEADERS = frozenset({"location", "content-location", "etag"})
 MAX_STORED_BODY_BYTES = 64 * 1024
 IN_PROGRESS_RETRY_AFTER_SECONDS = "1"
 PURGE_BATCH_SIZE = 1000
@@ -78,6 +86,7 @@ class IdempotencyRecord(Base):
     # NULL while claimed; set by `record` before the claiming transaction commits.
     response_status: Mapped[int | None] = mapped_column(SmallInteger)
     response_body: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    response_headers: Mapped[dict[str, str] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
@@ -94,6 +103,7 @@ class IdempotentRequest:
 class StoredResponse:
     status: int
     body: Any
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -110,15 +120,25 @@ async def idempotent_request(
     """FastAPI dependency for side-effecting POSTs: the key (required) and the fingerprint."""
     key = _parse_key(idempotency_key)
     body = await request.body()
-    route = getattr(request.scope.get("route"), "path", request.url.path)
+    route = getattr(request.scope.get("route"), "path", "")
+    query = urlencode(sorted(parse_qsl(request.url.query, keep_blank_values=True)))
     digest = hashlib.sha256()
-    for part in (request.method.encode(), route.encode(), _canonical(body)):
+    for part in (
+        request.method.encode(),
+        route.encode(),
+        request.url.path.encode(),  # the IDs in the path: another resource, another request
+        query.encode(),
+        _canonical(body),
+    ):
         digest.update(len(part).to_bytes(8, "big") + part)
     return IdempotentRequest(key=key, fingerprint=digest.hexdigest())
 
 
 async def claim(session: AsyncSession, *, scope: str, request: IdempotentRequest) -> Claimed:
     """Claim the key inside the caller's transaction, or return the response to replay."""
+    sync_session = session.sync_session
+    if sync_session.new or sync_session.dirty or sync_session.deleted:
+        raise RuntimeError("claim must come first in the transaction, before any write")
     table = cast(Table, IdempotencyRecord.__table__)
     statement = (
         pg_insert(IdempotencyRecord)
@@ -134,6 +154,7 @@ async def claim(session: AsyncSession, *, scope: str, request: IdempotentRequest
                 "fingerprint": request.fingerprint,
                 "response_status": None,
                 "response_body": None,
+                "response_headers": None,
                 "created_at": func.now(),
                 "expires_at": func.now() + IDEMPOTENCY_TTL,
             },
@@ -156,9 +177,12 @@ async def claim(session: AsyncSession, *, scope: str, request: IdempotentRequest
         return Claimed(scope=scope, key=request.key, stored=None)
     existing = (
         await session.execute(
-            select(table.c.fingerprint, table.c.response_status, table.c.response_body).where(
-                table.c.scope == scope, table.c.key == request.key
-            )
+            select(
+                table.c.fingerprint,
+                table.c.response_status,
+                table.c.response_body,
+                table.c.response_headers,
+            ).where(table.c.scope == scope, table.c.key == request.key)
         )
     ).one()
     if existing.fingerprint != request.fingerprint:
@@ -170,7 +194,11 @@ async def claim(session: AsyncSession, *, scope: str, request: IdempotentRequest
     return Claimed(
         scope=scope,
         key=request.key,
-        stored=StoredResponse(status=existing.response_status, body=existing.response_body),
+        stored=StoredResponse(
+            status=existing.response_status,
+            body=existing.response_body,
+            headers=existing.response_headers or {},
+        ),
     )
 
 
@@ -180,23 +208,29 @@ async def record(
     *,
     status: int,
     body: Any,  # noqa: ANN401 - JSON
+    headers: Mapping[str, str] | None = None,
 ) -> None:
     """Store the successful response for replays, before the transaction commits."""
     if not 200 <= status < 300:
         raise ValueError("only 2xx responses are recorded; failures roll back instead")
+    headers = dict(headers or {})
+    if {name.lower() for name in headers} - REPLAYED_HEADERS:
+        raise ValueError(f"only these headers are replayed: {sorted(REPLAYED_HEADERS)}")
     if len(json.dumps(body, separators=(",", ":"))) > MAX_STORED_BODY_BYTES:
         raise ValueError("response too large to store for replays")
     table = cast(Table, IdempotencyRecord.__table__)
-    await session.execute(
+    result = await session.execute(
         update(table)
         .where(table.c.scope == claimed.scope, table.c.key == claimed.key)
-        .values(response_status=status, response_body=body)
+        .values(response_status=status, response_body=body, response_headers=headers or None)
     )
+    if cast(CursorResult[Any], result).rowcount != 1:
+        raise RuntimeError("no claim to record: call claim() first, in the same transaction")
     session.sync_session.info.get(_PENDING, set()).discard((claimed.scope, claimed.key))
 
 
 def replay_response(stored: StoredResponse) -> Response:
-    headers = {"Idempotent-Replayed": "true"}
+    headers = {**stored.headers, "Idempotent-Replayed": "true"}
     if stored.status == 204:
         return Response(status_code=204, headers=headers)
     return JSONResponse(stored.body, status_code=stored.status, headers=headers)
@@ -231,14 +265,19 @@ async def purge_expired(
 
 @event.listens_for(GizeSession, "before_commit")
 def _refuse_unrecorded_claims(session: Session) -> None:
+    # Only the real commit counts: a savepoint between claim and record is fine.
+    if session.in_nested_transaction():
+        return
     if session.info.get(_PENDING):
         session.info[_PENDING].clear()
         raise RuntimeError("an idempotency claim was not recorded before commit")
 
 
-@event.listens_for(GizeSession, "after_rollback")
-def _forget_claims(session: Session) -> None:
-    session.info.pop(_PENDING, None)
+@event.listens_for(GizeSession, "after_transaction_end")
+def _forget_claims(session: Session, transaction: SessionTransaction) -> None:
+    # Only when the whole transaction ends: a rolled-back savepoint must not hide a claim.
+    if transaction.parent is None:
+        session.info.pop(_PENDING, None)
 
 
 def _parse_key(value: str | None) -> IdempotencyKey:
