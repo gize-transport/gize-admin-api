@@ -29,16 +29,17 @@ uv run pytest                         # tests + coverage gate
 | Install / update the environment | `uv sync` |
 | Start / stop local services | `docker compose up -d --wait` / `docker compose down` |
 | Run the API locally | `uv run --env-file .env uvicorn --factory gize_api.main:create_app --reload` |
+| Run the background worker locally | `uv run --env-file .env python -m gize_api.worker` |
 | Tests with coverage (85% overall) | `uv run pytest` |
 | Services coverage gate (90%), after tests | `uv run python -m scripts.check_service_coverage` |
 | Lint, format check, types | `uv run ruff check . && uv run ruff format --check . && uv run mypy` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
 | Coverage must not drop, after tests | `uv run python -m scripts.check_coverage_baseline` (`--update` raises the baseline) |
 | Apply / undo migrations | `uv run --env-file .env alembic upgrade head` / `… alembic downgrade -1` |
-| New migration | `uv run --env-file .env alembic revision --autogenerate --rev-id 0002 -m "short name"` |
+| New migration | `uv run --env-file .env alembic revision --autogenerate --rev-id 0003 -m "short name"` |
 | Dependency audit | `uv export --frozen --all-groups --no-emit-project --format requirements-txt \| uv run pip-audit --strict --disable-pip --require-hashes -r /dev/stdin` |
 
-Commands for the background worker and the OpenAPI export are added by the tickets that introduce them (GZ-008, GZ-015).
+The OpenAPI export command arrives with GZ-015.
 
 ## Configuration
 
@@ -47,7 +48,7 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
-| `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL. |
+| `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL (with `rediss`, the server's certificate and host name are checked). |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
 | `SENTRY_DSN` | production, secret | Sentry errors and security events; off when unset. |
@@ -113,10 +114,32 @@ docker build -t gize-admin-api .
 docker run --rm -p 8000:8000 -e APP_ENV=local \
   -e REDIS_URL=redis://host.docker.internal:6379/0 gize-admin-api   # api (default)
 # On Linux, also pass --add-host=host.docker.internal:host-gateway
-docker run --rm gize-admin-api worker                # Arq worker (from GZ-008)
+docker run --rm -e APP_ENV=local -e DATABASE_URL=… \
+  -e REDIS_URL=redis://host.docker.internal:6379/0 gize-admin-api worker   # background worker
 ```
 
+The worker runs as `python -m gize_api.worker`, never Arq's own CLI, which would replace the JSON logging with plain text that prints job arguments.
+- On SIGTERM it stops taking jobs, gives running ones 20 s and re-queues the rest; closing the database and flushing telemetry still fit in the 30 s grace period.
+- A failed job is logged (type and frames), sent to Sentry, and stored in Redis only as `JobFailedError`, never its message.
+- Jobs travel as JSON, never pickle (with pickle, anyone able to write to Redis could run code in the worker).
+
 The container runs as an unprivileged user (uid 10001). The API finishes in-flight requests for up to 30 s after SIGTERM, so give the container a stop timeout of at least 35 s on whichever host runs it (Docker's default is 10 s: `docker stop -t 35`, or `stop_grace_period: 35s` in Compose).
+
+## Building blocks for features
+
+- **Lists:** `core/pagination.py`. `?limit=&cursor=` (limit 1–100, default 25), `{items, next_cursor}`; ordered by `(created_at, id)`, so list tables need an index on those two columns. A tampered cursor is `422 INVALID_CURSOR`.
+- **Side-effecting POSTs:** `core/idempotency.py`. The `Idempotency-Key` header (a UUID) is required (`428 IDEMPOTENCY_KEY_REQUIRED`).
+  - The service calls `claim` as the **first** statement of its transaction block and `record` before the block ends. A retry replays the stored status, body and `Location`/`ETag` headers, with `Idempotent-Replayed: true`.
+  - A failure must **raise** (an `AppError` for a client error): the rollback frees the key. A claim left unrecorded makes the commit fail.
+  - The same key with a different body, path ID or query is `422 IDEMPOTENCY_KEY_MISMATCH`. While the first request is still running it is `409 IDEMPOTENCY_IN_PROGRESS`.
+  - Keys live 24 h; the worker deletes expired ones hourly.
+- **Calling outside services:** `core/http.py` `OutboundClient`, never `httpx` directly.
+  - https only, to the hosts the integration allows (port 443 unless the entry says `host:port`), at public addresses only (checked, then connected to). NAT64 and 6to4 addresses are judged by the IPv4 address they carry.
+  - Each host gets its own connection pool, so every host's certificate is checked.
+  - Callers cannot set framing headers.
+  - The whole call takes at most 10 s; responses are requested uncompressed and capped at 1 MB; only safe methods are retried; no trace headers are sent.
+- **Background jobs:** `core/jobs.py` `enqueue(pool, "job_name", *ids, job_id=…)`, after the transaction commits. A repeated job ID is refused for 24 h. Jobs take IDs, never personal data.
+- **Never** call out or enqueue inside `async with session.begin():`: both raise `OpenTransactionError` (tracked per task, for sessions; raw engine connections are not app code).
 
 ## Health checks
 
@@ -134,7 +157,10 @@ Use `/health/live` to restart a stuck instance and `/health/ready` to route traf
 - An outage is logged at ERROR as `dependency_unavailable` (with `dependency` and the error type) when it starts and once a minute while it lasts, and `dependency_recovered` when it ends. Every failed check is counted in `gize.dependency.unavailable`; alert on it.
 - Successful probes are left out of the access log and traces, and counted in `gize.health.probes` (by endpoint and status).
 
-The image declares a Docker `HEALTHCHECK` on `/health/live` (every 10 s, 3 retries, 20 s start period). It reports healthy without probing only when it finds a worker or migration process in the container; otherwise it probes, including under an init process (`docker run --init`, ECS).
+The image declares a Docker `HEALTHCHECK` (every 10 s, 3 retries, 20 s start period). It tells the containers apart by their processes, also under an init process (`docker run --init`, ECS):
+- **API:** probes `/health/live`.
+- **Worker:** checks the health key this worker renews in Redis every 10 s (one key per replica, named after its host name), so a hung worker becomes unhealthy whatever its replicas do.
+- **Migration:** healthy.
 
 ## Continuous integration
 

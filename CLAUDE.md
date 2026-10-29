@@ -49,7 +49,7 @@ Ask before adding any dependency not listed here.
 - `uv run --env-file .env uvicorn --factory gize_api.main:create_app --reload` – run locally
 - `uv run pytest` – tests (must pass, coverage gate in `pyproject.toml`)
 - `uv run ruff check . && uv run ruff format --check . && uv run mypy src` – must pass
-- `uv run arq gize_api.worker.WorkerSettings` – background worker
+- `uv run --env-file .env python -m gize_api.worker` – background worker (not Arq's CLI: it replaces our JSON logging)
 - `uv run python scripts/export_openapi.py` – regenerate `openapi.json` (commit it with any API change)
 
 ## Working style

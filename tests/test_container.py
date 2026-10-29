@@ -27,3 +27,9 @@ def test_proxy_headers_and_server_header_off() -> None:
 def test_migrate_command_runs_alembic_as_the_release_step() -> None:
     assert "migrate)" in ENTRYPOINT
     assert "exec alembic upgrade head" in ENTRYPOINT
+
+
+def test_worker_uses_our_runner_not_arqs_cli() -> None:
+    """Arq's CLI would replace the JSON logging with plain text that prints job arguments."""
+    assert "exec python -m gize_api.worker" in ENTRYPOINT
+    assert "exec arq " not in ENTRYPOINT

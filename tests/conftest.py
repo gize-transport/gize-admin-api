@@ -12,11 +12,12 @@ from typing import Any
 import asyncpg
 import pytest
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.core.bootstrap import bootstrap
 from gize_api.core.config import Settings
-from gize_api.core.db import GizeSession, create_engine, get_session
+from gize_api.core.db import GizeSession, create_engine, create_sessionmaker, get_session
+from gize_api.core.rls import row_level_security_statements
 from gize_api.main import GizeAPI, create_app
 from tests.support import (
     SETTINGS_ENV_VARS,
@@ -215,3 +216,51 @@ def app_with_db_session(make_settings: SettingsFactory, db_session: AsyncSession
 
     app.dependency_overrides[get_session] = override
     return app
+
+
+@pytest.fixture
+async def committed_sessionmaker(
+    database: DatabaseUrls, make_settings: SettingsFactory
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Sessions that really commit, for tests of concurrent requests on two connections.
+
+    Every table in schema gize except the migration table is emptied afterwards (by the
+    migrator: the app role cannot TRUNCATE).
+    """
+    engine = create_engine(make_settings(database_url=database.app))
+    try:
+        yield create_sessionmaker(engine)
+    finally:
+        await engine.dispose()
+        migrator = await asyncpg.connect(database.migrator, timeout=3)
+        try:
+            tables = await migrator.fetch(
+                "SELECT format('%I.%I', schemaname, tablename) AS name FROM pg_tables"
+                " WHERE schemaname = 'gize' AND tablename <> 'alembic_version'"
+            )
+            if tables:
+                names = ", ".join(row["name"] for row in tables)
+                await migrator.execute(f"TRUNCATE {names}")  # names quoted by format('%I')
+        finally:
+            await migrator.close()
+
+
+@pytest.fixture
+async def widgets_table(database: DatabaseUrls) -> AsyncIterator[None]:
+    """The table for the test-only Widget model (tests/db/widgets.py)."""
+    conn = await asyncpg.connect(database.migrator, timeout=3)
+    try:
+        await conn.execute(
+            "CREATE TABLE gize.test_widgets ("
+            " id uuid PRIMARY KEY DEFAULT gen_random_uuid(),"
+            " label varchar(50) NOT NULL,"
+            " created_at timestamptz NOT NULL DEFAULT now(),"
+            " updated_at timestamptz NOT NULL DEFAULT now(),"
+            " deleted_at timestamptz)"
+        )
+        for statement in row_level_security_statements("test_widgets"):
+            await conn.execute(statement)
+        yield
+    finally:
+        await conn.execute("DROP TABLE IF EXISTS gize.test_widgets")
+        await conn.close()

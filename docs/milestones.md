@@ -53,13 +53,13 @@ Status: done · Depends on: GZ-003
 - Review follow-ups done here (owner-approved): `DATABASE_SSL_ROOT_CERT` with `ssl=verify-full` required in production; `DATABASE_POOL_SIZE`/`DATABASE_MAX_OVERFLOW` (5/5) and a documented connection budget; session-mode pooler only; bootstrap drift checks; a separate compose test server.
 
 ### GZ-007 · Health endpoints
-Status: in review · Depends on: GZ-006
+Status: done · Depends on: GZ-006
 - `/health/live` (no dependencies) and `/health/ready` (Postgres within its timeout; Redis checked, logged and alerted on, but never fails readiness: see the Health rule in `engineering-standards.md`).
 - Settle the session pattern for handlers and dependencies (from GZ-006 review): a dependency that reads (e.g. auth) autobegins a transaction, after which a service's `session.begin()` raises. Decide one rule (e.g. services use `session.begin()` only on a fresh session, or dependencies read in their own short transaction) and test it with `app_with_db_session`.
 - Acceptance: ready returns 503 with Postgres stopped; with Redis stopped, ready stays 200 and Redis being down is logged and counted; live is 200 in both cases; no versions or internals exposed. (Changed from "ready returns 503 with Redis stopped" by owner decision at planning: a shared Redis outage must not take the whole API offline.)
 
 ### GZ-008 · Shared building blocks
-Status: todo · Depends on: GZ-006
+Status: in review · Depends on: GZ-006
 - Cursor pagination (`Page[T]`, encode/decode, max 100, stable order).
 - Idempotency: `idempotency_keys` table, dependency for POST handlers, conflict on same key + different body, Arq cleanup job (24 h).
 - `core/http.py` outbound client: timeouts, host allowlist, private-IP blocking.
@@ -67,6 +67,8 @@ Status: todo · Depends on: GZ-006
 - Never hold a database transaction across an outbound call (SMS, HTTP): `gize_app`'s idle-in-transaction timeout (10 s) equals the outbound timeout, so the connection would be killed mid-request (from GZ-006 review). Commit first, then call, or enqueue the call as a job.
 - OpenTelemetry httpx instrumentation on the outbound client only (URLs without query strings, no trace headers to third parties), plus per-host request/error/duration metrics (handed over from GZ-005). Sentry already sends no trace headers and keeps no breadcrumbs.
 - Acceptance: tests for replayed idempotent request, mismatched body (422), blocked private-IP request, worker job executes in tests.
+- Decisions at planning: no trace headers to third parties (standard updated); our own outbound span and metric instead of the httpx instrumentation package; 428 for a missing key; redis-py pinned below 6 for Arq.
+- Hand-off to M2 (first job enqueued by the API, SMS): pass W3C trace context to the worker in the job (our own process); consider an outbox if a job must never be lost between commit and enqueue.
 
 ### GZ-009 · Rate limiting core
 Status: todo · Depends on: GZ-008

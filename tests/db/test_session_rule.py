@@ -4,6 +4,7 @@ Autobegin is off, so a read outside a block fails at once instead of leaving a t
 open that a later `session.begin()` would trip over.
 """
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import asyncpg
@@ -156,3 +157,117 @@ async def test_refreshing_never_discards_unsaved_edits(
         assert saved == "edited"
     finally:
         await engine.dispose()
+
+
+async def test_a_task_started_inside_a_block_sees_it_while_it_lasts(
+    db_session: AsyncSession,
+) -> None:
+    """A child task (create_task, gather, TaskGroup) runs while its parent holds the
+    transaction, so it is caught too; once the parent commits, it is free (GZ-008 review)."""
+    from gize_api.core.db import database_transaction_open
+
+    parent_committed = asyncio.Event()
+    seen: list[bool] = []
+
+    async def background() -> None:
+        seen.append(database_transaction_open())  # the parent's block is still open
+        await parent_committed.wait()
+        seen.append(database_transaction_open())
+
+    async def child() -> bool:
+        return database_transaction_open()
+
+    async with db_session.begin():
+        assert database_transaction_open()
+        task = asyncio.create_task(background())
+        assert list(await asyncio.gather(child())) == [True]
+        async with asyncio.TaskGroup() as group:
+            in_group = group.create_task(child())
+        assert in_group.result() is True
+        await asyncio.sleep(0)
+    parent_committed.set()
+    await task
+    assert not database_transaction_open()
+    assert seen == [True, False]
+
+
+async def test_a_childs_own_transaction_is_not_its_parents(
+    make_settings: SettingsFactory, database: DatabaseUrls
+) -> None:
+    from gize_api.core.db import database_transaction_open
+
+    engine = create_engine(make_settings(database_url=database.app))
+    child_open, parent_may_look = asyncio.Event(), asyncio.Event()
+
+    async def child() -> None:
+        async with create_sessionmaker(engine)() as session, session.begin():
+            child_open.set()
+            await parent_may_look.wait()
+
+    try:
+        task = asyncio.create_task(child())
+        await child_open.wait()
+        assert not database_transaction_open()  # the parent holds no transaction
+        parent_may_look.set()
+        await task
+    finally:
+        await engine.dispose()
+
+
+async def test_a_transaction_closed_in_another_task_frees_its_opener(
+    make_settings: SettingsFactory, database: DatabaseUrls
+) -> None:
+    from gize_api.core.db import database_transaction_open
+
+    engine = create_engine(make_settings(database_url=database.app))
+    try:
+        async with create_sessionmaker(engine)() as session:
+            transaction = session.begin()
+            await transaction.start()
+            assert database_transaction_open()
+            await asyncio.create_task(transaction.commit())  # ended elsewhere
+            assert not database_transaction_open()
+    finally:
+        await engine.dispose()
+
+
+async def test_a_failed_block_does_not_leave_the_guard_on(db_session: AsyncSession) -> None:
+    from gize_api.core.db import database_transaction_open
+
+    with pytest.raises(RuntimeError):
+        async with db_session.begin():
+            raise RuntimeError("failed")
+    assert not database_transaction_open()
+
+
+def test_the_guard_is_off_outside_an_event_loop() -> None:
+    from gize_api.core.db import database_transaction_open
+
+    assert not database_transaction_open()
+
+
+async def test_two_open_blocks_in_one_task_are_both_counted(
+    make_settings: SettingsFactory, database: DatabaseUrls
+) -> None:
+    from gize_api.core.db import database_transaction_open
+
+    engine = create_engine(make_settings(database_url=database.app))
+    sessionmaker = create_sessionmaker(engine)
+    try:
+        async with sessionmaker() as first, sessionmaker() as second:
+            async with first.begin():
+                async with second.begin():
+                    await second.execute(select(literal(1)))
+                assert database_transaction_open()  # the first block is still open
+            assert not database_transaction_open()
+    finally:
+        await engine.dispose()
+
+
+def test_a_block_opened_without_an_event_loop_is_tracked() -> None:
+    """Sync code (scripts) has no task; its blocks still count for the guard."""
+    from gize_api.core.db import GizeSession, database_transaction_open
+
+    with GizeSession().begin():
+        assert database_transaction_open()
+    assert not database_transaction_open()

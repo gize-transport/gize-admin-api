@@ -8,11 +8,19 @@ migrations rely on; RLS is not forced.
 Every migration that creates a table calls `enable_row_level_security(op, "table")`.
 """
 
-from alembic.operations import Operations
+from typing import Protocol
 
 from gize_api.core.models import SCHEMA
 
 APP_ROLE = "gize_app"
+
+
+class _Executes(Protocol):
+    """What the helpers need from Alembic's `op` (the module or an Operations object)."""
+
+    def execute(self, sqltext: str) -> object: ...
+
+
 POLICY = "gize_app_all"
 
 
@@ -26,12 +34,12 @@ def row_level_security_statements(table: str) -> list[str]:
     ]
 
 
-def enable_row_level_security(op: Operations, table: str) -> None:
+def enable_row_level_security(op: _Executes, table: str) -> None:
     for statement in row_level_security_statements(table):
         op.execute(statement)
 
 
-def disable_row_level_security(op: Operations, table: str) -> None:
+def disable_row_level_security(op: _Executes, table: str) -> None:
     qualified = f'"{SCHEMA}"."{_identifier(table)}"'
     op.execute(f'DROP POLICY IF EXISTS "{POLICY}" ON {qualified}')
     op.execute(f"ALTER TABLE {qualified} DISABLE ROW LEVEL SECURITY")

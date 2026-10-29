@@ -10,13 +10,13 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.telemetry import TelemetryConfig
-from redis.asyncio import Redis
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
 from gize_api.core.config import Environment, Settings, load_settings
 from gize_api.core.db import create_engine, create_sessionmaker
 from gize_api.core.errors import HandledErrorGuard, LastResortGuard, install_exception_handlers
+from gize_api.core.jobs import create_job_redis
 from gize_api.core.logging import AccessLogMiddleware, configure_logging
 from gize_api.core.middleware import (
     BodySizeLimitMiddleware,
@@ -37,7 +37,7 @@ REDIS_CLIENT_NAME = "gize-api"
 
 CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 CORS_ALLOWED_HEADERS = ["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"]
-CORS_EXPOSED_HEADERS = ["X-Request-ID", "Retry-After"]
+CORS_EXPOSED_HEADERS = ["X-Request-ID", "Retry-After", "Idempotent-Replayed"]
 CORS_MAX_AGE_SECONDS = 600
 
 
@@ -122,10 +122,9 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
         # A startup failure is logged here as type and frames; uvicorn's own report of it
         # (formatted traceback text) is suppressed by the logging filter.
         try:
-            redis = Redis.from_url(
+            redis = create_job_redis(  # a Redis client that can also enqueue jobs
                 settings.redis_url.get_secret_value(),
-                socket_timeout=REDIS_TIMEOUT_SECONDS,
-                socket_connect_timeout=REDIS_TIMEOUT_SECONDS,
+                timeout=REDIS_TIMEOUT_SECONDS,
                 max_connections=REDIS_MAX_CONNECTIONS,
                 client_name=REDIS_CLIENT_NAME,
             )

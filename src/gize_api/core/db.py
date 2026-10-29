@@ -20,8 +20,12 @@ Connect directly or through Supabase's session-mode pooler (port 5432). Transact
 connection, which transaction mode shares between clients.
 """
 
+import asyncio
+import contextvars
+import dataclasses
 import ssl
 import traceback
+import weakref
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import FrameType
@@ -33,7 +37,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
-from sqlalchemy.orm import ORMExecuteState, Session
+from sqlalchemy.orm import ORMExecuteState, Session, SessionTransaction
 
 from gize_api.core.config import Settings, database_ssl_mode
 
@@ -100,6 +104,66 @@ class GizeSession(Session):
         if kwargs.get("populate_existing") is None:
             kwargs["populate_existing"] = self.autoflush
         return super().get(*args, **kwargs)
+
+
+# Open GizeSession transactions, for the outbound HTTP and enqueue guards.
+#
+# Each task that opens a transaction gets a live set of its open transactions, appended to
+# a chain in its context. Child tasks (create_task, gather, TaskGroup) copy the context and
+# so see their ancestors' live sets: inside the parent's block they are caught, and once it
+# commits they are free. A child's own transactions go into a set of its own, which the
+# parent never sees. A transaction closed in another task is removed from the set it was
+# opened in. Raw engine connections are not tracked: app code uses sessions.
+@dataclasses.dataclass(eq=False)
+class _OpenTransactions:
+    task: "asyncio.Task[Any] | None"
+    ids: set[int] = dataclasses.field(default_factory=set)
+
+
+_open_chain: contextvars.ContextVar[tuple[_OpenTransactions, ...]] = contextvars.ContextVar(
+    "gize_open_transactions", default=()
+)
+_opened_in: "weakref.WeakKeyDictionary[SessionTransaction, _OpenTransactions]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+class OpenTransactionError(RuntimeError):
+    """A programming error: an outside call or enqueue inside a database transaction."""
+
+
+def database_transaction_open() -> bool:
+    """True inside `async with session.begin():` (any GizeSession), in this task or a task
+    that started this one."""
+    return any(entry.ids for entry in _open_chain.get())
+
+
+def _current_task() -> "asyncio.Task[Any] | None":
+    try:
+        return asyncio.current_task()
+    except RuntimeError:  # no running event loop (sync code)
+        return None
+
+
+@event.listens_for(GizeSession, "after_transaction_create")
+def _transaction_opened(session: Session, transaction: SessionTransaction) -> None:
+    if transaction.parent is not None:
+        return
+    chain, task = _open_chain.get(), _current_task()
+    if chain and chain[-1].task is task:
+        entry = chain[-1]
+    else:
+        entry = _OpenTransactions(task)
+        _open_chain.set((*chain, entry))
+    entry.ids.add(id(transaction))
+    _opened_in[transaction] = entry
+
+
+@event.listens_for(GizeSession, "after_transaction_end")
+def _transaction_closed(session: Session, transaction: SessionTransaction) -> None:
+    entry = _opened_in.pop(transaction, None)
+    if entry is not None:
+        entry.ids.discard(id(transaction))
 
 
 @event.listens_for(GizeSession, "do_orm_execute")

@@ -44,7 +44,7 @@ api (routers)  →  services (business rules)  →  repositories (data access)  
 src/gize_api/
   main.py                 # app factory, middleware, routers, lifespan (startup/shutdown)
   models.py               # imports every domain models.py, so Alembic sees the whole schema
-  worker.py               # Arq WorkerSettings
+  worker.py               # Arq worker: jobs, cron, settings; `python -m gize_api.worker`
   core/
     config.py             # pydantic-settings; all env vars; fails fast on missing secrets
     db.py                 # async engine, session dependency, timeouts, 503 classification
@@ -61,6 +61,8 @@ src/gize_api/
     idempotency.py        # Idempotency-Key handling (Postgres table)
     http.py               # outbound HTTP client with timeouts + host allowlist (SSRF guard)
     pagination.py         # cursor encode/decode, Page[T] schema
+    jobs.py               # enqueue background jobs (after commit, de-duplicated by job ID, JSON)
+    redis_options.py      # timeouts and TLS name checks for every Redis client
     audit.py              # audit log writer used by services
   health/router.py        # /health/live, /health/ready
   staff/  routes/  riders/  waitlists/  drivers/  verification/   # domain slices
@@ -133,6 +135,6 @@ All configuration via environment variables loaded by `core/config.py`; app refu
 
 ## Deployment
 
-- One Docker image; commands: `api` (uvicorn with graceful timeout 30 s) and `worker` (arq).
+- One Docker image; commands: `api` (uvicorn with graceful timeout 30 s), `worker` (`python -m gize_api.worker`: Arq with our logging; 25 s to finish running jobs on SIGTERM) and `migrate`.
 - Migrations run as a separate release step with the `gize_migrator` credentials, before the new app version starts.
 - Host-agnostic: no host-specific SDKs or files in application code.

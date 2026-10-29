@@ -1,48 +1,17 @@
 """GZ-006: base model mixins and row-level security, exercised as the app role."""
 
 import uuid
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import cast
 
 import asyncpg
 import pytest
-from sqlalchemy import String, Table, event, select
+from sqlalchemy import Table, event, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column
 
-from gize_api.core.models import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
-from gize_api.core.rls import row_level_security_statements
+from tests.db.widgets import Widget
 from tests.factories import Factory
 from tests.support import DatabaseUrls
-
-
-class Widget(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
-    """A test-only table, created and dropped by the migrator around these tests."""
-
-    __tablename__ = "test_widgets"
-
-    label: Mapped[str] = mapped_column(String(50))
-
-
-@pytest.fixture
-async def widgets_table(database: DatabaseUrls) -> AsyncIterator[None]:
-    conn = await asyncpg.connect(database.migrator, timeout=3)
-    try:
-        await conn.execute(
-            "CREATE TABLE gize.test_widgets ("
-            " id uuid PRIMARY KEY DEFAULT gen_random_uuid(),"
-            " label varchar(50) NOT NULL,"
-            " created_at timestamptz NOT NULL DEFAULT now(),"
-            " updated_at timestamptz NOT NULL DEFAULT now(),"
-            " deleted_at timestamptz)"
-        )
-        for statement in row_level_security_statements("test_widgets"):
-            await conn.execute(statement)
-        yield
-    finally:
-        await conn.execute("DROP TABLE IF EXISTS gize.test_widgets")
-        await conn.close()
 
 
 @pytest.mark.usefixtures("widgets_table")
