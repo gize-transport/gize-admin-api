@@ -213,7 +213,7 @@ async with session.begin():
 - **Who:** `actor_id` is the staff member. An operator command passes `actor_id=None, operator=True`, so a forgotten actor fails instead of passing as an operator.
 - **Append-only, enforced by the database** (migration 0004):
   - the app role can read, and insert only the content columns (the ID and time always come from the database, so an entry can't be backdated);
-  - UPDATE and DELETE are revoked and also refused by restrictive row-level policies.
+  - UPDATE and DELETE are revoked; restrictive row-level policies make them affect no rows even if granted again by mistake.
 - **Rollback:** the migration's downgrade refuses while the table has rows. Back it up and empty it as the owner first, deliberately.
 - **`GET /v1/audit-log`** (admins only):
   - newest first, cursor-paginated (`AuditEntryPage`);

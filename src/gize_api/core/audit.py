@@ -18,7 +18,8 @@
 - **Who.** `actor_id` is the staff member; an operator command (no staff member) passes
   `actor_id=None, operator=True`, so a forgotten actor fails instead of looking like one.
 - **Append-only.** The app role may only SELECT, and INSERT the content columns: the ID
-  and time come from the database, and nothing can be changed or removed (migration 0004).
+  and time come from the database. UPDATE and DELETE are revoked, and restrictive policies
+  make them affect no rows even if granted again by mistake (migration 0004).
 """
 
 import enum
@@ -149,9 +150,11 @@ def record(
 def _minimised(entity: AuditedEntity, values: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if values is None:
         return None
+    # Every value must be storable, shown or not (a NaN would also always look "changed").
+    stored = {field: _json(value) for field, value in values.items()}
     return {
-        field: _json(value) if field in entity.visible or value is None else REDACTED
-        for field, value in values.items()
+        field: value if field in entity.visible or value is None else REDACTED
+        for field, value in stored.items()
     }
 
 

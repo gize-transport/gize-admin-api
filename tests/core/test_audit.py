@@ -273,17 +273,21 @@ async def test_every_declared_field_is_required(
     [
         (float("nan"), "finite"),
         (float("inf"), "finite"),
+        ("nan-in-a-hidden-field", "finite"),
         (datetime(2026, 10, 29, 8, 0), "time zone"),  # noqa: DTZ001 - the case under test
     ],
 )
 async def test_values_json_or_postgres_would_refuse_are_refused(
     db_session: AsyncSession, value: object, message: str
 ) -> None:
+    after = {**FULL, "label": value}
+    if value == "nan-in-a-hidden-field":  # hidden values are checked too, not only shown ones
+        after = {**FULL, "secret_name": float("nan")}
     async with db_session.begin():
         with pytest.raises(ValueError, match=message):
             record(
                 db_session, actor_id=None, operator=True, action="thing.created", entity=THING,
-                entity_id=THING_ID, before=None, after={**FULL, "label": value},
+                entity_id=THING_ID, before=None, after=after,
             )  # fmt: skip
 
 
@@ -369,3 +373,25 @@ async def test_the_downgrade_refuses_to_drop_recorded_history(
     finally:
         await conn.close()
     await asyncio.to_thread(run_migrations, scratch_database.migrator, "0003", downgrade=True)
+
+
+async def test_the_policies_hold_even_after_a_stray_grant(scratch_database: DatabaseUrls) -> None:
+    """With UPDATE and DELETE granted back by mistake, row-level security still makes
+    them change nothing (they affect no rows rather than fail)."""
+    await asyncio.to_thread(run_migrations, scratch_database.migrator, "head")
+    owner = await asyncpg.connect(scratch_database.migrator, timeout=3)
+    app = await asyncpg.connect(scratch_database.app, timeout=3)
+    try:
+        await owner.execute(
+            "INSERT INTO gize.audit_log (action, entity_type, entity_id, after)"
+            " VALUES ('thing.created', 'thing', $1, '{}')",
+            THING_ID,
+        )
+        await owner.execute("GRANT UPDATE, DELETE ON gize.audit_log TO gize_app")
+        assert await app.execute("UPDATE gize.audit_log SET action = 'thing.forged'") == "UPDATE 0"
+        assert await app.execute("DELETE FROM gize.audit_log") == "DELETE 0"
+        assert await owner.fetchval("SELECT action FROM gize.audit_log") == "thing.created"
+        await owner.execute("DELETE FROM gize.audit_log")  # lets the scratch database go
+    finally:
+        await app.close()
+        await owner.close()
