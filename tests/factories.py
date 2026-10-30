@@ -18,6 +18,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gize_api.areas.models import Area
 from gize_api.core.models import Base
 from gize_api.staff.models import Staff, StaffRole
 
@@ -54,3 +55,10 @@ class StaffFactory(Factory[Staff]):
             "email": f"staff{sequence}@example.com",
             "role": StaffRole.STAFF,
         }
+
+
+class AreaFactory(Factory[Area]):
+    model = Area
+
+    def defaults(self, sequence: int) -> dict[str, object]:
+        return {"name": f"Area {sequence}"}

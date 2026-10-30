@@ -1,6 +1,5 @@
 """Staff request and response bodies."""
 
-import unicodedata
 import uuid
 from datetime import datetime
 from typing import Annotated, Any, Self
@@ -16,6 +15,7 @@ from pydantic import (
 )
 
 from gize_api.core.pagination import Page, PageParams
+from gize_api.core.text import no_control_characters
 from gize_api.staff.models import EMAIL_MAX_LENGTH, FULL_NAME_MAX_LENGTH, StaffRole
 
 EMAIL_LOCAL_PART_MAX_LENGTH = 64  # RFC 5321
@@ -31,9 +31,7 @@ EMAIL_PATTERN = rf"^{_LOCAL_PART}{{1,{EMAIL_LOCAL_PART_MAX_LENGTH}}}@{_LABEL}(?:
 
 def check_full_name(name: str) -> str:
     """A name without control characters (input is trimmed and length-checked first)."""
-    if any(unicodedata.category(char).startswith("C") for char in name):
-        raise ValueError("must not contain control characters")
-    return name
+    return no_control_characters(name)
 
 
 # Trimmed and lower-case, as gize.staff stores it (its check refuses anything else).

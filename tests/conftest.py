@@ -22,6 +22,7 @@ from gize_api.core.db import GizeSession, create_engine, create_sessionmaker, ge
 from gize_api.core.ratelimit import RateLimiter
 from gize_api.core.rls import row_level_security_statements
 from gize_api.main import GizeAPI, create_app
+from tests.supabase import FakeSupabase
 from tests.support import (
     SETTINGS_ENV_VARS,
     TEST_SUPABASE_URL,
@@ -311,3 +312,34 @@ async def widgets_table(database: DatabaseUrls) -> AsyncIterator[None]:
     finally:
         await conn.execute("DROP TABLE IF EXISTS gize.test_widgets")
         await conn.close()
+
+
+@pytest.fixture
+def fake_supabase() -> FakeSupabase:
+    return FakeSupabase()
+
+
+@pytest.fixture
+async def committed_api(
+    make_settings: SettingsFactory,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    test_redis_url: str,
+    fake_supabase: FakeSupabase,
+) -> AsyncIterator[httpx.AsyncClient]:
+    """The app on sessions that really commit: each request has its own connection."""
+    app = create_app(make_settings())
+    app.state.sessionmaker = committed_sessionmaker
+    app.state.token_verifier = fake_verifier()
+    app.state.rate_limiter = RateLimiter.for_settings(
+        make_settings(redis_url=test_redis_url),
+        telemetry=None,
+        key_prefix=f"gize-test-{uuid.uuid4()}",
+    )
+    app.state.auth_admin = fake_supabase.client(make_settings)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+            yield http
+    finally:
+        await app.state.auth_admin.aclose()
+        await app.state.rate_limiter.aclose()
