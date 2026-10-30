@@ -113,3 +113,10 @@ def test_both_workflows_use_the_severity_levels() -> None:
         assert calls
         for line in calls:
             assert "--severity-levels" in line, line
+
+
+def test_release_notes_come_from_the_notes_script() -> None:
+    """oasdiff's own text changelog grew past what a step can be given (GZ-021's release)."""
+    version_job = RELEASE.split("\n  release:\n", 1)[0]
+    assert "python -m scripts.contract_notes" in version_job
+    assert 'oasdiff" changelog --severity-levels' not in version_job  # the long text form

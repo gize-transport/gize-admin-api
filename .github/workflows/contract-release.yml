@@ -99,8 +99,10 @@ jobs:
             [ "${codes}" -eq 1 ] && breaking=1
             "${RUNNER_TEMP}/oasdiff" changelog --format json --severity-levels "${levels}" \
               "${RUNNER_TEMP}/previous.json" openapi.json > "${RUNNER_TEMP}/changelog.json"
-            "${RUNNER_TEMP}/oasdiff" changelog --severity-levels "${levels}" \
-              "${RUNNER_TEMP}/previous.json" openapi.json > "${RUNNER_TEMP}/notes.md"
+            # Short notes (scripts/contract_notes.py): oasdiff's text form repeats each new
+            # error code per response and outgrew what the release step can be given.
+            uv run --locked python -m scripts.contract_notes --changelog "${RUNNER_TEMP}/changelog.json" \
+              --codes "${RUNNER_TEMP}/codes.json" > "${RUNNER_TEMP}/notes.md"
             if [ "${breaking}" -eq 1 ]; then
               # CI let it through only with the owner's label; anything else needs a human.
               approved="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
