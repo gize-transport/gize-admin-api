@@ -31,7 +31,7 @@
 
 ## Shared conventions (summary – details in backend `docs/architecture.md`)
 
-- JSON, snake_case fields; times ISO 8601 UTC (the frontend displays Africa/Addis_Ababa).
+- JSON, snake_case fields; timestamps ISO 8601 UTC (the frontend displays Africa/Addis_Ababa). Schedule times of day (route and pickup times) are local Addis Ababa time, `"HH:MM"`, shown as they are.
 - Auth: `Authorization: Bearer <Supabase access token>`; roles come from the backend, never from the token or the UI.
 - Errors: RFC 9457 problem+json with `code` and `request_id`; the frontend shows a friendly message per `code` and always shows the request ID for support.
 - Lists: `?limit=&cursor=` → `{ items, next_cursor }`, max 100.

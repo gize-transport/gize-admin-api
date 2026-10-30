@@ -36,7 +36,7 @@ api (routers)  →  services (business rules)  →  repositories (data access)  
 - **Repositories**: SQLAlchemy queries only. Every list method takes a bounded page size and a cursor.
 - **Models**: SQLAlchemy 2.0 typed mappings in schema `gize`.
 - **Schemas**: Pydantic v2 with `model_config = ConfigDict(extra="forbid")` and explicit length/size constraints. Separate `Create`, `Update` and `Read` schemas; never return ORM objects or internal fields.
-- Domain modules are vertical slices: `routes/`, `riders/`, `waitlists/`, `drivers/`, `staff/`, each with `router.py`, `schemas.py`, `service.py`, `repository.py`, `models.py`.
+- Domain modules are vertical slices: `areas/`, `companies/`, `routes/`, `route_requests/`, `riders/`, `drivers/`, `staff/`, each with `router.py`, `schemas.py`, `service.py`, `repository.py`, `models.py`.
 
 ## Folder layout
 
@@ -66,7 +66,7 @@ src/gize_api/
     redis_options.py      # timeouts and TLS name checks for every Redis client
     audit.py              # audit log writer used by services
   health/router.py        # /health/live, /health/ready
-  staff/  routes/  riders/  waitlists/  drivers/  verification/   # domain slices
+  staff/  areas/  companies/  routes/  route_requests/  riders/  drivers/  verification/   # domain slices
   audit_log/              # GET /v1/audit-log (admins); the writer is core/audit.py
   integrations/sms.py     # SmsSender protocol + FakeSmsSender + real gateway adapter later
   integrations/supabase_auth.py  # Supabase Auth admin API (secret key; read users, invites later)
@@ -95,7 +95,7 @@ Dockerfile                # multi-stage, non-root user, healthcheck
            ...
    ```
    Re-read anything the decision depends on inside the service's own block: `current_staff` read the caller moments earlier, in a block that is already closed.
-5. Public endpoints (registration, waitlist sign-up, phone verification) are unauthenticated, rate-limited per IP and per phone, and require a verified phone token from the OTP flow.
+5. Public endpoints (registration, route requests, phone verification) are unauthenticated, rate-limited per IP and per phone, and require a verified phone token from the OTP flow.
 
 Login rate limits for Supabase Auth are configured in the Supabase dashboard (Auth → Rate limits), not in this API.
 
@@ -110,13 +110,15 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 | `staff` | id (= Supabase user id), full_name, email, role (`admin`/`staff`), is_active, first_signed_in_at (null until the first request: an invitation not yet accepted) |
 | `audit_log` | id, actor_staff_id, action, entity_type, entity_id, before (jsonb), after (jsonb), request_id, created_at – append-only |
 | `idempotency_keys` | key, actor, request_hash, response_status, response_body, created_at (purged after 24 h) |
-| `corridors` | id, name, origin_area, destination_area, waitlist_threshold |
-| `routes` | id, code, corridor_id, route_type, morning_time, return_time, seats, price_round_trip, price_one_way, price_saturday, status (`draft`/`active`/`paused`), driver_id (nullable) |
-| `pickup_points` | id, route_id, name, stop_order, pickup_time, lat, lng |
+| `areas` | id, name (unique ignoring case among live areas), deleted_at |
+| `corridors` | id, origin_area_id, destination_area_id (each pair once among live corridors), deleted_at |
+| `companies` | id, name, contact_name, contact_phone, contact_email, billing (`postpaid`), is_active, notes, deleted_at |
+| `routes` | id, code, corridor_id, route_type (`public`/`student`/`corporate`), school_name (student), company_id (corporate), morning_time, return_time (local `HH:MM`), seats, launch_minimum (public/student), price_round_trip, price_one_way, price_saturday (public/student only), status (`draft`/`forming`/`active`/`paused`; corporate never `forming`), copied_from_route_id, driver_id (nullable), deleted_at |
+| `pickup_points` | id, route_id, area_id, description, stop_order, pickup_time (local), lat, lng, deleted_at |
 | `guardians` | id, full_name, phone |
 | `riders` | id, rider_type (`adult`/`student`/`corporate`), full_name, phone (adults), guardian_id (students), school_name, grade_level, home_area, destination_area, status |
-| `route_assignments` | id, rider_id, route_id, pickup_point_id, plan, saturday_addon, start_month, status – seat count enforced with a row lock on `routes` |
-| `waitlist_entries` | id, corridor_id, rider_id, status (`waiting`/`assigned`/`withdrawn`), created_at |
+| `route_assignments` | id, rider_id, route_id, pickup_point_id, plan, saturday_addon, start_date, end_date (null while ongoing), status (`reserved` on a forming route / `active` / `ended`) – individual riders start on the 1st and end on a month's last day, company riders any day; seats are counted per month, enforced with a row lock on `routes` |
+| `route_requests` | id, kind (`new_areas`/`full_route`), from_area_id, to_area_id (or free-text areas not listed yet), route_id (full route), rider_type (`adult`/`student`), school_name, preferred_morning_time, preferred_return_time, contact_name, contact_phone, notes, source (`staff`/`app`), status (`new`/`matched`/`declined`), matched_route_id, decline_reason, created_at |
 | `phone_verifications` | id, phone, code_hash, attempts, expires_at, verified_at |
 | `drivers` | id, full_name, phone, is_owner, status (`applied`/`approved`/`rejected`/`inactive`) |
 | `vehicles` | id, driver_id, plate, vehicle_type, seats, inspection_status, inspected_at, inspection_notes |
@@ -125,10 +127,10 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 ## API conventions
 
 - All routes under `/v1/`, except `/health/live` and `/health/ready` (for the load balancer; not in the OpenAPI contract). Plural nouns: `/v1/routes`, `/v1/routes/{id}/pickup-points`.
-- JSON, snake_case. Times in responses ISO 8601 UTC; the client converts to Africa/Addis_Ababa.
+- JSON, snake_case. Timestamps (`created_at` and the like) are ISO 8601 UTC; the client converts to Africa/Addis_Ababa. Schedule times of day (a route's morning and return times, pickup times) are local Addis Ababa time, `"HH:MM"`: a daily timetable, not a moment (Ethiopia has no daylight saving).
 - Errors: RFC 9457 `application/problem+json` with `type`, `title`, `status`, `code` (stable machine code, e.g. `ROUTE_FULL`), `request_id`. Validation errors list field names and reasons only.
 - Lists: cursor pagination – `?limit=25&cursor=…` (max 100); response `{ "items": [...], "next_cursor": "…" | null }`. Stable ordering (`created_at, id`).
-- `Idempotency-Key` header **required** on POSTs that create or trigger side effects (registration, open-route-from-waitlist, approve driver, send SMS). Same key + same body → same stored response; same key + different body → 422.
+- `Idempotency-Key` header **required** on POSTs that create or trigger side effects (creating a record, registration, a route request, approve driver, send SMS). Same key + same body → same stored response; same key + different body → 422.
 - `ETag`/`If-Match` optional later; for now use `updated_at` checks in services where concurrent edits matter.
 - Every response carries `X-Request-ID`.
 - OpenAPI is the contract; every endpoint has a summary, documented error codes and response schemas.

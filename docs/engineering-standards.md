@@ -40,7 +40,7 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
 - Defaults:
   - Staff endpoints: 120 requests/minute per user.
   - Staff invites (each sends an email): 20/hour per admin, on top of the staff limit.
-  - Public registration and waitlist sign-up: 5/hour per IP and 3/day per phone.
+  - Public registration and route requests: 5/hour per IP and 3/day per phone.
   - Phone verification SMS: 3/hour per phone and 10/hour per IP (each SMS costs money). Code entry: 5 attempts per code, then the code is invalidated.
   - Expensive endpoints (exports, bulk actions): per-endpoint limits stated in the ticket plan.
 - Return **429** with `Retry-After` and a problem+json body.
@@ -63,7 +63,7 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
 
 - **Every endpoint** has tests for: happy path; unauthenticated; wrong role; wrong owner / soft-deleted object (no IDOR); invalid input (unknown field, too long, wrong type, out of range); dependency failure (DB timeout, Redis down, SMS failure) with the expected behaviour.
 - **No mocking the database** for data-access or service logic. Tests run against real Postgres in Docker, using the same migrations, with a transaction rolled back per test. External HTTP (SMS) uses the fake implementation or a recorded stub.
-- Concurrency-sensitive logic (seat assignment, opening a route from a waitlist, idempotency) has a test that runs competing requests in parallel.
+- Concurrency-sensitive logic (seat assignment, launching a route, idempotency) has a test that runs competing requests in parallel.
 - Migrations: CI runs `upgrade head → downgrade -1 → upgrade head` on every PR.
 - Coverage gate: 85% overall and 90% for `services/` modules; coverage must not drop on a PR.
 - Tests are deterministic: no real network, no sleeps for timing, frozen time where time matters.

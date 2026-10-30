@@ -107,7 +107,7 @@ Status: done · Depends on: GZ-011
 - Built: `gize.audit_log` (migration 0004; the app role may SELECT and INSERT the content columns only, so IDs and times come from the database; UPDATE/DELETE revoked and refused by restrictive policies; the downgrade refuses while rows exist; checks on action, entity type and that a change was recorded; indexes for newest-first lists overall, per entity and per actor), `core/audit.py` (`record`, `snapshot`, `AuditedEntity`; every declared field required; only changed fields kept; non-visible values `[redacted]`; `operator=True` for actor-less entries), `STAFF_AUDIT` (role and status by value), the first-admin command audited (`staff.first_admin_created`, operator), `GET /v1/audit-log` (`audit_log_list`, admin only, `AuditEntryPage`). Hand-off to GZ-013: audit every staff change with `STAFF_AUDIT`.
 
 ### GZ-013 · Staff management (admin)
-Status: in review · Depends on: GZ-012
+Status: done · Depends on: GZ-012
 - Admin: invite staff (Supabase Admin API via allowlisted client), list, change role, deactivate. An admin cannot deactivate or demote themselves if they are the last active admin.
 - Acceptance: idempotent invite; last-admin protection test; all actions audited.
 - Built: `POST /v1/staff` (`staff_invite`; Supabase `POST /auth/v1/invite`; `Idempotency-Key`; `STAFF_INVITE` 20/hour per admin), `GET /v1/staff` (`staff_list`, `StaffPage`), `GET /v1/staff/{staff_id}` (`staff_get`), `PATCH /v1/staff/{staff_id}` (`staff_update`; role and/or `is_active`, reactivation included). Codes `STAFF_EMAIL_TAKEN`, `AUTH_ACCOUNT_EXISTS` (a confirmed Supabase account is refused: owner decision), `LAST_ACTIVE_ADMIN`. One advisory lock for every staff change, the first-admin command included (`lock_staff_changes`). Migration 0005 (`first_signed_in_at`, set by a member's first request; `ix_staff_created_at_id`). The last-admin rule counts only active admins who have signed in (owner decision after review: an invited admin may never accept). `idempotency.peek` for calls made before the write transaction. Audit actions `staff.invited`, `staff.role_changed`, `staff.deactivated`, `staff.reactivated`. Owner, before real invites: Supabase Site URL (the portal's set-password page) and custom SMTP.
@@ -131,25 +131,52 @@ Status: done · Depends on: GZ-011
 
 ## M2 – Routes
 
-### GZ-020 · Corridors
+Two kinds of customer (product brief, GZ-025): individual riders prepay monthly on `public` and `student` routes, which collect sign-ups while `forming`; companies are billed afterwards for their own `corporate` routes. There is no waitlist: unmet demand is a route request. Order: GZ-025, 026, 020, 029, 021, 022, 023, 024 (report to the owner), 027, 028.
+
+### GZ-025 · Brief and tickets for the two customer types
+Status: in review · Depends on: –
+- Docs only: the product brief, `architecture.md` (data model, schedule times), `api-contract.md` (schedule times local `HH:MM`), `engineering-standards.md` and these tickets, for prepaid individuals and postpaid companies, forming routes, route requests, freed seats and "add a van". Replaces the corridor waitlist (owner decisions, 2026-10-30).
+
+### GZ-026 · Areas
 Status: todo · Depends on: GZ-012
-- CRUD for corridors (name, origin area, destination area, waitlist threshold). Staff edit; admin soft-delete.
+- Staff manage the list of areas (neighbourhoods, landmarks): create, list (search by name), read, rename. Name unique ignoring case among live areas (`AREA_NAME_TAKEN`). Admin soft-delete, refused while a corridor, pickup point or open request uses it (`AREA_IN_USE`).
+
+### GZ-020 · Corridors
+Status: todo · Depends on: GZ-026
+- A corridor is a pair of areas (from, to; different), each pair once among live corridors (`CORRIDOR_EXISTS`). Staff create, list, read, edit; admin soft-delete, refused while a route or open request uses it (`CORRIDOR_IN_USE`). No threshold.
+
+### GZ-029 · Companies
+Status: todo · Depends on: GZ-012
+- Company accounts: name (unique among live companies), contact person (name, phone E.164, email: personal data, redacted in the audit log, never logged), billing `postpaid`, notes, active/inactive. Staff create, list, read, edit; admin deactivate or soft-delete, refused while the company has a route that is not deleted (`COMPANY_IN_USE`).
 
 ### GZ-021 · Routes – create, read, list, update
-Status: todo · Depends on: GZ-020
-- Route type, code (unique), corridor, morning/return times, seats, status `draft`/`active`/`paused`. Filters (type, status, corridor), cursor pagination, seats taken/available computed without N+1.
+Status: todo · Depends on: GZ-020, GZ-029
+- Code (unique among live routes, `ROUTE_CODE_TAKEN`), corridor, type, school name (`student`, required) or company (`corporate`, required, active), morning and return times (local `HH:MM`), seats (1–60), launch minimum (`public`/`student`: 1 to seats; none for `corporate`). Created as `draft`. Status and prices are not set here.
+- Creates `route_assignments` (start and end dates, `reserved`/`active`/`ended`; the rider link comes in M3). Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken in any month (`SEATS_BELOW_TAKEN`, route row locked). Corridor and type cannot change while riders are on the route (`ROUTE_HAS_RIDERS`).
+- Filters (type, status, corridor, company), cursor pagination.
 
 ### GZ-022 · Route prices (admin only)
 Status: todo · Depends on: GZ-021
-- Separate endpoint for prices (round trip, one-way, Saturday add-on – Saturday only for `public` routes). Staff cannot change prices via any endpoint (test every route endpoint).
+- Separate endpoint for prices (round trip, one-way, optional Saturday add-on – Saturday only for `public` routes; whole birr 1–100,000). Refused for `corporate` routes. Staff cannot change prices via any endpoint (test every route endpoint).
 
 ### GZ-023 · Pickup points
-Status: todo · Depends on: GZ-021
-- Add, edit, remove, reorder pickup points (unique order per route, times ascending for morning run).
+Status: todo · Depends on: GZ-021, GZ-026
+- Add, edit, remove, reorder pickup points: area, description, morning pickup time (local), optional location (latitude and longitude together, within Ethiopia). Unique order per route, times ascending for the morning run. Removing is a soft delete staff may do, refused while riders use the stop (`PICKUP_POINT_HAS_RIDERS`).
 
 ### GZ-024 · Route status and deletion
-Status: todo · Depends on: GZ-021
-- Activate/pause (staff); soft delete (admin) blocked while riders are assigned.
+Status: todo · Depends on: GZ-022, GZ-023
+- `public`/`student`: `draft` → `forming` (prices and a pickup point, else `ROUTE_NOT_READY`) → `active` (reserved riders ≥ launch minimum, else `NOT_ENOUGH_RIDERS`; reserved riders become active in the same transaction) ⇄ `paused`; `forming` → `draft` only while nobody is reserved. `corporate`: `draft` → `active` (a pickup point and an active company) ⇄ `paused`. Other moves: `INVALID_STATUS_CHANGE`. Repeating a move changes nothing. Staff.
+- Admin soft delete, refused while a rider is reserved or active (`ROUTE_HAS_RIDERS`).
+- After this ticket: report to the owner (routes working end to end) before GZ-027.
+
+### GZ-027 · Route requests (staff-recorded)
+Status: todo · Depends on: GZ-024
+- Individual demand: `new_areas` (from/to areas, or free text for an area not listed yet) or `full_route` (a route). Rider type (adult/student), school, preferred times, contact name and phone (personal data), notes, source. `new` → `matched` (to a route) or `declined` (reason). The same phone cannot have two open requests for the same thing (`ROUTE_REQUEST_EXISTS`).
+- Summary: open requests per area pair and per full route, next to each route's free seats next month; bounded.
+
+### GZ-028 · Add a van
+Status: todo · Depends on: GZ-024
+- Copy a route: corridor, type, school or company, times, prices, pickup points; new code, own seats and launch minimum, `copied_from_route_id`. An individual route's copy starts `forming`; a corporate copy starts `draft`. Idempotency-Key.
 
 ---
 
@@ -165,11 +192,11 @@ Status: todo · Depends on: GZ-009, GZ-030
 
 ### GZ-032 · Public registration – adult rider
 Status: todo · Depends on: GZ-031, GZ-021
-- Requires verified-phone token and Idempotency-Key. Creates rider with requested route (status `new`) or a corridor waitlist entry when no route fits. Limits 5/hour/IP, 3/day/phone.
+- Requires verified-phone token and Idempotency-Key. Creates the rider and, on the chosen `public` route, a reservation (`forming`) or an active place with a free seat (`active`) from the 1st of the next month it is free; otherwise (route full, or no route for their areas) a route request. Limits 5/hour/IP, 3/day/phone.
 
 ### GZ-033 · Public registration – parent and student
 Status: todo · Depends on: GZ-032
-- Guardian + one or more children (school, grade level elementary/high school, home area). Students can only request `student` routes.
+- Guardian + one or more children (school, grade level elementary/high school, home area). Students can only sign up for, or request, `student` routes of their school.
 
 ### GZ-034 · Rider management (staff)
 Status: todo · Depends on: GZ-032
@@ -177,22 +204,27 @@ Status: todo · Depends on: GZ-032
 
 ### GZ-035 · Assign rider to route
 Status: todo · Depends on: GZ-034, GZ-023
-- Assign/move a rider to a route + pickup point with plan and Saturday add-on; route row locked; never exceeds seats; rule checks (student ↔ student route, adult ↔ public route, corporate ↔ that company's route).
-- Acceptance: parallel test – two assignments for the last seat → exactly one succeeds (`ROUTE_FULL` for the other).
+- Assign/move a rider to a route + pickup point with plan and Saturday add-on; route row locked; never exceeds seats in any month; rule checks (student ↔ student route, adult ↔ public route, corporate ↔ that company's route). Individual riders: a `forming` route gives a reservation, an `active` one a place, starting on the 1st of a month; company riders (recorded by Gize staff) start on any day.
+- A rider leaves a route: individual riders at the end of a month (the seat stays empty until the next month), company riders on any day.
+- Acceptance: parallel test – two assignments for the last seat → exactly one succeeds (`ROUTE_FULL` for the other, who can be recorded as a route request).
 - The parallel test needs committed data on two connections: `db_session` runs inside one rolled-back transaction, so add a committed-data fixture that truncates its tables afterwards (from GZ-006 review).
 
 ---
 
-## M4 – Waitlists
+## M4 – Requests and launches
 
-### GZ-040 · Waitlist management
-Status: todo · Depends on: GZ-032, GZ-020
-- List waitlists per corridor with counts vs threshold; list entries (paginated); withdraw/remove entries; "ready to open" flag.
+### GZ-040 · Public route requests and seat offers
+Status: todo · Depends on: GZ-031, GZ-027, GZ-035
+- Public route request (verified-phone token, Idempotency-Key, PUBLIC_SIGNUP limits). Offer a freed seat (from the next month) or a forming route to matched requests by SMS, oldest request first (staff may skip with a reason, audited); an offer expires after 48 hours and passes to the next request. An accepted offer becomes a reservation or place.
+- Acceptance: two acceptances for one seat → exactly one succeeds; an expired offer cannot be accepted.
 
-### GZ-041 · Open a route from a waitlist
-Status: todo · Depends on: GZ-040, GZ-035
-- Idempotent action: creates or activates a route for the corridor, assigns waiting riders in order up to the seat count in one transaction, enqueues SMS notifications after commit.
-- Acceptance: double submission with the same Idempotency-Key opens once; SMS failure does not roll back assignments.
+### GZ-041 · Launch notifications
+Status: todo · Depends on: GZ-024, GZ-030, GZ-035
+- When a route launches (GZ-024), every rider on it gets an SMS, enqueued after the commit; an SMS failure never undoes the launch. Idempotent: a repeated launch sends nothing more.
+
+### GZ-042 · Company days without service
+Status: todo · Depends on: GZ-029, GZ-024
+- Staff record dates a company's route does not run (date, reason, who asked); listed per route and company, for drivers and later postpaid billing. Notice rule and charging basis to confirm with the owner first.
 
 ---
 
@@ -232,7 +264,7 @@ Status: todo · Depends on: GZ-061
 
 ### GZ-064 · Overview summary endpoint
 Status: todo · Depends on: GZ-041, GZ-052
-- `GET /v1/overview` (staff): counts of active routes, riders, waitlists ready to open, driver applications awaiting review; one bounded query each, no N+1.
+- `GET /v1/overview` (staff): counts of active routes, riders, forming routes ready to launch, open route requests, driver applications awaiting review; one bounded query each, no N+1.
 
 ### GZ-065 · Automated dependency and image updates
 Status: todo · Depends on: GZ-002
