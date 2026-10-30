@@ -320,6 +320,9 @@ async def test_notes_keep_one_kind_of_line_break(
     long_crlf = {**ACME, "name": "Acme CRLF", "notes": "x" + "\r\n" * 600 + "y"}
     response = await api.post(COMPANIES, json=long_crlf, headers=with_key(member.id))
     assert response.status_code == 201  # 602 characters once line breaks are one each
+    padded = {**ACME, "name": "Acme padded", "notes": "   " + "x" * 999 + "   "}
+    response = await api.post(COMPANIES, json=padded, headers=with_key(member.id))
+    assert response.status_code == 201  # trimmed first, then measured
 
 
 async def test_deactivating_and_reactivating_are_their_own_entries(

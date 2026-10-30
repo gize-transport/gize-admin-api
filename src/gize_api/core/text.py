@@ -71,10 +71,12 @@ def _notes_short_enough(value: str) -> str:
 
 
 # Free text staff write down: line breaks kept, may be empty (the service stores "" as none).
+# The BeforeValidator still runs before the string checks; listed after them, pydantic
+# keeps trimming before the length check (listed first, it would check, then trim).
 Notes = Annotated[
     str,
-    BeforeValidator(_one_kind_of_line_break),
     StringConstraints(strip_whitespace=True, max_length=NOTES_MAX_LENGTH),
+    BeforeValidator(_one_kind_of_line_break),
     AfterValidator(_no_control_characters_but_line_breaks),
     AfterValidator(_nfc),
     AfterValidator(_notes_short_enough),
