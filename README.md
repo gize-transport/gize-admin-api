@@ -213,6 +213,23 @@ Admins manage staff under `/v1/staff` (GZ-013). Every route is for **active admi
   - **Site URL** (Authentication → URL Configuration): the admin portal's page where invited staff set their password, once the portal has it. Until then invite links land on Supabase's default.
   - **Custom SMTP** (Authentication → Emails → SMTP Settings): Supabase's built-in email only reaches addresses of the project's team, with a very low hourly limit.
 
+## Areas
+
+The list of neighbourhoods and landmarks everyone picks from (GZ-026), so "Ayat" typed three ways is one place. Corridors, pickup points, route requests and riders refer to areas by ID.
+
+| Endpoint | Who | What it does |
+| --- | --- | --- |
+| `POST /v1/areas` (`areas_create`) | staff | `{name}`. Requires `Idempotency-Key`. `201` with `Location`. |
+| `GET /v1/areas` (`areas_list`) | staff | Newest first, cursor-paginated. `q` finds names starting with it, ignoring case. |
+| `GET /v1/areas/{area_id}` (`areas_get`) | staff | One area. |
+| `PATCH /v1/areas/{area_id}` (`areas_update`) | staff | Rename. |
+| `DELETE /v1/areas/{area_id}` (`areas_delete`) | admin | Soft delete: hidden from lists, name free again, history kept. `204`. |
+
+- Names are trimmed and kept as typed. They're unique ignoring case among areas that aren't deleted (`409 AREA_NAME_TAKEN`). Two people adding the same name at once get one area and one `409`: the database's index decides.
+- Deleted areas answer `404`, like unknown ones.
+- Every change is audited (`area.created`, `area.renamed`, `area.deleted`), by value: areas hold no personal data.
+- Later tickets refuse deleting an area that's in use (corridors, pickup points, requests, riders).
+
 ## Audit log
 
 Every create, update or delete by staff is recorded in `gize.audit_log` in the same transaction as the change (`core/audit.py`):

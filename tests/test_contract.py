@@ -101,6 +101,9 @@ def test_every_operation_meets_the_contract(app_with_inputs: GizeAPI) -> None:
         successes = [status for status in responses if status.startswith("2")]
         assert successes, where
         for status, response in responses.items():
+            if status == "204":  # No Content: nothing to describe
+                assert "content" not in response, where
+                continue
             if status.startswith("2"):
                 assert "application/json" in response["content"], where
                 continue

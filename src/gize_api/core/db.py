@@ -232,6 +232,22 @@ def database_sqlstate(exc: BaseException) -> str | None:
     return sqlstate if isinstance(sqlstate, str) and len(sqlstate) == 5 else None
 
 
+UNIQUE_VIOLATION = "23505"
+
+
+def violated_unique_constraint(exc: BaseException) -> str | None:
+    """The name of the unique constraint or index `exc` broke, if it is a unique violation.
+
+    Services pre-check uniqueness for a clear error; this catches the race in which two
+    requests both passed the check (the database's index decides).
+    """
+    if database_sqlstate(exc) != UNIQUE_VIOLATION:
+        return None
+    driver_error = getattr(getattr(exc, "orig", None), "__cause__", None)
+    name = getattr(driver_error, "constraint_name", None)
+    return name if isinstance(name, str) else None
+
+
 def _raised_from(exc: BaseException, modules: tuple[str, ...]) -> bool:
     """True if a frame of `exc` or the errors it wraps belongs to one of `modules`."""
     return any(

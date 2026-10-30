@@ -14,6 +14,7 @@ from fastapi.telemetry import TelemetryConfig
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
+from gize_api.areas.router import router as area_routes
 from gize_api.audit_log.router import router as audit_log_routes
 from gize_api.core.config import Environment, Settings, load_settings
 from gize_api.core.contract import finish_contract
@@ -127,6 +128,7 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     app.include_router(health_router)
     app.include_router(staff_routes)
     app.include_router(audit_log_routes)
+    app.include_router(area_routes)
     return app
 
 

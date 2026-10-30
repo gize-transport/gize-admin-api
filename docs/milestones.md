@@ -134,12 +134,13 @@ Status: done · Depends on: GZ-011
 Two kinds of customer (product brief, GZ-025): individual riders prepay monthly on `public` and `student` routes, which collect sign-ups while `forming`; companies are billed afterwards for their own `corporate` routes. There is no waitlist: unmet demand is a route request. Order: GZ-025, 026, 020, 029, 021, 022, 023, 024 (report to the owner), 027, 028.
 
 ### GZ-025 · Brief and tickets for the two customer types
-Status: in review · Depends on: –
+Status: done · Depends on: –
 - Docs only: the product brief, `architecture.md` (data model, schedule times), `api-contract.md` (schedule times local `HH:MM`), `engineering-standards.md` and these tickets, for prepaid individuals and postpaid companies, forming routes, route requests, freed seats and "add a van". Replaces the corridor waitlist (owner decisions, 2026-10-30).
 
 ### GZ-026 · Areas
-Status: todo · Depends on: GZ-012
+Status: in review · Depends on: GZ-012
 - Staff manage the list of areas (neighbourhoods, landmarks): create, list (search by name), read, rename. Name unique ignoring case among live areas (`AREA_NAME_TAKEN`). Admin soft-delete, refused while something uses it (`AREA_IN_USE`). Each later ticket that adds a use of areas (GZ-020 corridors, GZ-023 pickup points, GZ-027 requests, M3 riders) extends the check.
+- Built: `gize.areas` (migration 0006; name trimmed, unique ignoring case among live areas via `uq_areas_name` on `lower(name)`; soft delete), `POST`/`GET /v1/areas`, `GET`/`PATCH`/`DELETE /v1/areas/{area_id}` (`areas_*`), `AREA_NAME_TAKEN`, audit `area.created`/`renamed`/`deleted`. Shared pieces: `core/text.py` (`ShortText`), `core/db.violated_unique_constraint` (the race behind a pre-check), and `committed_api` moved to tests/conftest.py. No in-use check yet: nothing refers to areas until GZ-020.
 
 ### GZ-020 · Corridors
 Status: todo · Depends on: GZ-026
