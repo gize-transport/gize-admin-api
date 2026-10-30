@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.areas.models import Area
 from gize_api.core.models import Base
+from gize_api.corridors.models import Corridor
 from gize_api.staff.models import Staff, StaffRole
 
 _sequence = itertools.count(1)
@@ -62,3 +63,15 @@ class AreaFactory(Factory[Area]):
 
     def defaults(self, sequence: int) -> dict[str, object]:
         return {"name": f"Area {sequence}"}
+
+
+class CorridorFactory(Factory[Corridor]):
+    """Corridors between two new areas unless `origin_area_id`/`destination_area_id` given."""
+
+    model = Corridor
+
+    async def create(self, session: AsyncSession, **overrides: object) -> Corridor:
+        for end in ("origin_area_id", "destination_area_id"):
+            if end not in overrides:
+                overrides[end] = (await AreaFactory().create(session)).id
+        return await super().create(session, **overrides)

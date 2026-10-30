@@ -10,12 +10,11 @@ import uuid
 from typing import Protocol
 
 import structlog
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core import audit
-from gize_api.core.errors import AppError, ErrorCode
+from gize_api.core.errors import AppError, ErrorCode, invalid_field
 from gize_api.core.idempotency import IdempotentRequest, claim, peek, record, replay_response
 from gize_api.core.logging import log_security_event
 from gize_api.core.pagination import paginate
@@ -240,9 +239,7 @@ async def _send_invite(auth: Inviter, invitation: StaffInvite) -> uuid.UUID:
     except AuthAccountExistsError:
         raise AppError(ErrorCode.AUTH_ACCOUNT_EXISTS) from None
     except AuthEmailRejectedError:
-        raise RequestValidationError(
-            [{"type": "value_error", "loc": ("body", "email"), "msg": "not accepted"}]
-        ) from None
+        raise invalid_field("body", "email") from None
     except AuthAdminError as exc:
         # The message names the cause (never the key or the address): an operator's cue.
         logger.error("supabase_invite_failed", reason=str(exc))

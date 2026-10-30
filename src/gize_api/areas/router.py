@@ -115,7 +115,7 @@ async def rename(
     summary="Delete an area (admins only)",
     status_code=204,
     response_class=Response,
-    responses=problem_responses(ErrorCode.NOT_FOUND),
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.AREA_IN_USE),
 )
 async def delete(
     area_id: uuid.UUID,
@@ -123,6 +123,6 @@ async def delete(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
     """Soft delete: the area disappears from lists and pickers, and its name can be used
-    again; history keeps it."""
+    again; history keeps it. 409 AREA_IN_USE while a corridor uses it."""
     await service.delete(session, caller, area_id)
     return Response(status_code=204)

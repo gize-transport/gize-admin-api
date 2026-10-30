@@ -32,6 +32,7 @@ from gize_api.core.request_id import RequestIdMiddleware
 from gize_api.core.security import TokenVerifier
 from gize_api.core.sentry import configure_sentry
 from gize_api.core.telemetry import Telemetry, configure_telemetry
+from gize_api.corridors.router import router as corridor_routes
 from gize_api.health.readiness import Readiness
 from gize_api.health.router import router as health_router
 from gize_api.integrations.supabase_auth import SupabaseAuthAdmin
@@ -129,6 +130,7 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     app.include_router(staff_routes)
     app.include_router(audit_log_routes)
     app.include_router(area_routes)
+    app.include_router(corridor_routes)
     return app
 
 

@@ -138,13 +138,14 @@ Status: done · Depends on: –
 - Docs only: the product brief, `architecture.md` (data model, schedule times), `api-contract.md` (schedule times local `HH:MM`), `engineering-standards.md` and these tickets, for prepaid individuals and postpaid companies, forming routes, route requests, freed seats and "add a van". Replaces the corridor waitlist (owner decisions, 2026-10-30).
 
 ### GZ-026 · Areas
-Status: in review · Depends on: GZ-012
+Status: done · Depends on: GZ-012
 - Staff manage the list of areas (neighbourhoods, landmarks): create, list (search by name), read, rename. Name unique ignoring case among live areas (`AREA_NAME_TAKEN`). Admin soft-delete, refused while something uses it (`AREA_IN_USE`). Each later ticket that adds a use of areas (GZ-020 corridors, GZ-023 pickup points, GZ-027 requests, M3 riders) extends the check.
 - Built: `gize.areas` (migration 0006; name trimmed, unique ignoring case among live areas via `uq_areas_name` on `lower(name)`; soft delete), `POST`/`GET /v1/areas`, `GET`/`PATCH`/`DELETE /v1/areas/{area_id}` (`areas_*`), `AREA_NAME_TAKEN`, audit `area.created`/`renamed`/`deleted`. Shared pieces: `core/text.py` (`ShortText`), `core/db.violated_unique_constraint` (the race behind a pre-check), and `committed_api` moved to tests/conftest.py. No in-use check yet: nothing refers to areas until GZ-020.
 
 ### GZ-020 · Corridors
-Status: todo · Depends on: GZ-026
+Status: in review · Depends on: GZ-026
 - A corridor is a pair of areas (from, to; different), each pair once among live corridors (`CORRIDOR_EXISTS`). Staff create, list, read, edit; admin soft-delete, refused while something uses it (`CORRIDOR_IN_USE`; GZ-021 routes and GZ-027 requests extend the check). No threshold.
+- Built: `gize.corridors` (migration 0007; FKs to areas `RESTRICT`; `ck_corridors_ends`; `uq_corridors_areas` on the pair among live corridors; soft delete), `corridors_*` endpoints with area names in one query, `CORRIDOR_EXISTS`, `AREA_IN_USE` (deleting an area a live corridor uses). Share locks on areas while a corridor refers to them; an update lock to delete one. Shared: `core/updates.PartialUpdate` (staff's PATCH uses it too), `core/errors.invalid_field`. `CORRIDOR_IN_USE` comes with GZ-021, when routes use corridors.
 
 ### GZ-029 · Companies
 Status: todo · Depends on: GZ-012

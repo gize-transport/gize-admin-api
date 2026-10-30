@@ -228,7 +228,26 @@ The list of neighbourhoods and landmarks everyone picks from (GZ-026), so "Ayat"
 - Names are trimmed and kept as typed. They're unique ignoring case among areas that aren't deleted (`409 AREA_NAME_TAKEN`). Two people adding the same name at once get one area and one `409`: the database's index decides.
 - Deleted areas answer `404`, like unknown ones.
 - Every change is audited (`area.created`, `area.renamed`, `area.deleted`), by value: areas hold no personal data.
-- Later tickets refuse deleting an area that's in use (corridors, pickup points, requests, riders).
+- Deleting an area a live corridor uses is refused (`409 AREA_IN_USE`). Pickup points, requests and riders add their checks in later tickets.
+
+## Corridors
+
+A corridor is a pair of areas, from (`origin`) and to (`destination`), that routes run along (GZ-020). Same roles as areas: staff manage, admins delete.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/corridors` (`corridors_create`) | `{origin_area_id, destination_area_id}`, two different live areas. Requires `Idempotency-Key`. `201` with `Location`. |
+| `GET /v1/corridors` (`corridors_list`) | Newest first, with both areas' names; filters `origin_area_id`, `destination_area_id`. |
+| `GET /v1/corridors/{corridor_id}` (`corridors_get`) | One corridor. |
+| `PATCH /v1/corridors/{corridor_id}` (`corridors_update`) | Change one end or both (leave one out to keep it; never `null`). |
+| `DELETE /v1/corridors/{corridor_id}` (`corridors_delete`) | Admins. Soft delete, `204`. |
+
+- Each pair exists once among live corridors (`409 CORRIDOR_EXISTS`); the way back (Mexico → Ayat) is another corridor.
+- An area that doesn't exist, or is deleted, is a `422` on its field.
+- A corridor and an area delete never cross: creating or changing a corridor share-locks its areas, and deleting an area waits for them (and they for it).
+- Audited by value: `corridor.created`, `corridor.updated`, `corridor.deleted`.
+- Routes (GZ-021) and route requests (GZ-027) will refuse deleting a corridor they use.
+
 
 ## Audit log
 

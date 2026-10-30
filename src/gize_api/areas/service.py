@@ -18,6 +18,7 @@ from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.idempotency import IdempotentRequest, claim, record, replay_response
 from gize_api.core.pagination import paginate
 from gize_api.core.security import CurrentStaff
+from gize_api.corridors.repository import uses_area as corridor_uses_area
 
 
 async def create(
@@ -75,7 +76,7 @@ async def rename(
 ) -> AreaRead:
     """Renaming to the current name changes and records nothing."""
     async with session.begin():
-        row = await _live(session, area_id, for_update=True)
+        row = await _live(session, area_id, lock="update")
         if await repository.name_taken(session, change.name, except_id=row.id):
             raise AppError(ErrorCode.AREA_NAME_TAKEN)
         before = audit.snapshot(AREA_AUDIT, row)
@@ -95,10 +96,12 @@ async def rename(
 
 
 async def delete(session: AsyncSession, caller: CurrentStaff, area_id: uuid.UUID) -> None:
-    """Soft delete (admins: the route's require_role). Later tickets refuse it while the
-    area is in use (corridors, pickup points, requests, riders)."""
+    """Soft delete (admins: the route's require_role), refused while the area is in use
+    (`_in_use`). The update lock waits for anything referring to the area right now."""
     async with session.begin():
-        row = await _live(session, area_id, for_update=True)
+        row = await _live(session, area_id, lock="update")
+        if await _in_use(session, row.id):
+            raise AppError(ErrorCode.AREA_IN_USE)
         before = audit.snapshot(AREA_AUDIT, row)
         row.deleted_at = func.now()  # the database's clock, like every other timestamp
         await session.flush()
@@ -114,8 +117,16 @@ async def delete(session: AsyncSession, caller: CurrentStaff, area_id: uuid.UUID
         )
 
 
-async def _live(session: AsyncSession, area_id: uuid.UUID, *, for_update: bool = False) -> Area:
-    row = await repository.get_live_area(session, area_id, for_update=for_update)
+async def _in_use(session: AsyncSession, area_id: uuid.UUID) -> bool:
+    """Live corridors use it (GZ-020). Pickup points (GZ-023), requests (GZ-027) and riders
+    (M3) add their checks here."""
+    return await corridor_uses_area(session, area_id)
+
+
+async def _live(
+    session: AsyncSession, area_id: uuid.UUID, *, lock: repository.Lock | None = None
+) -> Area:
+    row = await repository.get_live_area(session, area_id, lock=lock)
     if row is None:  # unknown or deleted: the same answer
         raise AppError(ErrorCode.NOT_FOUND)
     return row

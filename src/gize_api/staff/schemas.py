@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Any, Self
+from typing import Annotated
 
 from pydantic import (
     AfterValidator,
@@ -11,11 +11,11 @@ from pydantic import (
     Field,
     StrictBool,
     StringConstraints,
-    model_validator,
 )
 
 from gize_api.core.pagination import Page, PageParams
 from gize_api.core.text import no_control_characters
+from gize_api.core.updates import PartialUpdate
 from gize_api.staff.models import EMAIL_MAX_LENGTH, FULL_NAME_MAX_LENGTH, StaffRole
 
 EMAIL_LOCAL_PART_MAX_LENGTH = 64  # RFC 5321
@@ -46,16 +46,6 @@ FullName = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=FULL_NAME_MAX_LENGTH),
     AfterValidator(check_full_name),
 ]
-
-
-def _without_null(schema: dict[str, Any]) -> None:
-    """Optional fields that refuse null (the model validator): the contract shows them as
-    their type only, and asks for at least one."""
-    schema["minProperties"] = 1
-    for field in schema["properties"].values():  # each one `X | None = None`
-        (kept,) = [branch for branch in field.pop("anyOf") if branch != {"type": "null"}]
-        field.update(kept)
-        field.pop("default")
 
 
 class StaffMe(BaseModel):
@@ -108,19 +98,9 @@ class StaffInvite(BaseModel):
     role: StaffRole
 
 
-class StaffUpdate(BaseModel):
+class StaffUpdate(PartialUpdate):
     """What to change: leave a field out to keep it, and send at least one. Deactivating
     someone locks them out on their next request; `is_active: true` reactivates them."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra=_without_null)
-
     role: StaffRole | None = None
     is_active: StrictBool | None = None
-
-    @model_validator(mode="after")
-    def _a_change_without_nulls(self) -> Self:
-        if not self.model_fields_set:
-            raise ValueError("send role, is_active or both")
-        if any(getattr(self, name) is None for name in self.model_fields_set):
-            raise ValueError("leave a field out to keep it; null is not a value")
-        return self

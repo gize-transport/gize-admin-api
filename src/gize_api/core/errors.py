@@ -60,6 +60,8 @@ class ErrorCode(StrEnum):
     AUTH_ACCOUNT_EXISTS = "AUTH_ACCOUNT_EXISTS"
     LAST_ACTIVE_ADMIN = "LAST_ACTIVE_ADMIN"
     AREA_NAME_TAKEN = "AREA_NAME_TAKEN"
+    AREA_IN_USE = "AREA_IN_USE"
+    CORRIDOR_EXISTS = "CORRIDOR_EXISTS"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -103,6 +105,8 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.AUTH_ACCOUNT_EXISTS: ErrorSpec(409, "Sign-In Account Already Exists"),
     ErrorCode.LAST_ACTIVE_ADMIN: ErrorSpec(409, "Last Active Admin"),
     ErrorCode.AREA_NAME_TAKEN: ErrorSpec(409, "Area Name Taken"),
+    ErrorCode.AREA_IN_USE: ErrorSpec(409, "Area In Use"),
+    ErrorCode.CORRIDOR_EXISTS: ErrorSpec(409, "Corridor Exists"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }
@@ -159,6 +163,12 @@ class AppError(Exception):
         super().__init__(code.value)
         self.code = code
         self.headers = headers
+
+
+def invalid_field(*loc: str | int) -> RequestValidationError:
+    """A 422 VALIDATION_FAILED for one field a service judged (it refers to something that
+    does not exist, say), e.g. `raise invalid_field("body", "origin_area_id")`."""
+    return RequestValidationError([{"type": "value_error", "loc": loc, "msg": "not accepted"}])
 
 
 def problem_responses(*codes: ErrorCode) -> dict[int | str, dict[str, Any]]:
