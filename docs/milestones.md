@@ -139,44 +139,44 @@ Status: in review · Depends on: –
 
 ### GZ-026 · Areas
 Status: todo · Depends on: GZ-012
-- Staff manage the list of areas (neighbourhoods, landmarks): create, list (search by name), read, rename. Name unique ignoring case among live areas (`AREA_NAME_TAKEN`). Admin soft-delete, refused while a corridor, pickup point or open request uses it (`AREA_IN_USE`).
+- Staff manage the list of areas (neighbourhoods, landmarks): create, list (search by name), read, rename. Name unique ignoring case among live areas (`AREA_NAME_TAKEN`). Admin soft-delete, refused while something uses it (`AREA_IN_USE`). Each later ticket that adds a use of areas (GZ-020 corridors, GZ-023 pickup points, GZ-027 requests, M3 riders) extends the check.
 
 ### GZ-020 · Corridors
 Status: todo · Depends on: GZ-026
-- A corridor is a pair of areas (from, to; different), each pair once among live corridors (`CORRIDOR_EXISTS`). Staff create, list, read, edit; admin soft-delete, refused while a route or open request uses it (`CORRIDOR_IN_USE`). No threshold.
+- A corridor is a pair of areas (from, to; different), each pair once among live corridors (`CORRIDOR_EXISTS`). Staff create, list, read, edit; admin soft-delete, refused while something uses it (`CORRIDOR_IN_USE`; GZ-021 routes and GZ-027 requests extend the check). No threshold.
 
 ### GZ-029 · Companies
 Status: todo · Depends on: GZ-012
-- Company accounts: name (unique among live companies), contact person (name, phone E.164, email: personal data, redacted in the audit log, never logged), billing `postpaid`, notes, active/inactive. Staff create, list, read, edit; admin deactivate or soft-delete, refused while the company has a route that is not deleted (`COMPANY_IN_USE`).
+- Company accounts: name (unique among live companies), contact person (name, phone E.164, email: personal data, redacted in the audit log, never logged), billing `postpaid`, notes, active/inactive. Staff create, list, read, edit and deactivate (refused while one of its routes is active or paused: `COMPANY_IN_USE`). Admin soft-delete, refused while it has a route that is not deleted (GZ-021 adds the route checks).
 
 ### GZ-021 · Routes – create, read, list, update
 Status: todo · Depends on: GZ-020, GZ-029
 - Code (unique among live routes, `ROUTE_CODE_TAKEN`), corridor, type, school name (`student`, required) or company (`corporate`, required, active), morning and return times (local `HH:MM`), seats (1–60), launch minimum (`public`/`student`: 1 to seats; none for `corporate`). Created as `draft`. Status and prices are not set here.
-- Creates `route_assignments` (start and end dates, `reserved`/`active`/`ended`; the rider link comes in M3). Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken in any month (`SEATS_BELOW_TAKEN`, route row locked). Corridor and type cannot change while riders are on the route (`ROUTE_HAS_RIDERS`).
+- Creates `route_assignments` with id, route_id, start_date, end_date, status (`reserved`/`active`/`ended`); GZ-023 adds the pickup point, M3 the rider, plan and Saturday add-on. Seats are counted per day: seats taken on a day = assignments covering it. Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken on any day from today (`SEATS_BELOW_TAKEN`, route row locked), and never below the launch minimum. Corridor, type, school and company cannot change while riders are on the route (`ROUTE_HAS_RIDERS`).
 - Filters (type, status, corridor, company), cursor pagination.
 
 ### GZ-022 · Route prices (admin only)
 Status: todo · Depends on: GZ-021
-- Separate endpoint for prices (round trip, one-way, optional Saturday add-on – Saturday only for `public` routes; whole birr 1–100,000). Refused for `corporate` routes. Staff cannot change prices via any endpoint (test every route endpoint).
+- Separate endpoint for prices (round trip, one-way, optional Saturday add-on – Saturday only for `public` routes; whole birr 1–100,000). Refused for `corporate` routes. Staff cannot change prices via any endpoint (test every route endpoint); GZ-028's copy keeps the original's prices unchanged.
 
 ### GZ-023 · Pickup points
 Status: todo · Depends on: GZ-021, GZ-026
-- Add, edit, remove, reorder pickup points: area, description, morning pickup time (local), optional location (latitude and longitude together, within Ethiopia). Unique order per route, times ascending for the morning run. Removing is a soft delete staff may do, refused while riders use the stop (`PICKUP_POINT_HAS_RIDERS`).
+- Add, edit, remove, reorder pickup points: area, description, morning pickup time (local), optional location (latitude and longitude together, within Ethiopia). Unique order per route, times ascending for the morning run. Removing is a soft delete staff may do (an owner-approved exception to admin-only deletes), refused while riders use the stop (`PICKUP_POINT_HAS_RIDERS`) and, unless the route is `draft`, for its last stop (`LAST_PICKUP_POINT`).
 
 ### GZ-024 · Route status and deletion
 Status: todo · Depends on: GZ-022, GZ-023
-- `public`/`student`: `draft` → `forming` (prices and a pickup point, else `ROUTE_NOT_READY`) → `active` (reserved riders ≥ launch minimum, else `NOT_ENOUGH_RIDERS`; reserved riders become active in the same transaction) ⇄ `paused`; `forming` → `draft` only while nobody is reserved. `corporate`: `draft` → `active` (a pickup point and an active company) ⇄ `paused`. Other moves: `INVALID_STATUS_CHANGE`. Repeating a move changes nothing. Staff.
+- `public`/`student`: `draft` → `forming` (round-trip and one-way prices and a pickup point, else `ROUTE_NOT_READY`) → `active` (staff choose the launch date, the 1st of this or a later month; riders reserved for that month ≥ launch minimum, else `NOT_ENOUGH_RIDERS`; reservations become active from that date in the same transaction, earlier ones moved to it) ⇄ `paused`; `forming` → `draft` only while nobody is reserved. `corporate`: `draft` → `active` (a pickup point and an active company) ⇄ `paused`. Other moves: `INVALID_STATUS_CHANGE`. Repeating a move changes nothing. Staff.
 - Admin soft delete, refused while a rider is reserved or active (`ROUTE_HAS_RIDERS`).
-- After this ticket: report to the owner (routes working end to end) before GZ-027.
+- After this ticket: report to the owner (routes working end to end; launching is tested with reservations made by test factories, since sign-ups come in M3) before GZ-027.
 
 ### GZ-027 · Route requests (staff-recorded)
 Status: todo · Depends on: GZ-024
-- Individual demand: `new_areas` (from/to areas, or free text for an area not listed yet) or `full_route` (a route). Rider type (adult/student), school, preferred times, contact name and phone (personal data), notes, source. `new` → `matched` (to a route) or `declined` (reason). The same phone cannot have two open requests for the same thing (`ROUTE_REQUEST_EXISTS`).
+- Individual demand: `new_areas` (from/to areas, or free text for an area not listed yet) or `full_route` (a route). Rider type (adult/student), school, preferred times, contact name and phone (personal data), notes, source. `new` → `matched` (to a route) or `declined` (reason). A duplicate open request (same phone, kind, route or area pair, and rider name) is refused (`ROUTE_REQUEST_EXISTS`); siblings are separate requests. Statuses `new` → `matched` → `fulfilled`, or `declined`; admin soft-delete.
 - Summary: open requests per area pair and per full route, next to each route's free seats next month; bounded.
 
 ### GZ-028 · Add a van
 Status: todo · Depends on: GZ-024
-- Copy a route: corridor, type, school or company, times, prices, pickup points; new code, own seats and launch minimum, `copied_from_route_id`. An individual route's copy starts `forming`; a corporate copy starts `draft`. Idempotency-Key.
+- Copy a route: corridor, type, school or company, times, prices (unchanged: staff may copy, not change, them), pickup points; new code, own seats and launch minimum, `copied_from_route_id`. An individual route's copy starts `forming` if the original meets the forming requirements, otherwise `draft`; a corporate copy starts `draft`. Idempotency-Key.
 
 ---
 
@@ -191,8 +191,8 @@ Status: todo · Depends on: GZ-009, GZ-030
 - `POST /v1/verification/request` and `/verify`; 6-digit codes stored hashed, 10-minute expiry, 5 attempts; returns a short-lived signed "verified phone" token. Limits: 3 SMS/hour/phone, 10/hour/IP, fail closed.
 
 ### GZ-032 · Public registration – adult rider
-Status: todo · Depends on: GZ-031, GZ-021
-- Requires verified-phone token and Idempotency-Key. Creates the rider and, on the chosen `public` route, a reservation (`forming`) or an active place with a free seat (`active`) from the 1st of the next month it is free; otherwise (route full, or no route for their areas) a route request. Limits 5/hour/IP, 3/day/phone.
+Status: todo · Depends on: GZ-031, GZ-024, GZ-027
+- Requires verified-phone token and Idempotency-Key. Creates the rider and either a reservation on a chosen `forming` `public` route (from the 1st of a month; seats checked under the route row lock: the shared assignment service and its parallel last-seat test are built here, and GZ-035 reuses them) or a route request (an active route, full or not, or no route for their areas). It never gives a place on an active route directly: freed seats go to the oldest request (GZ-040). Limits 5/hour/IP, 3/day/phone.
 
 ### GZ-033 · Public registration – parent and student
 Status: todo · Depends on: GZ-032
@@ -203,10 +203,10 @@ Status: todo · Depends on: GZ-032
 - List/search/filter riders (type, status, route), read detail, update, soft delete (admin). Guardian–child integrity enforced.
 
 ### GZ-035 · Assign rider to route
-Status: todo · Depends on: GZ-034, GZ-023
+Status: todo · Depends on: GZ-034, GZ-023, GZ-032
 - Assign/move a rider to a route + pickup point with plan and Saturday add-on; route row locked; never exceeds seats in any month; rule checks (student ↔ student route, adult ↔ public route, corporate ↔ that company's route). Individual riders: a `forming` route gives a reservation, an `active` one a place, starting on the 1st of a month; company riders (recorded by Gize staff) start on any day.
 - A rider leaves a route: individual riders at the end of a month (the seat stays empty until the next month), company riders on any day.
-- Acceptance: parallel test – two assignments for the last seat → exactly one succeeds (`ROUTE_FULL` for the other, who can be recorded as a route request).
+- Acceptance: parallel test – two assignments for the last seat → exactly one succeeds (`ROUTE_FULL` for the other, who can be recorded as a route request); uses GZ-032's assignment service, extended to staff assignment and company riders.
 - The parallel test needs committed data on two connections: `db_session` runs inside one rolled-back transaction, so add a committed-data fixture that truncates its tables afterwards (from GZ-006 review).
 
 ---
@@ -263,7 +263,7 @@ Status: todo · Depends on: GZ-061
 - Deploy API + worker to staging; run migrations as `gize_migrator`; `RUNBOOK.md` (deploy, rollback, rotate secrets, restore backup, what alerts mean).
 
 ### GZ-064 · Overview summary endpoint
-Status: todo · Depends on: GZ-041, GZ-052
+Status: todo · Depends on: GZ-040, GZ-041, GZ-052
 - `GET /v1/overview` (staff): counts of active routes, riders, forming routes ready to launch, open route requests, driver applications awaiting review; one bounded query each, no N+1.
 
 ### GZ-065 · Automated dependency and image updates

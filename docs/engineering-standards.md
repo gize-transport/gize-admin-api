@@ -21,7 +21,7 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
 - **Transactions:** multi-step writes run in one transaction owned by the service. Default isolation READ COMMITTED; state in the plan when something needs more. Seat assignment locks the route row (`SELECT … FOR UPDATE`) and re-counts seats inside the transaction, so a route is never overbooked.
 - **Every list query is paginated and bounded** (default 25, max 100, cursor-based). Watch for N+1 queries – use `selectinload`/joins deliberately; tests assert query counts for list endpoints. Every new query pattern names the index it uses; add indexes in the same migration.
 - **Migrations are backward-compatible with the deployed code (expand/contract).** Add columns nullable or with defaults; backfill in a separate step; remove old columns only in a later release. Every migration has a working `downgrade()` that is tested in CI (upgrade → downgrade → upgrade). No destructive change without a written rollback plan in the PR.
-- **Soft delete** (`deleted_at`) for business records; only Admin can delete. Audit log rows are append-only and never deleted by the app.
+- **Soft delete** (`deleted_at`) for business records; only Admin can delete. One owner-approved exception: staff may remove a pickup point (a route edit, GZ-025). Audit log rows are append-only and never deleted by the app.
 - **Audit log:** every create/update/delete by staff writes an `audit_log` row in the same transaction (actor, action, entity, before/after with PII-minimised fields, request ID).
 - Constraints live in the database too: NOT NULL, CHECK (phone format, positive seats, prices ≥ 0), UNIQUE (route code, plate), foreign keys with explicit `ON DELETE` behaviour.
 
@@ -40,7 +40,7 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
 - Defaults:
   - Staff endpoints: 120 requests/minute per user.
   - Staff invites (each sends an email): 20/hour per admin, on top of the staff limit.
-  - Public registration and route requests: 5/hour per IP and 3/day per phone.
+  - Public registration and route requests (one shared `PUBLIC_SIGNUP` budget): 5/hour per IP and 3/day per phone.
   - Phone verification SMS: 3/hour per phone and 10/hour per IP (each SMS costs money). Code entry: 5 attempts per code, then the code is invalidated.
   - Expensive endpoints (exports, bulk actions): per-endpoint limits stated in the ticket plan.
 - Return **429** with `Retry-After` and a problem+json body.
