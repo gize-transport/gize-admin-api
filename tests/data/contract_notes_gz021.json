@@ -1,0 +1,200 @@
+{
+ "_about": "GZ-021's contract release (a9f5302 to 44d7410): the 6 real changes and a sample of oasdiff 1.33's error-code lines in both wordings, with contract_codes' real output. The full changelog had 1002 entries.",
+ "changelog": [
+  {
+   "id": "response-non-success-status-added",
+   "operation": "DELETE",
+   "path": "/v1/companies/{company_id}",
+   "text": "added the non-success response with the status `409`"
+  },
+  {
+   "id": "response-non-success-status-added",
+   "operation": "DELETE",
+   "path": "/v1/corridors/{corridor_id}",
+   "text": "added the non-success response with the status `409`"
+  },
+  {
+   "id": "endpoint-added",
+   "operation": "GET",
+   "path": "/v1/routes",
+   "text": "endpoint added"
+  },
+  {
+   "id": "endpoint-added",
+   "operation": "POST",
+   "path": "/v1/routes",
+   "text": "endpoint added"
+  },
+  {
+   "id": "endpoint-added",
+   "operation": "GET",
+   "path": "/v1/routes/{route_id}",
+   "text": "endpoint added"
+  },
+  {
+   "id": "endpoint-added",
+   "operation": "PATCH",
+   "path": "/v1/routes/{route_id}",
+   "text": "endpoint added"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `COMPANY_IN_USE` enum value to the `anyOf[subschema #1: ValidationProblem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `COMPANY_IN_USE` enum value to the `anyOf[subschema #2: Problem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `COMPANY_IN_USE` enum value to the `code` response property for the response status `401`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `COMPANY_IN_USE` enum value to the `code` response property for the response status `403`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `CORRIDOR_IN_USE` enum value to the `anyOf[subschema #1: ValidationProblem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `CORRIDOR_IN_USE` enum value to the `anyOf[subschema #2: Problem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `CORRIDOR_IN_USE` enum value to the `code` response property for the response status `401`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `CORRIDOR_IN_USE` enum value to the `code` response property for the response status `403`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `ROUTE_CODE_TAKEN` enum value to the `anyOf[subschema #1: ValidationProblem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `ROUTE_CODE_TAKEN` enum value to the `anyOf[subschema #2: Problem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `ROUTE_CODE_TAKEN` enum value to the `code` response property for the response status `401`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `ROUTE_CODE_TAKEN` enum value to the `code` response property for the response status `403`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `ROUTE_HAS_RIDERS` enum value to the `anyOf[subschema #1: ValidationProblem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `ROUTE_HAS_RIDERS` enum value to the `anyOf[subschema #2: Problem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `ROUTE_HAS_RIDERS` enum value to the `code` response property for the response status `401`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `ROUTE_HAS_RIDERS` enum value to the `code` response property for the response status `403`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `SEATS_BELOW_LAUNCH_MINIMUM` enum value to the `anyOf[subschema #1: ValidationProblem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `SEATS_BELOW_LAUNCH_MINIMUM` enum value to the `anyOf[subschema #2: Problem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `SEATS_BELOW_LAUNCH_MINIMUM` enum value to the `code` response property for the response status `401`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `SEATS_BELOW_LAUNCH_MINIMUM` enum value to the `code` response property for the response status `403`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `SEATS_BELOW_TAKEN` enum value to the `anyOf[subschema #1: ValidationProblem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `SEATS_BELOW_TAKEN` enum value to the `anyOf[subschema #2: Problem]/code` response property for the response status `422`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `SEATS_BELOW_TAKEN` enum value to the `code` response property for the response status `401`"
+  },
+  {
+   "id": "response-property-enum-value-added",
+   "operation": "GET",
+   "path": "/v1/areas",
+   "text": "added the new `SEATS_BELOW_TAKEN` enum value to the `code` response property for the response status `403`"
+  }
+ ],
+ "codes": {
+  "removed": [],
+  "added": [
+   "DELETE /v1/companies/{company_id} 409 COMPANY_IN_USE",
+   "DELETE /v1/corridors/{corridor_id} 409 CORRIDOR_IN_USE",
+   "ErrorCode COMPANY_IN_USE",
+   "ErrorCode CORRIDOR_IN_USE",
+   "ErrorCode ROUTE_CODE_TAKEN",
+   "ErrorCode ROUTE_HAS_RIDERS",
+   "ErrorCode SEATS_BELOW_LAUNCH_MINIMUM",
+   "ErrorCode SEATS_BELOW_TAKEN",
+   "PATCH /v1/companies/{company_id} 409 COMPANY_IN_USE",
+   "PATCH /v1/corridors/{corridor_id} 409 CORRIDOR_IN_USE"
+  ]
+ }
+}
