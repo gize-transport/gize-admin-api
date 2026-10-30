@@ -8,8 +8,7 @@ from sqlalchemy import Select, exists, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.areas.models import Area
-
-LIKE_ESCAPE = "/"
+from gize_api.core.db import LIKE_ESCAPE, escape_like
 
 Lock = Literal["update", "share"]
 
@@ -45,13 +44,8 @@ def live_areas(*, q: str | None) -> Select[Area]:
     statement = select(Area).where(Area.not_deleted())
     if q is not None:
         statement = statement.where(
-            func.lower(Area.name).startswith(func.lower(literal(_escaped(q))), escape=LIKE_ESCAPE)
+            func.lower(Area.name).startswith(
+                func.lower(literal(escape_like(q))), escape=LIKE_ESCAPE
+            )
         )
     return statement
-
-
-def _escaped(text: str) -> str:
-    """LIKE wildcards in `text` as plain characters: "%" matches a percent sign."""
-    for char in (LIKE_ESCAPE, "%", "_"):
-        text = text.replace(char, LIKE_ESCAPE + char)
-    return text

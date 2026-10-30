@@ -13,20 +13,11 @@ from pydantic import (
     StringConstraints,
 )
 
+from gize_api.core.contact import EMAIL_MAX_LENGTH, Email
 from gize_api.core.pagination import Page, PageParams
 from gize_api.core.text import no_control_characters
 from gize_api.core.updates import PartialUpdate
-from gize_api.staff.models import EMAIL_MAX_LENGTH, FULL_NAME_MAX_LENGTH, StaffRole
-
-EMAIL_LOCAL_PART_MAX_LENGTH = 64  # RFC 5321
-# Punctuation escaped: browsers compile `<input pattern>` with the `v` flag, which refuses
-# unescaped `/ { | } -` in a class (tests/staff/test_invite.py runs it under node).
-_LOCAL_PART = r"[A-Za-z0-9.!#$%&'*+\/=?^_`\{\|\}~\-]"
-_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?"
-# The HTML form rule for email addresses (what Supabase accepts too), ASCII only, with a dot
-# in the domain: no spaces, control or invisible characters ever reach Supabase. The
-# invite email itself proves the address.
-EMAIL_PATTERN = rf"^{_LOCAL_PART}{{1,{EMAIL_LOCAL_PART_MAX_LENGTH}}}@{_LABEL}(?:\.{_LABEL})+$"
+from gize_api.staff.models import FULL_NAME_MAX_LENGTH, StaffRole
 
 
 def check_full_name(name: str) -> str:
@@ -34,13 +25,6 @@ def check_full_name(name: str) -> str:
     return no_control_characters(name)
 
 
-# Trimmed and lower-case, as gize.staff stores it (its check refuses anything else).
-Email = Annotated[
-    str,
-    StringConstraints(
-        strip_whitespace=True, to_lower=True, max_length=EMAIL_MAX_LENGTH, pattern=EMAIL_PATTERN
-    ),
-]
 FullName = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=FULL_NAME_MAX_LENGTH),

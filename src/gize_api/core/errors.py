@@ -62,6 +62,7 @@ class ErrorCode(StrEnum):
     AREA_NAME_TAKEN = "AREA_NAME_TAKEN"
     AREA_IN_USE = "AREA_IN_USE"
     CORRIDOR_EXISTS = "CORRIDOR_EXISTS"
+    COMPANY_NAME_TAKEN = "COMPANY_NAME_TAKEN"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -107,6 +108,7 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.AREA_NAME_TAKEN: ErrorSpec(409, "Area Name Taken"),
     ErrorCode.AREA_IN_USE: ErrorSpec(409, "Area In Use"),
     ErrorCode.CORRIDOR_EXISTS: ErrorSpec(409, "Corridor Exists"),
+    ErrorCode.COMPANY_NAME_TAKEN: ErrorSpec(409, "Company Name Taken"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

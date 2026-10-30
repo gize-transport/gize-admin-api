@@ -249,6 +249,23 @@ A corridor is a pair of areas, from (`origin`) and to (`destination`), that rout
 - Routes (GZ-021) will refuse deleting a corridor they use (`CORRIDOR_IN_USE`). Route requests refer to areas, not corridors.
 
 
+## Companies
+
+Postpaid customers whose staff ride their own corporate routes (GZ-029). Staff manage companies, including deactivating one; admins delete them.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/companies` (`companies_create`) | `{name, contact_name, contact_phone, contact_email, notes?}`. Requires `Idempotency-Key`. Created active, billing `postpaid`. |
+| `GET /v1/companies` (`companies_list`) | Newest first; `q` (names starting with it) and `is_active`. |
+| `GET /v1/companies/{company_id}` (`companies_get`) | One company. |
+| `PATCH /v1/companies/{company_id}` (`companies_update`) | Change any field except billing; `is_active: false` deactivates; empty `notes` clear them. |
+| `DELETE /v1/companies/{company_id}` (`companies_delete`) | Admins. Soft delete, `204`. |
+
+- **Names** are unique ignoring case among live companies (`409 COMPANY_NAME_TAKEN`), trimmed and normalised like area names.
+- **Phones** may be typed any usual way (`0911 23 45 67`, `+251-911-234567`) and are stored E.164, `+2519…` or `+2517…` (`core/contact.py`, reused for riders in M3). Emails are stored trimmed and lower-case.
+- **Audit:** `company.created`, `company.updated`, `company.deactivated`, `company.reactivated`, `company.deleted`. The contact details and notes are personal data, shown only as `[redacted]`; name, billing and status by value.
+- **Coming with GZ-021:** deactivating a company with an active or paused route, or deleting one with any route, is refused (`COMPANY_IN_USE`).
+
 ## Audit log
 
 Every create, update or delete by staff is recorded in `gize.audit_log` in the same transaction as the change (`core/audit.py`):

@@ -3,10 +3,10 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from gize_api.core.pagination import Page, PageParams
-from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, ShortText
+from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, SearchText, ShortText
 
 
 class AreaWrite(BaseModel):
@@ -32,11 +32,6 @@ class AreaPage(Page[AreaRead]):
 
 class AreaListParams(PageParams):
     """`q`: names starting with it, ignoring case (for a picker as staff type). Blank means
-    no filter: a picker may send its input box as it is."""
+    no filter."""
 
-    q: ShortText | None = None
-
-    @field_validator("q", mode="before")
-    @classmethod
-    def _blank_is_no_filter(cls, value: object) -> object:
-        return None if isinstance(value, str) and not value.strip() else value
+    q: SearchText = None
