@@ -134,6 +134,7 @@ async def test_a_deleted_areas_name_can_be_used_again(
         {"name": ""},
         {"name": "   "},
         {"name": "x" * 101},
+        {"name": "\u0958" * 100},  # 100 characters that NFC makes 200
         {"name": "Ay\u0000at"},
         {"name": "Ay\nat"},
         {"name": 7},

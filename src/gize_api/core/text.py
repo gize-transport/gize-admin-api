@@ -25,10 +25,19 @@ def same_looking(value: str) -> str:
     return " ".join(unicodedata.normalize("NFC", value).split())
 
 
+def short_enough(value: str) -> str:
+    """The length again after normalising: NFC can make text longer (U+0958 becomes two
+    characters), and the column holds SHORT_TEXT_MAX_LENGTH."""
+    if len(value) > SHORT_TEXT_MAX_LENGTH:
+        raise ValueError(f"must be at most {SHORT_TEXT_MAX_LENGTH} characters")
+    return value
+
+
 # A name or short description: an area, a pickup point, a company.
 ShortText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=SHORT_TEXT_MAX_LENGTH),
     AfterValidator(no_control_characters),  # first: a newline is refused, not collapsed
     AfterValidator(same_looking),
+    AfterValidator(short_enough),
 ]
