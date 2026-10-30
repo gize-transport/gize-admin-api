@@ -1,5 +1,5 @@
-"""/v1/routes: routes, created, listed, read and edited by staff (GZ-021). Status, prices
-and deletion have their own endpoints (GZ-024, GZ-022)."""
+"""/v1/routes: routes, created, listed, read and edited by staff (GZ-021); prices set by
+admins (GZ-022). Status and deletion have their own endpoints (GZ-024)."""
 
 import uuid
 from typing import Annotated
@@ -10,17 +10,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gize_api.core.db import get_session
 from gize_api.core.errors import ErrorCode, problem_responses
 from gize_api.core.idempotency import IdempotentRequest, idempotent_request
-from gize_api.core.security import CurrentStaff, current_staff, staff_router
+from gize_api.core.security import CurrentStaff, current_staff, require_role, staff_router
 from gize_api.routes import service
 from gize_api.routes.schemas import (
     RouteCreate,
     RouteListParams,
     RoutePage,
+    RoutePricesSet,
     RouteRead,
     RouteUpdate,
 )
+from gize_api.staff.models import StaffRole
 
 router = staff_router(prefix="/v1/routes", tags=["routes"])
+
+require_admin = require_role(StaffRole.ADMIN)
 
 
 def route_list_params(params: Annotated[RouteListParams, Query()]) -> RouteListParams:
@@ -124,3 +128,25 @@ async def update(
     """
     response.headers["Cache-Control"] = "no-store"
     return await service.update(session, caller, route_id, change)
+
+
+@router.put(
+    "/{route_id}/prices",
+    operation_id="routes_set_prices",
+    summary="Set a route's prices (admins only)",
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.ROUTE_HAS_NO_PRICES),
+)
+async def set_prices(
+    route_id: uuid.UUID,
+    prices: RoutePricesSet,
+    response: Response,
+    caller: CurrentStaff = Depends(require_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> RouteRead:
+    """Round trip and one-way, whole birr a month; Saturday add-on on public routes only
+    (left out or null: none). Staff can't change prices through any endpoint.
+
+    - 409 ROUTE_HAS_NO_PRICES: a corporate route (billed per company).
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return await service.set_prices(session, caller, route_id, prices)

@@ -602,6 +602,7 @@
           "ROUTE_HAS_RIDERS",
           "CORRIDOR_IN_USE",
           "COMPANY_IN_USE",
+          "ROUTE_HAS_NO_PRICES",
           "INTERNAL_ERROR",
           "SERVICE_UNAVAILABLE"
         ],
@@ -857,6 +858,46 @@
           "next_cursor"
         ],
         "title": "RoutePage",
+        "type": "object"
+      },
+      "RoutePricesSet": {
+        "additionalProperties": false,
+        "description": "All of a route's prices at once (admins). No Saturday price (left out or null) means\nno Saturday add-on; only public routes have one.",
+        "properties": {
+          "one_way": {
+            "description": "Whole birr a month.",
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "One Way",
+            "type": "integer"
+          },
+          "round_trip": {
+            "description": "Whole birr a month.",
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Round Trip",
+            "type": "integer"
+          },
+          "saturday": {
+            "anyOf": [
+              {
+                "description": "Whole birr a month.",
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saturday"
+          }
+        },
+        "required": [
+          "round_trip",
+          "one_way"
+        ],
+        "title": "RoutePricesSet",
         "type": "object"
       },
       "RouteRead": {
@@ -4576,6 +4617,172 @@
           }
         ],
         "summary": "Change a route",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{route_id}/prices": {
+      "put": {
+        "description": "Round trip and one-way, whole birr a month; Saturday add-on on public routes only\n(left out or null: none). Staff can't change prices through any endpoint.\n\n- 409 ROUTE_HAS_NO_PRICES: a corporate route (billed per company).",
+        "operationId": "routes_set_prices",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Route Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutePricesSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Route Has No Prices",
+            "x-error-codes": [
+              "ROUTE_HAS_NO_PRICES"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set a route's prices (admins only)",
         "tags": [
           "routes"
         ]

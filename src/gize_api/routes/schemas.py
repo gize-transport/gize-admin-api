@@ -11,7 +11,13 @@ from gize_api.core.schedule import LocalTime
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, ShortText
 from gize_api.core.updates import PartialUpdate
 from gize_api.corridors.schemas import AreaRef
-from gize_api.routes.models import MAX_SEATS, ROUTE_CODE_MAX_LENGTH, RouteStatus, RouteType
+from gize_api.routes.models import (
+    MAX_PRICE,
+    MAX_SEATS,
+    ROUTE_CODE_MAX_LENGTH,
+    RouteStatus,
+    RouteType,
+)
 
 # Letters (either case), digits and dashes, 2 to 20; stored upper-case: "bole-mex-01" is
 # "BOLE-MEX-01" (the table's check is upper-case only).
@@ -88,6 +94,20 @@ class RouteUpdate(PartialUpdate):
         if seats is not None and minimum is not None and minimum > seats:
             raise ValueError("the launch minimum can't be more than the seats")
         return self
+
+
+Price = Annotated[int, Field(ge=1, le=MAX_PRICE, strict=True, description="Whole birr a month.")]
+
+
+class RoutePricesSet(BaseModel):
+    """All of a route's prices at once (admins). No Saturday price (left out or null) means
+    no Saturday add-on; only public routes have one."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    round_trip: Price
+    one_way: Price
+    saturday: Price | None = None
 
 
 class CorridorRef(BaseModel):
