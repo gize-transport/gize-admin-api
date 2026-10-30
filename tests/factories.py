@@ -19,6 +19,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.areas.models import Area
+from gize_api.companies.models import Company
 from gize_api.core.models import Base
 from gize_api.corridors.models import Corridor
 from gize_api.staff.models import Staff, StaffRole
@@ -75,3 +76,15 @@ class CorridorFactory(Factory[Corridor]):
             if end not in overrides:
                 overrides[end] = (await AreaFactory().create(session)).id
         return await super().create(session, **overrides)
+
+
+class CompanyFactory(Factory[Company]):
+    model = Company
+
+    def defaults(self, sequence: int) -> dict[str, object]:
+        return {
+            "name": f"Company {sequence}",
+            "contact_name": f"Contact {sequence}",
+            "contact_phone": f"+2519{sequence:08d}",
+            "contact_email": f"contact{sequence}@example.com",
+        }

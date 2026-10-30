@@ -16,6 +16,7 @@ from starlette.types import ASGIApp
 
 from gize_api.areas.router import router as area_routes
 from gize_api.audit_log.router import router as audit_log_routes
+from gize_api.companies.router import router as company_routes
 from gize_api.core.config import Environment, Settings, load_settings
 from gize_api.core.contract import finish_contract
 from gize_api.core.db import create_engine, create_sessionmaker
@@ -131,6 +132,7 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     app.include_router(audit_log_routes)
     app.include_router(area_routes)
     app.include_router(corridor_routes)
+    app.include_router(company_routes)
     return app
 
 

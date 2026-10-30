@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.core.audit import record, snapshot
 from gize_api.core.config import ConfigError, Settings, load_settings
+from gize_api.core.contact import EMAIL_MAX_LENGTH
 from gize_api.core.db import (
     create_engine,
     create_sessionmaker,
@@ -36,7 +37,6 @@ from gize_api.core.logging import configure_logging, log_security_event
 from gize_api.core.sentry import configure_sentry
 from gize_api.integrations.supabase_auth import AuthAdminError, AuthUser, SupabaseAuthAdmin
 from gize_api.staff.models import (
-    EMAIL_MAX_LENGTH,
     FULL_NAME_MAX_LENGTH,
     STAFF_AUDIT,
     Staff,

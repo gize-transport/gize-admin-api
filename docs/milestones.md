@@ -143,13 +143,14 @@ Status: done · Depends on: GZ-012
 - Built: `gize.areas` (migration 0006; name trimmed, unique ignoring case among live areas via `uq_areas_name` on `lower(name)`; soft delete), `POST`/`GET /v1/areas`, `GET`/`PATCH`/`DELETE /v1/areas/{area_id}` (`areas_*`), `AREA_NAME_TAKEN`, audit `area.created`/`renamed`/`deleted`. Shared pieces: `core/text.py` (`ShortText`), `core/db.violated_unique_constraint` (the race behind a pre-check), and `committed_api` moved to tests/conftest.py. No in-use check yet: nothing refers to areas until GZ-020.
 
 ### GZ-020 · Corridors
-Status: in review · Depends on: GZ-026
+Status: done · Depends on: GZ-026
 - A corridor is a pair of areas (from, to; different), each pair once among live corridors (`CORRIDOR_EXISTS`). Staff create, list, read, edit; admin soft-delete (refusing it while routes use the corridor is GZ-021's `CORRIDOR_IN_USE`, as nothing else refers to corridors). No threshold.
 - Built: `gize.corridors` (migration 0007; FKs to areas `RESTRICT`; `ck_corridors_ends`; `uq_corridors_areas` on the pair among live corridors; soft delete), `corridors_*` endpoints with area names in one query, `CORRIDOR_EXISTS`, `AREA_IN_USE` (deleting an area a live corridor uses). Share locks on areas while a corridor refers to them; an update lock to delete one. Shared: `core/updates.PartialUpdate` (staff's PATCH uses it too), `core/errors.invalid_field`. `CORRIDOR_IN_USE` comes with GZ-021, when routes use corridors.
 
 ### GZ-029 · Companies
-Status: todo · Depends on: GZ-012
+Status: in review · Depends on: GZ-012
 - Company accounts: name (unique among live companies), contact person (name, phone E.164, email: personal data, redacted in the audit log, never logged), billing `postpaid`, notes, active/inactive. Staff create, list, read, edit and deactivate (refused while one of its routes is active or paused: `COMPANY_IN_USE`). Admin soft-delete, refused while it has a route that is not deleted (GZ-021 adds the route checks).
+- Built: `gize.companies` (migration 0008; name unique ignoring case among live companies; phone E.164 and email lower-case, checked by the table; billing `postpaid`; notes optional; soft delete), `companies_*` endpoints, `COMPANY_NAME_TAKEN`, audit with contact details and notes redacted, activation as its own entries. Shared: `core/contact.py` (`Email`, `EthiopianMobile`: Ethiopian mobiles typed any usual way, stored `+2519…`/`+2517…`), `core/text.Notes` and `SearchText`, `core/db.escape_like`. Contact name, phone and email are all required (email for postpaid invoices later). `COMPANY_IN_USE` comes with GZ-021.
 
 ### GZ-021 · Routes – create, read, list, update
 Status: todo · Depends on: GZ-020, GZ-029

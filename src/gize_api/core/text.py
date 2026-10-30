@@ -9,9 +9,10 @@ or non-breaking spaces), so look-alike names are equal.
 import unicodedata
 from typing import Annotated
 
-from pydantic import AfterValidator, StringConstraints
+from pydantic import AfterValidator, BeforeValidator, StringConstraints
 
 SHORT_TEXT_MAX_LENGTH = 100
+NOTES_MAX_LENGTH = 1000
 
 
 def no_control_characters(value: str) -> str:
@@ -41,3 +42,37 @@ ShortText = Annotated[
     AfterValidator(same_looking),
     AfterValidator(short_enough),
 ]
+
+
+def _no_control_characters_but_line_breaks(value: str) -> str:
+    return "\n".join(
+        no_control_characters(line) for line in value.replace("\r\n", "\n").split("\n")
+    )
+
+
+def _nfc(value: str) -> str:
+    return unicodedata.normalize("NFC", value)
+
+
+def _notes_short_enough(value: str) -> str:
+    if len(value) > NOTES_MAX_LENGTH:
+        raise ValueError(f"must be at most {NOTES_MAX_LENGTH} characters")
+    return value
+
+
+# Free text staff write down: line breaks kept, may be empty (the service stores "" as none).
+Notes = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=NOTES_MAX_LENGTH),
+    AfterValidator(_no_control_characters_but_line_breaks),
+    AfterValidator(_nfc),
+    AfterValidator(_notes_short_enough),
+]
+
+
+def blank_is_none(value: object) -> object:
+    return None if isinstance(value, str) and not value.strip() else value
+
+
+# A search box: blank means no filter (a picker may send its input box as it is).
+SearchText = Annotated[ShortText | None, BeforeValidator(blank_is_none)]

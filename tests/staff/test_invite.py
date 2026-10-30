@@ -16,11 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.audit import REDACTED
+from gize_api.core.contact import EMAIL_PATTERN
 from gize_api.core.db import get_session
 from gize_api.main import GizeAPI
 from gize_api.staff import service
 from gize_api.staff.models import Staff, StaffRole
-from gize_api.staff.schemas import EMAIL_PATTERN
 from tests.staff.support import (
     STAFF,
     add_admin,

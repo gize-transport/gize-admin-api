@@ -233,6 +233,15 @@ def database_sqlstate(exc: BaseException) -> str | None:
 
 
 UNIQUE_VIOLATION = "23505"
+LIKE_ESCAPE = "/"
+
+
+def escape_like(text: str) -> str:
+    """`text` with LIKE wildcards as plain characters, for `.startswith(..., escape=LIKE_ESCAPE)`:
+    a "%" someone typed matches a percent sign."""
+    for char in (LIKE_ESCAPE, "%", "_"):
+        text = text.replace(char, LIKE_ESCAPE + char)
+    return text
 
 
 def violated_unique_constraint(exc: BaseException) -> str | None:
