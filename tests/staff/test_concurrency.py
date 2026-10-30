@@ -19,13 +19,13 @@ from gize_api.staff.models import Staff, StaffRole
 from gize_api.staff.repository import STAFF_CHANGES_LOCK_ID
 from tests.staff.support import (
     STAFF,
-    FakeSupabase,
     active_admins,
     add_admin,
     add_staff,
     signed_in,
     with_key,
 )
+from tests.supabase import FakeSupabase
 from tests.support import DatabaseUrls, wait_for_lock_waiters
 
 ALMAZ = {"email": "almaz@example.com", "full_name": "Almaz Tesfaye", "role": "staff"}

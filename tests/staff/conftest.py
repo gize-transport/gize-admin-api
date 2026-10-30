@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from gize_api.main import GizeAPI
-from tests.staff.support import FakeSupabase
+from tests.supabase import FakeSupabase
 from tests.support import SettingsFactory
 
 

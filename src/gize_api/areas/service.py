@@ -2,10 +2,10 @@
 them, and deleting is soft. Every change is audited."""
 
 import uuid
-from datetime import UTC, datetime
 from typing import NoReturn
 
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,7 +75,7 @@ async def rename(
 ) -> AreaRead:
     """Renaming to the current name changes and records nothing."""
     async with session.begin():
-        row = await _live(session, area_id)
+        row = await _live(session, area_id, for_update=True)
         if await repository.name_taken(session, change.name, except_id=row.id):
             raise AppError(ErrorCode.AREA_NAME_TAKEN)
         before = audit.snapshot(AREA_AUDIT, row)
@@ -98,9 +98,11 @@ async def delete(session: AsyncSession, caller: CurrentStaff, area_id: uuid.UUID
     """Soft delete (admins: the route's require_role). Later tickets refuse it while the
     area is in use (corridors, pickup points, requests, riders)."""
     async with session.begin():
-        row = await _live(session, area_id)
+        row = await _live(session, area_id, for_update=True)
         before = audit.snapshot(AREA_AUDIT, row)
-        row.deleted_at = datetime.now(UTC)
+        row.deleted_at = func.now()  # the database's clock, like every other timestamp
+        await session.flush()
+        await session.refresh(row, ["deleted_at"])
         audit.record(
             session,
             actor_id=caller.id,
@@ -112,8 +114,8 @@ async def delete(session: AsyncSession, caller: CurrentStaff, area_id: uuid.UUID
         )
 
 
-async def _live(session: AsyncSession, area_id: uuid.UUID) -> Area:
-    row = await repository.get_live_area(session, area_id)
+async def _live(session: AsyncSession, area_id: uuid.UUID, *, for_update: bool = False) -> Area:
+    row = await repository.get_live_area(session, area_id, for_update=for_update)
     if row is None:  # unknown or deleted: the same answer
         raise AppError(ErrorCode.NOT_FOUND)
     return row

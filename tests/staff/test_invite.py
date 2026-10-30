@@ -23,13 +23,13 @@ from gize_api.staff.models import Staff, StaffRole
 from gize_api.staff.schemas import EMAIL_PATTERN
 from tests.staff.support import (
     STAFF,
-    FakeSupabase,
     add_admin,
     add_staff,
     audit_entries,
     signed_in,
     with_key,
 )
+from tests.supabase import FakeSupabase
 
 ALMAZ = {"email": "almaz@example.com", "full_name": "Almaz Tesfaye", "role": "staff"}
 

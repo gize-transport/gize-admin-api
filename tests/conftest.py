@@ -22,7 +22,7 @@ from gize_api.core.db import GizeSession, create_engine, create_sessionmaker, ge
 from gize_api.core.ratelimit import RateLimiter
 from gize_api.core.rls import row_level_security_statements
 from gize_api.main import GizeAPI, create_app
-from tests.staff.support import FakeSupabase
+from tests.supabase import FakeSupabase
 from tests.support import (
     SETTINGS_ENV_VARS,
     TEST_SUPABASE_URL,

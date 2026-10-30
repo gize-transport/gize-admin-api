@@ -87,14 +87,35 @@ async def test_create_needs_an_idempotency_key(
     assert (response.status_code, response.json()["code"]) == (428, "IDEMPOTENCY_KEY_REQUIRED")
 
 
-@pytest.mark.parametrize("name", ["Ayat", "AYAT", " ayat "])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Ayat CMC",
+        "AYAT CMC",
+        " ayat cmc ",
+        "Ayat\u00a0CMC",  # a non-breaking space
+        "Ayat   CMC",  # repeated spaces
+    ],
+)
 async def test_a_name_in_use_is_409_ignoring_case(
     api: httpx.AsyncClient, db_session: AsyncSession, name: str
 ) -> None:
     member = await add_staff(db_session)
-    await _area(db_session, name="Ayat")
+    await _area(db_session, name="Ayat CMC")
     response = await api.post(AREAS, json={"name": name}, headers=with_key(member.id))
     assert (response.status_code, response.json()["code"]) == (409, "AREA_NAME_TAKEN")
+
+
+async def test_names_are_stored_the_way_they_look(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """One ordinary space between words, and Unicode NFC: "é" typed as e + accent is "é"."""
+    member = await add_staff(db_session)
+    body = {"name": "Caf\u0065\u0301\u00a0\u00a0Bole  Road"}
+    response = await api.post(AREAS, json=body, headers=with_key(member.id))
+    assert response.json()["name"] == "Caf\u00e9 Bole Road"
+    again = await api.post(AREAS, json={"name": "CAF\u00c9 BOLE ROAD"}, headers=with_key(member.id))
+    assert again.status_code == 409
 
 
 async def test_a_deleted_areas_name_can_be_used_again(
@@ -188,6 +209,17 @@ async def test_q_finds_names_starting_with_it(
     assert {item["name"] for item in response.json()["items"]} == found
 
 
+@pytest.mark.parametrize("q", ["", "   "])
+async def test_a_blank_q_is_no_filter(
+    api: httpx.AsyncClient, db_session: AsyncSession, q: str
+) -> None:
+    """A picker may send its input box as it is."""
+    member = await add_staff(db_session)
+    await _areas_over_time(db_session, "Ayat", "Bole")
+    response = await api.get(AREAS, params={"q": q}, headers=signed_in(member.id))
+    assert {item["name"] for item in response.json()["items"]} == {"Ayat", "Bole"}
+
+
 async def test_a_page_takes_the_same_queries_however_long(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -217,7 +249,6 @@ async def test_a_page_takes_the_same_queries_however_long(
     [
         ({"surprise": "1"}, "VALIDATION_FAILED"),
         ({"limit": "0"}, "VALIDATION_FAILED"),
-        ({"q": ""}, "VALIDATION_FAILED"),
         ({"q": "x" * 101}, "VALIDATION_FAILED"),
         ({"cursor": "garbage"}, "INVALID_CURSOR"),
     ],
