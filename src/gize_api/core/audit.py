@@ -28,7 +28,7 @@ import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, func
@@ -172,5 +172,7 @@ def _json(value: object) -> Any:  # noqa: ANN401 - a JSON value
     if isinstance(value, datetime) and value.tzinfo is None:
         raise ValueError("audit times need a time zone")
     if isinstance(value, datetime | date):
+        return value.isoformat()
+    if isinstance(value, time):  # a schedule time: local, no zone (core/schedule.py)
         return value.isoformat()
     raise TypeError(f"cannot store a {type(value).__name__} in the audit log as JSON")

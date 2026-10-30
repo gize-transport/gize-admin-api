@@ -8,7 +8,7 @@ app role can only add and read them: append-only is enforced by the database's g
 import asyncio
 import enum
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 import asyncpg
@@ -99,7 +99,7 @@ class Colour(enum.StrEnum):
 
 async def test_values_are_stored_as_json(db_session: AsyncSession) -> None:
     entity = AuditedEntity(
-        type="thing", fields=("a", "b", "c", "d", "e"), visible=frozenset("abcde")
+        type="thing", fields=("a", "b", "c", "d", "e", "f"), visible=frozenset("abcdef")
     )
     after = {
         "a": uuid.UUID(int=1),
@@ -107,6 +107,7 @@ async def test_values_are_stored_as_json(db_session: AsyncSession) -> None:
         "c": date(2026, 10, 29),
         "d": Colour.RED,
         "e": StaffRole.ADMIN,
+        "f": time(6, 30),  # a schedule time: local, no zone (GZ-021)
     }
     async with db_session.begin():
         record(
@@ -120,6 +121,7 @@ async def test_values_are_stored_as_json(db_session: AsyncSession) -> None:
         "c": "2026-10-29",
         "d": "red",
         "e": "admin",
+        "f": "06:30:00",
     }
 
 

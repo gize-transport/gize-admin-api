@@ -103,7 +103,9 @@ async def get(
     "/{company_id}",
     operation_id="companies_update",
     summary="Change a company, or deactivate it",
-    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.COMPANY_NAME_TAKEN),
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND, ErrorCode.COMPANY_NAME_TAKEN, ErrorCode.COMPANY_IN_USE
+    ),
 )
 async def update(
     company_id: uuid.UUID,
@@ -112,7 +114,8 @@ async def update(
     caller: CurrentStaff = Depends(current_staff),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> CompanyRead:
-    """Leave out what stays. Empty notes clear them. Setting what is there changes nothing."""
+    """Leave out what stays. Empty notes clear them. Setting what is there changes nothing.
+    409 COMPANY_IN_USE: deactivating while one of its routes is active or paused."""
     response.headers["Cache-Control"] = "no-store"
     return await service.update(session, caller, company_id, change)
 
@@ -123,13 +126,14 @@ async def update(
     summary="Delete a company (admins only)",
     status_code=204,
     response_class=Response,
-    responses=problem_responses(ErrorCode.NOT_FOUND),
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.COMPANY_IN_USE),
 )
 async def delete(
     company_id: uuid.UUID,
     caller: CurrentStaff = Depends(require_admin),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
-    """Soft delete: hidden from lists, its name free again; history keeps it."""
+    """Soft delete: hidden from lists, its name free again; history keeps it. 409
+    COMPANY_IN_USE while it has a live route."""
     await service.delete(session, caller, company_id)
     return Response(status_code=204)

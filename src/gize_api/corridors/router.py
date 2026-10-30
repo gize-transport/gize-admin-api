@@ -102,7 +102,9 @@ async def get(
     "/{corridor_id}",
     operation_id="corridors_update",
     summary="Change a corridor's areas",
-    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.CORRIDOR_EXISTS),
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND, ErrorCode.CORRIDOR_EXISTS, ErrorCode.CORRIDOR_IN_USE
+    ),
 )
 async def update(
     corridor_id: uuid.UUID,
@@ -111,7 +113,8 @@ async def update(
     caller: CurrentStaff = Depends(current_staff),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> CorridorRead:
-    """Leave an end out to keep it. The result must be two different areas."""
+    """Leave an end out to keep it. The result must be two different areas. 409
+    CORRIDOR_IN_USE: a live route runs on it (move the routes first)."""
     response.headers["Cache-Control"] = "no-store"
     return await service.update(session, caller, corridor_id, change)
 
@@ -122,13 +125,14 @@ async def update(
     summary="Delete a corridor (admins only)",
     status_code=204,
     response_class=Response,
-    responses=problem_responses(ErrorCode.NOT_FOUND),
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.CORRIDOR_IN_USE),
 )
 async def delete(
     corridor_id: uuid.UUID,
     caller: CurrentStaff = Depends(require_admin),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
-    """Soft delete: hidden from lists, its pair free again; history keeps it."""
+    """Soft delete: hidden from lists, its pair free again; history keeps it. 409
+    CORRIDOR_IN_USE while a live route runs on it."""
     await service.delete(session, caller, corridor_id)
     return Response(status_code=204)

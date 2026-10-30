@@ -1,7 +1,7 @@
 """Company business rules (GZ-029). Any active staff member manages companies, including
 deactivating one; only admins delete them (soft). Every change is audited, with the contact
-details and notes redacted. GZ-021 adds `COMPANY_IN_USE`: deactivating a company with an
-active or paused route, or deleting one with any route."""
+details and notes redacted. `COMPANY_IN_USE` (GZ-021): a company can't be deactivated while
+one of its routes is active or paused, nor deleted while it has any live route."""
 
 import uuid
 from typing import NoReturn
@@ -26,6 +26,10 @@ from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.idempotency import IdempotentRequest, claim, record, replay_response
 from gize_api.core.pagination import paginate
 from gize_api.core.security import CurrentStaff
+from gize_api.routes.repository import (
+    company_has_a_route,
+    company_runs_a_route,
+)
 
 
 async def create(
@@ -94,7 +98,10 @@ async def update(
     """Setting what is already there changes and records nothing. Activation is recorded as
     its own entry (`company.deactivated`/`company.reactivated`)."""
     async with session.begin():
-        row = await _live(session, company_id, for_update=True)
+        row = await _live(session, company_id, lock="update")
+        deactivating = row.is_active and change.is_active is False
+        if deactivating and await company_runs_a_route(session, row.id):
+            raise AppError(ErrorCode.COMPANY_IN_USE)
         if change.name is not None and await repository.name_taken(
             session, change.name, except_id=row.id
         ):
@@ -135,7 +142,9 @@ async def update(
 async def delete(session: AsyncSession, caller: CurrentStaff, company_id: uuid.UUID) -> None:
     """Soft delete (admins: the route's require_role)."""
     async with session.begin():
-        row = await _live(session, company_id, for_update=True)
+        row = await _live(session, company_id, lock="update")
+        if await company_has_a_route(session, row.id):
+            raise AppError(ErrorCode.COMPANY_IN_USE)
         before = audit.snapshot(COMPANY_AUDIT, row)
         row.deleted_at = func.now()  # the database's clock, like every other timestamp
         await session.flush()
@@ -152,9 +161,9 @@ async def delete(session: AsyncSession, caller: CurrentStaff, company_id: uuid.U
 
 
 async def _live(
-    session: AsyncSession, company_id: uuid.UUID, *, for_update: bool = False
+    session: AsyncSession, company_id: uuid.UUID, *, lock: repository.Lock | None = None
 ) -> Company:
-    row = await repository.get_live_company(session, company_id, for_update=for_update)
+    row = await repository.get_live_company(session, company_id, lock=lock)
     if row is None:  # unknown or deleted: the same answer
         raise AppError(ErrorCode.NOT_FOUND)
     return row

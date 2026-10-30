@@ -63,6 +63,12 @@ class ErrorCode(StrEnum):
     AREA_IN_USE = "AREA_IN_USE"
     CORRIDOR_EXISTS = "CORRIDOR_EXISTS"
     COMPANY_NAME_TAKEN = "COMPANY_NAME_TAKEN"
+    ROUTE_CODE_TAKEN = "ROUTE_CODE_TAKEN"
+    SEATS_BELOW_TAKEN = "SEATS_BELOW_TAKEN"
+    SEATS_BELOW_LAUNCH_MINIMUM = "SEATS_BELOW_LAUNCH_MINIMUM"
+    ROUTE_HAS_RIDERS = "ROUTE_HAS_RIDERS"
+    CORRIDOR_IN_USE = "CORRIDOR_IN_USE"
+    COMPANY_IN_USE = "COMPANY_IN_USE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -109,6 +115,12 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.AREA_IN_USE: ErrorSpec(409, "Area In Use"),
     ErrorCode.CORRIDOR_EXISTS: ErrorSpec(409, "Corridor Exists"),
     ErrorCode.COMPANY_NAME_TAKEN: ErrorSpec(409, "Company Name Taken"),
+    ErrorCode.ROUTE_CODE_TAKEN: ErrorSpec(409, "Route Code Taken"),
+    ErrorCode.SEATS_BELOW_TAKEN: ErrorSpec(409, "Seats Below Taken"),
+    ErrorCode.SEATS_BELOW_LAUNCH_MINIMUM: ErrorSpec(409, "Seats Below Launch Minimum"),
+    ErrorCode.ROUTE_HAS_RIDERS: ErrorSpec(409, "Route Has Riders"),
+    ErrorCode.CORRIDOR_IN_USE: ErrorSpec(409, "Corridor In Use"),
+    ErrorCode.COMPANY_IN_USE: ErrorSpec(409, "Company In Use"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

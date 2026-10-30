@@ -2,6 +2,7 @@
 `lower()`, as the unique index is."""
 
 import uuid
+from typing import Literal
 
 from sqlalchemy import Select, exists, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,15 +10,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gize_api.companies.models import Company
 from gize_api.core.db import LIKE_ESCAPE, escape_like
 
+Lock = Literal["update", "share"]
+
 
 async def get_live_company(
-    session: AsyncSession, company_id: uuid.UUID, *, for_update: bool = False
+    session: AsyncSession, company_id: uuid.UUID, *, lock: Lock | None = None
 ) -> Company | None:
-    """`for_update` locks the row until the transaction ends: a change racing a delete waits,
-    then finds the company gone."""
+    """`lock` holds the row until the transaction ends; Postgres re-checks "not deleted"
+    after waiting, so the loser of a race finds the company gone.
+
+    - "update": to change or delete it (one at a time);
+    - "share": to refer to it (a route): a deactivation or delete waits for them.
+    """
     statement = select(Company).where(Company.id == company_id, Company.not_deleted())
-    if for_update:
-        statement = statement.with_for_update()
+    if lock is not None:
+        statement = statement.with_for_update(read=lock == "share")
     return await session.scalar(statement)
 
 
