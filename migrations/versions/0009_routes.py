@@ -85,7 +85,8 @@ def upgrade() -> None:
         sa.CheckConstraint("seats BETWEEN 1 AND 60", name=op.f("ck_routes_seats")),
         sa.CheckConstraint(
             "(route_type = 'corporate' AND launch_minimum IS NULL)"
-            " OR (route_type <> 'corporate' AND launch_minimum BETWEEN 1 AND seats)",
+            " OR (route_type <> 'corporate' AND launch_minimum IS NOT NULL"
+            " AND launch_minimum BETWEEN 1 AND seats)",
             name=op.f("ck_routes_launch_minimum"),
         ),
         sa.CheckConstraint(

@@ -132,7 +132,8 @@ class Route(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         CheckConstraint(f"seats BETWEEN 1 AND {MAX_SEATS}", name="seats"),
         CheckConstraint(
             "(route_type = 'corporate' AND launch_minimum IS NULL)"
-            " OR (route_type <> 'corporate' AND launch_minimum BETWEEN 1 AND seats)",
+            " OR (route_type <> 'corporate' AND launch_minimum IS NOT NULL"
+            " AND launch_minimum BETWEEN 1 AND seats)",
             name="launch_minimum",
         ),
         CheckConstraint(

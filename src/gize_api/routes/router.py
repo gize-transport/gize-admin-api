@@ -119,7 +119,8 @@ async def update(
 
     - 409 ROUTE_HAS_RIDERS: corridor, school or company while riders hold seats.
     - 409 SEATS_BELOW_TAKEN: fewer seats than are taken on some day from today.
-    - 409 SEATS_BELOW_LAUNCH_MINIMUM: the launch minimum above the seats.
+    - 409 SEATS_BELOW_LAUNCH_MINIMUM: the launch minimum above the stored seats, or seats
+      below the stored minimum (both in one request and in disagreement: 422).
     """
     response.headers["Cache-Control"] = "no-store"
     return await service.update(session, caller, route_id, change)

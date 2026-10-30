@@ -171,6 +171,7 @@ Status: todo · Depends on: GZ-021, GZ-026
 Status: todo · Depends on: GZ-022, GZ-023
 - `public`/`student`: `draft` → `forming` (round-trip and one-way prices and a pickup point, else `ROUTE_NOT_READY`) → `active` (staff choose the launch date, the 1st of a month not before today; riders reserved for that month ≥ launch minimum, else `NOT_ENOUGH_RIDERS`; reservations become active from that date in the same transaction, earlier ones moved to it, later ones active from their own start date) ⇄ `paused`; `forming` → `draft` only while nobody is reserved. `corporate`: `draft` → `active` (a pickup point and an active company) ⇄ `paused`. Other moves: `INVALID_STATUS_CHANGE`. Repeating a move changes nothing. Staff.
 - Admin soft delete, refused while a rider is reserved or active (`ROUTE_HAS_RIDERS`).
+- From GZ-021's review: a status change locks the route, then share-locks a corporate route's company and requires it active (a deactivation racing an activation must not both commit); launch progress and the launch count use one rule (`routes.repository.next_launch_day`: riders reserved from that day or earlier).
 - After this ticket: report to the owner (routes working end to end; launching is tested with reservations made by test factories, since sign-ups come in M3) before GZ-027.
 
 ### GZ-027 · Route requests (staff-recorded)
@@ -196,7 +197,7 @@ Status: todo · Depends on: GZ-009, GZ-030
 
 ### GZ-032 · Public registration – adult rider
 Status: todo · Depends on: GZ-031, GZ-024, GZ-027
-- Requires verified-phone token and Idempotency-Key. Creates the rider and either a reservation on a chosen `forming` `public` route (from the 1st of a month; seats checked under the route row lock: the shared assignment service and its parallel last-seat test are built here, and GZ-035 reuses them) or a route request (kind `route` for an active route, full or not; `new_areas` when no route serves their areas). It never gives a place on an active route directly: freed seats go to the oldest request (GZ-040). Limits 5/hour/IP, 3/day/phone.
+- Requires verified-phone token and Idempotency-Key. Creates the rider and either a reservation on a chosen `forming` `public` route (from the 1st of a month; seats checked under the route row lock: the shared assignment service and its parallel last-seat test are built here, and GZ-035 reuses them) or a route request (kind `route` for an active route, full or not; `new_areas` when no route serves their areas). It never gives a place on an active route directly: freed seats go to the oldest request (GZ-040). Inserting a seat takes the route row lock first (`get_live_route(for_update=True)`), then inserts: taking it after the insert's foreign-key lock could deadlock two sign-ups. Limits 5/hour/IP, 3/day/phone.
 
 ### GZ-033 · Public registration – parent and student
 Status: todo · Depends on: GZ-032

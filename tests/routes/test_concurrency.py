@@ -30,6 +30,7 @@ LOCKS = {
     ("corridors", "UPDATE"): "SELECT 1 FROM gize.corridors WHERE id = $1 FOR UPDATE",
     ("corridors", "SHARE"): "SELECT 1 FROM gize.corridors WHERE id = $1 FOR SHARE",
     ("companies", "SHARE"): "SELECT 1 FROM gize.companies WHERE id = $1 FOR SHARE",
+    ("companies", "UPDATE"): "SELECT 1 FROM gize.companies WHERE id = $1 FOR UPDATE",
     ("routes", "UPDATE"): "SELECT 1 FROM gize.routes WHERE id = $1 FOR UPDATE",
 }
 
@@ -162,3 +163,56 @@ async def test_a_seat_change_waiting_on_a_new_rider_counts_them(
             )
     response = await request
     assert (response.status_code, response.json()["code"]) == (409, "SEATS_BELOW_TAKEN")
+
+
+async def test_a_route_waiting_on_a_company_deactivation_is_refused(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+) -> None:
+    async with committed_sessionmaker() as session:
+        member = await add_staff(session)
+        async with session.begin():
+            corridor = await CorridorFactory().create(session)
+            company = await CompanyFactory().create(session)
+    body = {
+        **BODY,
+        "corridor_id": str(corridor.id),
+        "route_type": "corporate",
+        "company_id": str(company.id),
+    }
+    del body["launch_minimum"]
+    async with _holding(database, "companies", company.id) as conn:
+        request = asyncio.create_task(
+            committed_api.post("/v1/routes", json=body, headers=with_key(member.id))
+        )
+        await wait_for_lock_waiters(database)
+        await conn.execute("UPDATE gize.companies SET is_active = false WHERE id = $1", company.id)
+    response = await request
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "/company_id"
+
+
+async def test_a_company_delete_waiting_on_a_new_route_is_refused(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+) -> None:
+    async with committed_sessionmaker() as session:
+        admin = await add_admin(session)
+        async with session.begin():
+            corridor = await CorridorFactory().create(session)
+            company = await CompanyFactory().create(session)
+    async with _holding(database, "companies", company.id, mode="SHARE") as conn:
+        request = asyncio.create_task(
+            committed_api.delete(f"/v1/companies/{company.id}", headers=signed_in(admin.id))
+        )
+        await wait_for_lock_waiters(database)
+        await conn.execute(
+            "INSERT INTO gize.routes (code, corridor_id, route_type, company_id, morning_time,"
+            " return_time, seats) VALUES ('ACME-01', $1, 'corporate', $2, '06:30', '17:30', 14)",
+            corridor.id,
+            company.id,
+        )
+    response = await request
+    assert (response.status_code, response.json()["code"]) == (409, "COMPANY_IN_USE")

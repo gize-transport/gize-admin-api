@@ -142,7 +142,9 @@ class RouteRead(BaseModel):
     copied_from_route_id: uuid.UUID | None
     seats_taken: MonthSeats
     seats_free: MonthSeats
-    reserved: int = Field(description="Riders reserved while it forms: launch progress.")
+    reserved: int = Field(
+        description="Riders reserved for the next launch day (the 1st): launch progress."
+    )
     created_at: datetime
     updated_at: datetime
 

@@ -124,12 +124,18 @@ async def update(
         row = await _live(session, route_id, for_update=True)
         today = schedule.addis_today()
         _fits_the_type(row.route_type, change)
-        morning = change.morning_time or row.morning_time
-        return_time = change.return_time or row.return_time
+        morning = _new(change.morning_time, row.morning_time)
+        return_time = _new(change.return_time, row.return_time)
         if morning >= return_time:
             raise invalid_field("body")
-        seats = change.seats or row.seats
-        minimum = change.launch_minimum or row.launch_minimum
+        # Places first: one that doesn't exist is a 422, whatever else is refused.
+        corridor, company = row.corridor, row.company
+        if change.corridor_id not in (None, row.corridor_id):
+            corridor = await _corridor_to_refer_to(session, change.corridor_id)
+        if change.company_id not in (None, row.company_id):
+            company = await _company_to_refer_to(session, change.company_id)
+        seats = _new(change.seats, row.seats)
+        minimum = _new(change.launch_minimum, row.launch_minimum)
         if minimum is not None and minimum > seats:
             raise AppError(ErrorCode.SEATS_BELOW_LAUNCH_MINIMUM)
         if seats < row.seats and seats < await repository.peak_taken_from(session, row.id, today):
@@ -145,11 +151,6 @@ async def update(
         )
         if moves and await repository.has_riders(session, row.id, today):
             raise AppError(ErrorCode.ROUTE_HAS_RIDERS)
-        corridor, company = row.corridor, row.company
-        if change.corridor_id not in (None, row.corridor_id):
-            corridor = await _corridor_to_refer_to(session, change.corridor_id)
-        if change.company_id not in (None, row.company_id):
-            company = await _company_to_refer_to(session, change.company_id)
 
         before = audit.snapshot(ROUTE_AUDIT, row)
         row.corridor, row.company = corridor, company
@@ -170,6 +171,10 @@ async def update(
             after=audit.snapshot(ROUTE_AUDIT, row),
         )
         return await _read_with_counts(session, row)
+
+
+def _new[T](change: T | None, current: T) -> T:
+    return current if change is None else change
 
 
 def _fits_the_type(route_type: RouteType, change: RouteUpdate) -> None:

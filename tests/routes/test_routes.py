@@ -585,3 +585,31 @@ async def test_other_constraint_errors_are_not_reported_as_a_code_taken(
     with pytest.raises(AppError) as taken:
         await flush_new(code="BOLE-01")
     assert taken.value.code is ErrorCode.ROUTE_CODE_TAKEN
+
+
+async def test_the_database_refuses_an_individual_route_without_a_minimum(
+    db_session: AsyncSession,
+) -> None:
+    """A NULL must not slip through the check (`x BETWEEN 1 AND seats` is NULL, not false)."""
+    corridor = await add_corridor(db_session)
+
+    async def insert(route_type: RouteType, **extra: object) -> None:
+        async with db_session.begin():
+            db_session.add(
+                Route(
+                    code=f"NOMIN-{route_type.value[:3].upper()}",
+                    corridor_id=corridor,
+                    route_type=route_type,
+                    morning_time=time(6, 30),
+                    return_time=time(17, 30),
+                    seats=14,
+                    launch_minimum=None,
+                    **extra,
+                )
+            )
+            await db_session.flush()
+
+    with pytest.raises(IntegrityError):
+        await insert(RouteType.PUBLIC)
+    with pytest.raises(IntegrityError):
+        await insert(RouteType.STUDENT, school_name="ICS")

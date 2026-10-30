@@ -285,8 +285,8 @@ A route is one van on a corridor at a morning and a return time (GZ-021). Staff 
 - **Times** are local Addis Ababa `"HH:MM"`; the morning time comes before the return.
 - **Seats** (1–60) are counted per day: a rider holds a seat every day from their start date to their end date.
   - `seats_taken` and `seats_free` show the busiest day from today to the end of this month, and of next month. A rider leaving at the end of the month frees a seat for next month; company riders swapping mid-month take one seat.
-  - `reserved` is launch progress ("9 of 12" with `launch_minimum`).
-  - Seats can't drop below seats taken on any day from today (`409 SEATS_BELOW_TAKEN`) or below the launch minimum (`409 SEATS_BELOW_LAUNCH_MINIMUM`). This is checked under the route's row lock, the lock adding a rider takes (M3).
+  - `reserved` is launch progress ("9 of 12" with `launch_minimum`): riders reserved for the next launch day, today if it's the 1st, else the 1st of next month. Later reservations don't count yet.
+  - Seats can't drop below seats taken on any day from today (`409 SEATS_BELOW_TAKEN`) or below the stored launch minimum (`409 SEATS_BELOW_LAUNCH_MINIMUM`; both in one request and in disagreement is a `422`). This is checked under the route's row lock, the lock adding a rider takes (M3).
 - **Riders' guarantees:** corridor, school and company can't change while someone holds a seat today or later (`409 ROUTE_HAS_RIDERS`).
 - **Places:** a corridor or company that doesn't exist (or a company that isn't active) is a `422` on its field. Routes share-lock them while referring to them, so a delete or deactivation never crosses a new route.
 - **Audit:** `route.created`, `route.updated`, by value (routes hold no personal data).

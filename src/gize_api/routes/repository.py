@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from sqlalchemy import Date, Select, and_, cast, exists, func, literal, or_, select
+from sqlalchemy import Date, Select, cast, exists, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -41,7 +41,9 @@ async def get_live_route(
     alone first, then loads it (a locking query with the joins would, after a wait, judge
     the route against places read before the wait; see corridors.repository)."""
     live = (Route.id == route_id, Route.not_deleted())
-    locked = select(Route.id).where(*live).with_for_update()
+    # FOR NO KEY UPDATE: serialises changes to the route (and M3's rider inserts, which
+    # take it first) without blocking inserts that only refer to it (pickup points).
+    locked = select(Route.id).where(*live).with_for_update(key_share=True)
     if for_update and await session.scalar(locked) is None:
         return None
     return await session.scalar(select(Route).options(*_WITH_PLACES).where(*live))
@@ -83,11 +85,13 @@ async def seat_counts(
     session: AsyncSession, route_ids: list[uuid.UUID], today: date
 ) -> dict[uuid.UUID, SeatCounts]:
     """Seats taken on the busiest day of this month (from today) and of next month, and
-    riders reserved, for every route in two queries."""
+    riders reserved for the next launch day (`next_launch_day`: launch progress), for every
+    route in two queries."""
     if not route_ids:
         return {}
     next_month = _first_of_next_month(today)
     last_day = _first_of_next_month(next_month) - timedelta(days=1)
+    launch_day = next_launch_day(today)
     peaks = {
         route_id: (this_month, next)
         for route_id, this_month, next in await session.execute(
@@ -101,6 +105,7 @@ async def seat_counts(
             .where(
                 RouteAssignment.route_id.in_(route_ids),
                 RouteAssignment.status == AssignmentStatus.RESERVED,
+                RouteAssignment.start_date <= launch_day,
             )
             .group_by(RouteAssignment.route_id)
         )
@@ -160,20 +165,32 @@ def _peaks(
 ) -> Select[uuid.UUID, int, int]:
     """Per route, the most seats held on any day from `first_day` to `last_day`: before
     `split` and from it (with no split, the whole span, twice). Days nobody holds a seat
-    don't appear, so a route with none has no row (0)."""
-    days = func.generate_series(
-        literal(first_day, Date), literal(last_day, Date), literal(timedelta(days=1))
-    ).column_valued("day")
-    day = cast(days, Date)
-    daily = (
-        select(RouteAssignment.route_id, day.label("day"), func.count().label("taken"))
+    don't appear, so a route with none has no row (0).
+
+    The seats overlapping the span are picked once (a materialised CTE on the route and
+    start-date index), then counted per day: the cost follows the span, not the routes'
+    whole history (assignments are never deleted).
+    """
+    overlapping = (
+        select(RouteAssignment.route_id, RouteAssignment.start_date, RouteAssignment.end_date)
         .where(
             RouteAssignment.route_id.in_(route_ids),
             _HOLDS_A_SEAT,
-            RouteAssignment.start_date <= day,
-            or_(RouteAssignment.end_date.is_(None), RouteAssignment.end_date >= day),
+            RouteAssignment.start_date <= last_day,
+            or_(RouteAssignment.end_date.is_(None), RouteAssignment.end_date >= first_day),
         )
-        .group_by(RouteAssignment.route_id, day)
+        .cte("overlapping")
+        .prefix_with("MATERIALIZED")
+    )
+    offsets = func.generate_series(0, (last_day - first_day).days).column_valued("offset")
+    day = cast(literal(first_day, Date) + offsets, Date)  # date + integer: a date, no zones
+    daily = (
+        select(overlapping.c.route_id, day.label("day"), func.count().label("taken"))
+        .where(
+            overlapping.c.start_date <= day,
+            or_(overlapping.c.end_date.is_(None), overlapping.c.end_date >= day),
+        )
+        .group_by(overlapping.c.route_id, day)
         .subquery()
     )
     before = daily.c.day < split if split is not None else literal(True)
@@ -181,8 +198,15 @@ def _peaks(
     return select(
         daily.c.route_id,
         func.coalesce(func.max(daily.c.taken).filter(before), 0),
-        func.coalesce(func.max(daily.c.taken).filter(and_(after)), 0),
+        func.coalesce(func.max(daily.c.taken).filter(after), 0),
     ).group_by(daily.c.route_id)
+
+
+def next_launch_day(today: date) -> date:
+    """The earliest day a forming route can launch: today if it's the 1st, else the 1st of
+    next month (individual riders start on the 1st). Launch progress counts riders reserved
+    from then or earlier, as GZ-024's launch does."""
+    return today if today.day == 1 else _first_of_next_month(today)
 
 
 def _first_of_next_month(day: date) -> date:

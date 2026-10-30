@@ -932,7 +932,7 @@
             "description": "Null on corporate routes (billed per company)."
           },
           "reserved": {
-            "description": "Riders reserved while it forms: launch progress.",
+            "description": "Riders reserved for the next launch day (the 1st): launch progress.",
             "title": "Reserved",
             "type": "integer"
           },
@@ -4414,7 +4414,7 @@
         ]
       },
       "patch": {
-        "description": "Leave out what stays. The type is fixed.\n\n- 409 ROUTE_HAS_RIDERS: corridor, school or company while riders hold seats.\n- 409 SEATS_BELOW_TAKEN: fewer seats than are taken on some day from today.\n- 409 SEATS_BELOW_LAUNCH_MINIMUM: the launch minimum above the seats.",
+        "description": "Leave out what stays. The type is fixed.\n\n- 409 ROUTE_HAS_RIDERS: corridor, school or company while riders hold seats.\n- 409 SEATS_BELOW_TAKEN: fewer seats than are taken on some day from today.\n- 409 SEATS_BELOW_LAUNCH_MINIMUM: the launch minimum above the stored seats, or seats\n  below the stored minimum (both in one request and in disagreement: 422).",
         "operationId": "routes_update",
         "parameters": [
           {

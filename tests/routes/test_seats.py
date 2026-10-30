@@ -41,6 +41,8 @@ async def test_seats_are_counted_on_the_busiest_day(
     await seat(start_date=date(2026, 12, 1), status=RESERVED)  # joins next month
     await seat(start_date=date(2026, 10, 1), status=ENDED)  # cancelled: holds nothing
     await seat(start_date=date(2026, 11, 1), end_date=date(2026, 11, 10), status=ACTIVE)  # gone
+    await seat(start_date=date(2026, 11, 1), end_date=date(2026, 11, 10), status=ACTIVE)  # gone
+    # (Before today the busiest day held 4: "this month" counts from today.)
     # A company-style swap: one rider until the 25th, another from the 26th.
     await seat(start_date=date(2026, 11, 20), end_date=date(2026, 11, 25), status=ACTIVE)
     await seat(start_date=date(2026, 11, 26), status=ACTIVE)
@@ -85,8 +87,10 @@ async def test_the_reserved_count_is_launch_progress(
 ) -> None:
     member = await add_staff(db_session)
     route = await add_route(db_session, launch_minimum=12)
-    for _ in range(9):
+    for _ in range(9):  # for 1 December, the next launch day
         await add_seat(db_session, route, status=RESERVED)
+    for _ in range(4):  # for January: they don't help a December launch
+        await add_seat(db_session, route, start_date=date(2027, 1, 1), status=RESERVED)
     body = (await api.get(route_path(route), headers=signed_in(member.id))).json()
     assert (body["reserved"], body["launch_minimum"]) == (9, 12)  # "9 of 12"
 
