@@ -47,7 +47,7 @@ Public (unauthenticated, rate-limited) endpoints exist only for rider registrati
 - Areas (neighbourhoods and landmarks) are a list staff manage; a corridor is a pair of areas (from, to), and each pickup point is in an area.
 - Morning and return times, and pickup times, are local Addis Ababa times of day.
 - Route status:
-  - `public` and `student`: `draft` → `forming` (needs round-trip and one-way prices and at least one pickup point) → `active` (staff launch it for the 1st of a month, today's or a later one, once riders reserved for that month reach the route's launch minimum; they become active riders from that day, and reservations for an earlier month move to it) ⇄ `paused`. Back from `forming` to `draft` only while nobody is reserved.
+  - `public` and `student`: `draft` → `forming` (needs round-trip and one-way prices and at least one pickup point) → `active` (staff launch it for the 1st of a month, not before today, once riders reserved for that month reach the route's launch minimum; they become active riders from that day, reservations for an earlier month move to it, and reservations for a later month become active from their own start date) ⇄ `paused`. Back from `forming` to `draft` only while nobody is reserved.
   - `corporate`: `draft` → `active` (needs at least one pickup point and an active company) ⇄ `paused`.
   - Admin soft-deletes a route only while no rider is reserved or active on it.
 - When a route is full, Gize adds another van: staff copy the route (stops, times, prices, type, school or company) under a new code, with its own seats and launch minimum. A copy of an individual route starts `forming` if the original meets the forming requirements, otherwise `draft`; a copy of a corporate route starts `draft`.
@@ -63,10 +63,10 @@ Public (unauthenticated, rate-limited) endpoints exist only for rider registrati
 **Route requests and forming routes** (replace the corridor waitlist, owner decision GZ-025)
 - There is no waitlist. Unmet demand from individual riders is a **route request**, of one of two kinds:
   - **new areas**: no route serves their from/to areas yet;
-  - **a full route**: they want a specific route whose van is full.
-- Staff record requests from phone calls; later the public app does too (phone-verified). A request is `new`; staff mark it `matched` to a route (a forming one, or a van to come), `fulfilled` once the person has a place, or `declined` with a reason. `new` and `matched` requests are open. Staff see counts per area pair and per full route, next to free seats, to decide where the next route or van goes.
+  - **a specific route**: they want a particular route that is running (usually because its van is full).
+- Staff record requests from phone calls; later the public app does too (phone-verified). A request is `new`; staff mark it `matched` to a route (a forming one, or a van to come), `fulfilled` once the person has a place, or `declined` with a reason. `new` and `matched` requests are open. Staff see counts per area pair and per route, next to free seats, to decide where the next route or van goes.
 - A route that is `forming` collects **reservations** until its launch minimum (set per route, at most its seats) is reached; staff then launch it.
-- A seat freed on a route goes, from the next month, to the oldest open request for that route; staff may skip a request, giving a reason. Requests are offered a seat (by SMS, later) and the offer expires. The public app never gives a place on an active route directly: it reserves on a forming route or records a request, so nobody jumps the queue.
+- A free seat on a running route (freed by a leaver, or never filled) goes, from the next month, to the oldest open request for that route; staff may skip a request, giving a reason. Requests are offered a seat (by SMS, later) and the offer expires. The public app never gives a place on an active route directly: it reserves on a forming route or records a request, so nobody jumps the queue.
 - Companies' demand is handled with the company directly: staff add a route or a van for it.
 
 **Companies**
