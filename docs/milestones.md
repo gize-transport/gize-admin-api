@@ -148,15 +148,16 @@ Status: done · Depends on: GZ-026
 - Built: `gize.corridors` (migration 0007; FKs to areas `RESTRICT`; `ck_corridors_ends`; `uq_corridors_areas` on the pair among live corridors; soft delete), `corridors_*` endpoints with area names in one query, `CORRIDOR_EXISTS`, `AREA_IN_USE` (deleting an area a live corridor uses). Share locks on areas while a corridor refers to them; an update lock to delete one. Shared: `core/updates.PartialUpdate` (staff's PATCH uses it too), `core/errors.invalid_field`. `CORRIDOR_IN_USE` comes with GZ-021, when routes use corridors.
 
 ### GZ-029 · Companies
-Status: in review · Depends on: GZ-012
+Status: done · Depends on: GZ-012
 - Company accounts: name (unique among live companies), contact person (name, phone E.164, email: personal data, redacted in the audit log, never logged), billing `postpaid`, notes, active/inactive. Staff create, list, read, edit and deactivate (refused while one of its routes is active or paused: `COMPANY_IN_USE`). Admin soft-delete, refused while it has a route that is not deleted (GZ-021 adds the route checks).
 - Built: `gize.companies` (migration 0008; name unique ignoring case among live companies; phone E.164 and email lower-case, checked by the table; billing `postpaid`; notes optional; soft delete), `companies_*` endpoints, `COMPANY_NAME_TAKEN`, audit with contact details and notes redacted, activation as its own entries. Shared: `core/contact.py` (`Email`, `EthiopianMobile`: Ethiopian mobiles typed any usual way, stored `+2519…`/`+2517…`), `core/text.Notes` and `SearchText`, `core/db.escape_like`. Contact name, phone and email are all required (email for postpaid invoices later). `COMPANY_IN_USE` comes with GZ-021.
 
 ### GZ-021 · Routes – create, read, list, update
-Status: todo · Depends on: GZ-020, GZ-029
+Status: in review · Depends on: GZ-020, GZ-029
 - Code (unique among live routes, `ROUTE_CODE_TAKEN`), corridor, type, school name (`student`, required) or company (`corporate`, required, active), morning and return times (local `HH:MM`), seats (1–60), launch minimum (`public`/`student`: 1 to seats; none for `corporate`). Created as `draft`. Status and prices are not set here.
 - Creates `route_assignments` with id, route_id, start_date, end_date, status (`reserved`/`active`/`ended`); GZ-023 adds the pickup point, M3 the rider, plan and Saturday add-on. Seats are counted per day: seats taken on a day = assignments covering it. Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken on any day from today (`SEATS_BELOW_TAKEN`, route row locked), nor below the launch minimum (`SEATS_BELOW_LAUNCH_MINIMUM`). Corridor, type, school and company cannot change while riders are on the route (`ROUTE_HAS_RIDERS`). Deleting a corridor a live route uses is refused (`CORRIDOR_IN_USE`, added here: GZ-020 left it for this ticket).
 - Filters (type, status, corridor, company), cursor pagination.
+- Built: `gize.routes` and `gize.route_assignments` (migration 0009; checks for type-dependent fields, times, seats, launch minimum, prices and corporate status; `uq_routes_code` among live routes), `routes_create`/`list`/`get`/`update`, seat counts per day (busiest day of this month from today, and of next month, two queries per page: `routes.repository.seat_counts`), `ROUTE_CODE_TAKEN`, `SEATS_BELOW_TAKEN`, `SEATS_BELOW_LAUNCH_MINIMUM`, `ROUTE_HAS_RIDERS`, `CORRIDOR_IN_USE` (delete, and changing its areas: owner decision), `COMPANY_IN_USE` (deactivate while a route runs, delete while it has one: GZ-029's hand-off). Type fixed at creation (owner decision). Shared: `core/schedule.py` (`LocalTime` "HH:MM", `addis_today`), audit stores times of day.
 
 ### GZ-022 · Route prices (admin only)
 Status: todo · Depends on: GZ-021
@@ -170,6 +171,7 @@ Status: todo · Depends on: GZ-021, GZ-026
 Status: todo · Depends on: GZ-022, GZ-023
 - `public`/`student`: `draft` → `forming` (round-trip and one-way prices and a pickup point, else `ROUTE_NOT_READY`) → `active` (staff choose the launch date, the 1st of a month not before today; riders reserved for that month ≥ launch minimum, else `NOT_ENOUGH_RIDERS`; reservations become active from that date in the same transaction, earlier ones moved to it, later ones active from their own start date) ⇄ `paused`; `forming` → `draft` only while nobody is reserved. `corporate`: `draft` → `active` (a pickup point and an active company) ⇄ `paused`. Other moves: `INVALID_STATUS_CHANGE`. Repeating a move changes nothing. Staff.
 - Admin soft delete, refused while a rider is reserved or active (`ROUTE_HAS_RIDERS`).
+- From GZ-021's review: a status change locks the route, then share-locks a corporate route's company and requires it active (a deactivation racing an activation must not both commit); launch progress and the launch count use one rule (`routes.repository.next_launch_day`: riders reserved from that day or earlier).
 - After this ticket: report to the owner (routes working end to end; launching is tested with reservations made by test factories, since sign-ups come in M3) before GZ-027.
 
 ### GZ-027 · Route requests (staff-recorded)
@@ -195,7 +197,7 @@ Status: todo · Depends on: GZ-009, GZ-030
 
 ### GZ-032 · Public registration – adult rider
 Status: todo · Depends on: GZ-031, GZ-024, GZ-027
-- Requires verified-phone token and Idempotency-Key. Creates the rider and either a reservation on a chosen `forming` `public` route (from the 1st of a month; seats checked under the route row lock: the shared assignment service and its parallel last-seat test are built here, and GZ-035 reuses them) or a route request (kind `route` for an active route, full or not; `new_areas` when no route serves their areas). It never gives a place on an active route directly: freed seats go to the oldest request (GZ-040). Limits 5/hour/IP, 3/day/phone.
+- Requires verified-phone token and Idempotency-Key. Creates the rider and either a reservation on a chosen `forming` `public` route (from the 1st of a month; seats checked under the route row lock: the shared assignment service and its parallel last-seat test are built here, and GZ-035 reuses them) or a route request (kind `route` for an active route, full or not; `new_areas` when no route serves their areas). It never gives a place on an active route directly: freed seats go to the oldest request (GZ-040). Inserting a seat takes the route row lock first (`get_live_route(for_update=True)`), then inserts: taking it after the insert's foreign-key lock could deadlock two sign-ups. Limits 5/hour/IP, 3/day/phone.
 
 ### GZ-033 · Public registration – parent and student
 Status: todo · Depends on: GZ-032

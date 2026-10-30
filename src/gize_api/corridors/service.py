@@ -31,6 +31,7 @@ from gize_api.corridors.schemas import (
     CorridorRead,
     CorridorUpdate,
 )
+from gize_api.routes.repository import uses_corridor as route_uses_corridor
 
 
 async def create(
@@ -96,10 +97,11 @@ async def get(session: AsyncSession, corridor_id: uuid.UUID) -> CorridorRead:
 async def update(
     session: AsyncSession, caller: CurrentStaff, corridor_id: uuid.UUID, change: CorridorUpdate
 ) -> CorridorRead:
-    """Changing an end to what it is changes and records nothing. (GZ-021 refuses changing
-    a corridor its routes' riders depend on.)"""
+    """Changing an end to what it is changes and records nothing. While a live route runs
+    on the corridor its ends can't change (owner decision): routes move to another
+    corridor instead."""
     async with session.begin():
-        row = await _live(session, corridor_id, for_update=True)
+        row = await _live(session, corridor_id, lock="update")
         origin, destination = row.origin_area, row.destination_area
         if change.origin_area_id not in (None, origin.id):
             origin = await _area_to_refer_to(session, change.origin_area_id, "origin_area_id")
@@ -109,6 +111,9 @@ async def update(
             )
         if origin.id == destination.id:
             raise invalid_field("body")
+        moved = (origin.id, destination.id) != (row.origin_area_id, row.destination_area_id)
+        if moved and await route_uses_corridor(session, row.id):
+            raise AppError(ErrorCode.CORRIDOR_IN_USE)  # routes never change meaning underneath
         if await repository.pair_taken(session, origin.id, destination.id, except_id=row.id):
             raise AppError(ErrorCode.CORRIDOR_EXISTS)
         before = audit.snapshot(CORRIDOR_AUDIT, row)
@@ -128,10 +133,12 @@ async def update(
 
 
 async def delete(session: AsyncSession, caller: CurrentStaff, corridor_id: uuid.UUID) -> None:
-    """Soft delete (admins: the route's require_role). GZ-021 refuses it while routes use
+    """Soft delete (admins: the route's require_role), refused while a live route runs on
     the corridor (`CORRIDOR_IN_USE`)."""
     async with session.begin():
-        row = await _live(session, corridor_id, for_update=True)
+        row = await _live(session, corridor_id, lock="update")
+        if await route_uses_corridor(session, row.id):
+            raise AppError(ErrorCode.CORRIDOR_IN_USE)
         before = audit.snapshot(CORRIDOR_AUDIT, row)
         row.deleted_at = func.now()  # the database's clock, like every other timestamp
         await session.flush()
@@ -148,9 +155,9 @@ async def delete(session: AsyncSession, caller: CurrentStaff, corridor_id: uuid.
 
 
 async def _live(
-    session: AsyncSession, corridor_id: uuid.UUID, *, for_update: bool = False
+    session: AsyncSession, corridor_id: uuid.UUID, *, lock: repository.Lock | None = None
 ) -> Corridor:
-    row = await repository.get_live_corridor(session, corridor_id, for_update=for_update)
+    row = await repository.get_live_corridor(session, corridor_id, lock=lock)
     if row is None:  # unknown or deleted: the same answer
         raise AppError(ErrorCode.NOT_FOUND)
     return row

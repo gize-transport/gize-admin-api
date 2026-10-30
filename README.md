@@ -246,7 +246,7 @@ A corridor is a pair of areas, from (`origin`) and to (`destination`), that rout
 - An area that doesn't exist, or is deleted, is a `422` on its field.
 - A corridor and an area delete never cross: creating a corridor, or changing an end, share-locks the area it now refers to, and deleting an area waits for that (and it for a delete). An end that stays is already counted as in use.
 - Audited by value: `corridor.created`, `corridor.updated`, `corridor.deleted`.
-- Routes (GZ-021) will refuse deleting a corridor they use (`CORRIDOR_IN_USE`). Route requests refer to areas, not corridors.
+- While a live route runs on a corridor, the corridor can't be deleted and its areas can't change (`409 CORRIDOR_IN_USE`; owner decision): move the routes to another corridor first. Route requests refer to areas, not corridors.
 
 
 ## Companies
@@ -264,7 +264,33 @@ Postpaid customers whose staff ride their own corporate routes (GZ-029). Staff m
 - **Names** are unique ignoring case among live companies (`409 COMPANY_NAME_TAKEN`), trimmed and normalised like area names.
 - **Phones** may be typed any usual way (`0911 23 45 67`, `+251-911-234567`) and are stored E.164, `+2519…` or `+2517…` (`core/contact.py`, reused for riders in M3). Emails are stored trimmed and lower-case.
 - **Audit:** `company.created`, `company.updated`, `company.deactivated`, `company.reactivated`, `company.deleted`. The contact details and notes are personal data, shown only as `[redacted]`; name, billing and status by value.
-- **Coming with GZ-021:** deactivating a company with an active or paused route, or deleting one with any route, is refused (`COMPANY_IN_USE`).
+- A company can't be deactivated while one of its routes is active or paused, nor deleted while it has any live route (`409 COMPANY_IN_USE`).
+
+## Routes
+
+A route is one van on a corridor at a morning and a return time (GZ-021). Staff create, list, read and edit routes; status (`draft` → `forming` → `active` ⇄ `paused`), prices (admins) and deletion come in GZ-024 and GZ-022.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/routes` (`routes_create`) | `{code, corridor_id, route_type, school_name?, company_id?, morning_time, return_time, seats, launch_minimum?}`. Requires `Idempotency-Key`. Created `draft`. |
+| `GET /v1/routes` (`routes_list`) | Newest first, with corridor, areas, company and seat counts; filters `q` (code prefix), `route_type`, `status`, `corridor_id`, `company_id`. |
+| `GET /v1/routes/{route_id}` (`routes_get`) | One route. |
+| `PATCH /v1/routes/{route_id}` (`routes_update`) | Change code, corridor, school or company, times, seats, launch minimum. |
+
+- **Types** (fixed at creation, owner decision):
+  - `public` (adults): a launch minimum; no school or company;
+  - `student`: a school name and a launch minimum;
+  - `corporate`: an active company; no launch minimum and no prices on the route (billed per company).
+- **Codes** are letters, digits and dashes, 2–20, stored upper-case, unique among live routes (`409 ROUTE_CODE_TAKEN`).
+- **Times** are local Addis Ababa `"HH:MM"`; the morning time comes before the return.
+- **Seats** (1–60) are counted per day: a rider holds a seat every day from their start date to their end date.
+  - `seats_taken` and `seats_free` show the busiest day from today to the end of this month, and of next month. A rider leaving at the end of the month frees a seat for next month; company riders swapping mid-month take one seat.
+  - `reserved` is launch progress ("9 of 12" with `launch_minimum`): riders reserved for the next launch day, today if it's the 1st, else the 1st of next month. Later reservations don't count yet.
+  - Seats can't drop below seats taken on any day from today (`409 SEATS_BELOW_TAKEN`) or below the stored launch minimum (`409 SEATS_BELOW_LAUNCH_MINIMUM`; both in one request and in disagreement is a `422`). This is checked under the route's row lock, the lock adding a rider takes (M3).
+- **Riders' guarantees:** corridor, school and company can't change while someone holds a seat today or later (`409 ROUTE_HAS_RIDERS`).
+- **Places:** a corridor or company that doesn't exist (or a company that isn't active) is a `422` on its field. Routes share-lock them while referring to them, so a delete or deactivation never crosses a new route.
+- **Audit:** `route.created`, `route.updated`, by value (routes hold no personal data).
+- **"Today"** is Addis Ababa's date (UTC+3 all year, `core/schedule.py`).
 
 ## Audit log
 

@@ -1,12 +1,15 @@
 """Corridor queries: live (not deleted) corridors, with both areas in the same query."""
 
 import uuid
+from typing import Literal
 
 from sqlalchemy import Select, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from gize_api.corridors.models import Corridor
+
+Lock = Literal["update", "share"]
 
 # Both ends are required, so inner joins: one query, and FOR UPDATE allowed.
 _WITH_AREAS = (
@@ -16,17 +19,22 @@ _WITH_AREAS = (
 
 
 async def get_live_corridor(
-    session: AsyncSession, corridor_id: uuid.UUID, *, for_update: bool = False
+    session: AsyncSession, corridor_id: uuid.UUID, *, lock: Lock | None = None
 ) -> Corridor | None:
-    """The corridor with its areas. `for_update` first locks the corridor row alone, then
-    loads it: after waiting, Postgres re-checks a locking query against the corridor's new
-    version but joins the area rows it read before the wait, so a locking query with the
-    joins would lose a corridor whose end just changed. The load is a new statement, so it
-    sees the committed change."""
+    """The corridor with its areas. `lock` first locks the corridor row alone, then loads
+    it: after waiting, Postgres re-checks a locking query against the corridor's new version
+    but joins the area rows it read before the wait, so a locking query with the joins would
+    lose a corridor whose end just changed. The load is a new statement, so it sees the
+    committed change.
+
+    - "update": to change or delete it (one at a time);
+    - "share": to refer to it (a route): many may share; a change or delete waits for them,
+      and they for it.
+    """
     live = (Corridor.id == corridor_id, Corridor.not_deleted())
-    if for_update:
-        locked = await session.scalar(select(Corridor.id).where(*live).with_for_update())
-        if locked is None:
+    if lock is not None:
+        statement = select(Corridor.id).where(*live).with_for_update(read=lock == "share")
+        if await session.scalar(statement) is None:
             return None
     return await session.scalar(select(Corridor).options(*_WITH_AREAS).where(*live))
 

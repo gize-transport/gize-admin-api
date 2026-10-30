@@ -457,7 +457,10 @@ def test_corridors_are_in_the_contract(make_settings: SettingsFactory) -> None:
         "CORRIDOR_EXISTS",
         "IDEMPOTENCY_IN_PROGRESS",
     ]
-    assert member["patch"]["responses"]["409"]["x-error-codes"] == ["CORRIDOR_EXISTS"]
+    assert member["patch"]["responses"]["409"]["x-error-codes"] == [
+        "CORRIDOR_EXISTS",
+        "CORRIDOR_IN_USE",  # GZ-021: routes run on it
+    ]
     area_delete = schema["paths"]["/v1/areas/{area_id}"]["delete"]
     assert area_delete["responses"]["409"]["x-error-codes"] == ["AREA_IN_USE"]
     update = schema["components"]["schemas"]["CorridorUpdate"]
