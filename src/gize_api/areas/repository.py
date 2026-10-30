@@ -2,6 +2,7 @@
 `lower()`, the function the unique index uses, so a check and the index always agree."""
 
 import uuid
+from typing import Literal
 
 from sqlalchemy import Select, exists, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,15 +11,22 @@ from gize_api.areas.models import Area
 
 LIKE_ESCAPE = "/"
 
+Lock = Literal["update", "share"]
+
 
 async def get_live_area(
-    session: AsyncSession, area_id: uuid.UUID, *, for_update: bool = False
+    session: AsyncSession, area_id: uuid.UUID, *, lock: Lock | None = None
 ) -> Area | None:
-    """`for_update` locks the row until the transaction ends: a change racing a delete waits,
-    then finds the area deleted (Postgres re-checks the filter on the newest version)."""
+    """`lock` holds the row until the transaction ends; Postgres re-checks "not deleted" on
+    the newest version after waiting, so the loser of a race finds the area gone.
+
+    - "update": to rename or delete it (one at a time);
+    - "share": to refer to it (a new corridor): many may share, but a delete waits for them,
+      and they wait for a delete.
+    """
     statement = select(Area).where(Area.id == area_id, Area.not_deleted())
-    if for_update:
-        statement = statement.with_for_update()
+    if lock is not None:
+        statement = statement.with_for_update(read=lock == "share")
     return await session.scalar(statement)
 
 
