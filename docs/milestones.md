@@ -144,7 +144,7 @@ Status: done · Depends on: GZ-012
 
 ### GZ-020 · Corridors
 Status: in review · Depends on: GZ-026
-- A corridor is a pair of areas (from, to; different), each pair once among live corridors (`CORRIDOR_EXISTS`). Staff create, list, read, edit; admin soft-delete, refused while something uses it (`CORRIDOR_IN_USE`; GZ-021 routes and GZ-027 requests extend the check). No threshold.
+- A corridor is a pair of areas (from, to; different), each pair once among live corridors (`CORRIDOR_EXISTS`). Staff create, list, read, edit; admin soft-delete (refusing it while routes use the corridor is GZ-021's `CORRIDOR_IN_USE`, as nothing else refers to corridors). No threshold.
 - Built: `gize.corridors` (migration 0007; FKs to areas `RESTRICT`; `ck_corridors_ends`; `uq_corridors_areas` on the pair among live corridors; soft delete), `corridors_*` endpoints with area names in one query, `CORRIDOR_EXISTS`, `AREA_IN_USE` (deleting an area a live corridor uses). Share locks on areas while a corridor refers to them; an update lock to delete one. Shared: `core/updates.PartialUpdate` (staff's PATCH uses it too), `core/errors.invalid_field`. `CORRIDOR_IN_USE` comes with GZ-021, when routes use corridors.
 
 ### GZ-029 · Companies
@@ -154,7 +154,7 @@ Status: todo · Depends on: GZ-012
 ### GZ-021 · Routes – create, read, list, update
 Status: todo · Depends on: GZ-020, GZ-029
 - Code (unique among live routes, `ROUTE_CODE_TAKEN`), corridor, type, school name (`student`, required) or company (`corporate`, required, active), morning and return times (local `HH:MM`), seats (1–60), launch minimum (`public`/`student`: 1 to seats; none for `corporate`). Created as `draft`. Status and prices are not set here.
-- Creates `route_assignments` with id, route_id, start_date, end_date, status (`reserved`/`active`/`ended`); GZ-023 adds the pickup point, M3 the rider, plan and Saturday add-on. Seats are counted per day: seats taken on a day = assignments covering it. Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken on any day from today (`SEATS_BELOW_TAKEN`, route row locked), nor below the launch minimum (`SEATS_BELOW_LAUNCH_MINIMUM`). Corridor, type, school and company cannot change while riders are on the route (`ROUTE_HAS_RIDERS`).
+- Creates `route_assignments` with id, route_id, start_date, end_date, status (`reserved`/`active`/`ended`); GZ-023 adds the pickup point, M3 the rider, plan and Saturday add-on. Seats are counted per day: seats taken on a day = assignments covering it. Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken on any day from today (`SEATS_BELOW_TAKEN`, route row locked), nor below the launch minimum (`SEATS_BELOW_LAUNCH_MINIMUM`). Corridor, type, school and company cannot change while riders are on the route (`ROUTE_HAS_RIDERS`). Deleting a corridor a live route uses is refused (`CORRIDOR_IN_USE`, added here: GZ-020 left it for this ticket).
 - Filters (type, status, corridor, company), cursor pagination.
 
 ### GZ-022 · Route prices (admin only)

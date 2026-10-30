@@ -12,10 +12,11 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 def _without_null(schema: dict[str, Any]) -> None:
     schema["minProperties"] = 1
-    for field in schema["properties"].values():  # each one `X | None = None`
-        (kept,) = [branch for branch in field.pop("anyOf") if branch != {"type": "null"}]
-        field.update(kept)
-        field.pop("default")
+    for name, field in schema["properties"].items():
+        branches = [branch for branch in field.pop("anyOf", ()) if branch != {"type": "null"}]
+        if len(branches) != 1 or field.pop("default", "missing") is not None:
+            raise TypeError(f"PartialUpdate field {name!r} must be declared `X | None = None`")
+        field.update(branches[0])
 
 
 class PartialUpdate(BaseModel):

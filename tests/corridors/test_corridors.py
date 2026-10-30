@@ -124,8 +124,6 @@ async def test_an_area_that_does_not_exist_is_422_on_its_field(
         async with db_session.begin():
             gone = (await AreaFactory().create(db_session, deleted_at=START)).id
     body = {"origin_area_id": str(ayat), "destination_area_id": str(ayat), which: str(gone)}
-    if which == "origin_area_id":
-        body["destination_area_id"] = str(ayat)
     response = await api.post(CORRIDORS, json=body, headers=with_key(member.id))
     problem = response.json()
     assert (response.status_code, problem["code"]) == (422, "VALIDATION_FAILED")
@@ -322,16 +320,21 @@ async def test_an_edit_into_a_pair_in_use_is_409(
     assert (response.status_code, response.json()["code"]) == (409, "CORRIDOR_EXISTS")
 
 
-@pytest.mark.parametrize("change", ["same_ends", "unknown_area", "empty", "null", "unknown_field"])
+@pytest.mark.parametrize(
+    "change", ["same_ends", "unknown_area", "deleted_area", "empty", "null", "unknown_field"]
+)
 async def test_invalid_edits_are_422(
     api: httpx.AsyncClient, db_session: AsyncSession, change: str
 ) -> None:
     member = await add_staff(db_session)
     ayat, mexico = await _areas(db_session, "Ayat", "Mexico")
     corridor = await _corridor(db_session, origin_area_id=ayat, destination_area_id=mexico)
+    async with db_session.begin():
+        gone = (await AreaFactory().create(db_session, deleted_at=START)).id
     body: object = {
         "same_ends": {"destination_area_id": str(ayat)},
         "unknown_area": {"origin_area_id": str(uuid.uuid4())},
+        "deleted_area": {"destination_area_id": str(gone)},
         "empty": {},
         "null": {"origin_area_id": None},
         "unknown_field": {"name": "Ayat to Mexico"},

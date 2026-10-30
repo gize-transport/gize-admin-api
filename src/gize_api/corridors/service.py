@@ -128,8 +128,8 @@ async def update(
 
 
 async def delete(session: AsyncSession, caller: CurrentStaff, corridor_id: uuid.UUID) -> None:
-    """Soft delete (admins: the route's require_role). GZ-021 and GZ-027 refuse it while
-    routes or open requests use the corridor."""
+    """Soft delete (admins: the route's require_role). GZ-021 refuses it while routes use
+    the corridor (`CORRIDOR_IN_USE`)."""
     async with session.begin():
         row = await _live(session, corridor_id, for_update=True)
         before = audit.snapshot(CORRIDOR_AUDIT, row)

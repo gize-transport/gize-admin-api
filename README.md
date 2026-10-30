@@ -244,9 +244,9 @@ A corridor is a pair of areas, from (`origin`) and to (`destination`), that rout
 
 - Each pair exists once among live corridors (`409 CORRIDOR_EXISTS`); the way back (Mexico → Ayat) is another corridor.
 - An area that doesn't exist, or is deleted, is a `422` on its field.
-- A corridor and an area delete never cross: creating or changing a corridor share-locks its areas, and deleting an area waits for them (and they for it).
+- A corridor and an area delete never cross: creating a corridor, or changing an end, share-locks the area it now refers to, and deleting an area waits for that (and it for a delete). An end that stays is already counted as in use.
 - Audited by value: `corridor.created`, `corridor.updated`, `corridor.deleted`.
-- Routes (GZ-021) and route requests (GZ-027) will refuse deleting a corridor they use.
+- Routes (GZ-021) will refuse deleting a corridor they use (`CORRIDOR_IN_USE`). Route requests refer to areas, not corridors.
 
 
 ## Audit log

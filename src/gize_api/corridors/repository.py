@@ -18,15 +18,17 @@ _WITH_AREAS = (
 async def get_live_corridor(
     session: AsyncSession, corridor_id: uuid.UUID, *, for_update: bool = False
 ) -> Corridor | None:
-    """`for_update` locks the corridor (not its areas) until the transaction ends."""
-    statement = (
-        select(Corridor)
-        .options(*_WITH_AREAS)
-        .where(Corridor.id == corridor_id, Corridor.not_deleted())
-    )
+    """The corridor with its areas. `for_update` first locks the corridor row alone, then
+    loads it: after waiting, Postgres re-checks a locking query against the corridor's new
+    version but joins the area rows it read before the wait, so a locking query with the
+    joins would lose a corridor whose end just changed. The load is a new statement, so it
+    sees the committed change."""
+    live = (Corridor.id == corridor_id, Corridor.not_deleted())
     if for_update:
-        statement = statement.with_for_update(of=Corridor)
-    return await session.scalar(statement)
+        locked = await session.scalar(select(Corridor.id).where(*live).with_for_update())
+        if locked is None:
+            return None
+    return await session.scalar(select(Corridor).options(*_WITH_AREAS).where(*live))
 
 
 async def pair_taken(

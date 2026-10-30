@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 
 import asyncpg
 import httpx
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -100,3 +101,72 @@ async def test_two_creates_of_one_pair_make_one_corridor(
     )
     assert sorted(r.status_code for r in responses) == [201, 409]
     assert {r.json()["code"] for r in responses if r.status_code == 409} == {"CORRIDOR_EXISTS"}
+
+
+@pytest.mark.parametrize(
+    ("method", "body", "status"),
+    [("PATCH", {"destination_area_id": None}, 200), ("DELETE", None, 204)],
+)
+async def test_a_change_waiting_on_an_end_change_still_finds_the_corridor(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+    method: str,
+    body: dict[str, object] | None,
+    status: int,
+) -> None:
+    """Another change moves the corridor's origin while this one waits for the row: this
+    one still finds the (live) corridor, not a 404."""
+    async with committed_sessionmaker() as session:
+        admin = await add_admin(session)
+        async with session.begin():
+            ayat, mexico, bole, piassa = await AreaFactory().create_batch(session, 4)
+            corridor = Corridor(origin_area_id=ayat.id, destination_area_id=mexico.id)
+            session.add(corridor)
+    if body is not None:
+        body = {"destination_area_id": str(piassa.id)}
+    conn = await asyncpg.connect(database.migrator, timeout=3)
+    try:
+        async with conn.transaction():
+            await conn.execute("SELECT 1 FROM gize.corridors WHERE id = $1 FOR UPDATE", corridor.id)
+            request = asyncio.create_task(
+                committed_api.request(
+                    method, f"/v1/corridors/{corridor.id}", json=body, headers=signed_in(admin.id)
+                )
+            )
+            await wait_for_lock_waiters(database)
+            await conn.execute(
+                "UPDATE gize.corridors SET origin_area_id = $2 WHERE id = $1", corridor.id, bole.id
+            )
+    finally:
+        await conn.close()
+    response = await request
+    assert response.status_code == status
+    if status == 200:
+        assert response.json()["origin_area"]["id"] == str(bole.id)  # the committed change
+
+
+async def test_an_end_change_waiting_on_an_area_delete_is_refused(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+) -> None:
+    async with committed_sessionmaker() as session:
+        member = await add_staff(session)
+        async with session.begin():
+            ayat, mexico, piassa = await AreaFactory().create_batch(session, 3)
+            corridor = Corridor(origin_area_id=ayat.id, destination_area_id=mexico.id)
+            session.add(corridor)
+    async with _holding_area(database, piassa.id) as conn:
+        request = asyncio.create_task(
+            committed_api.patch(
+                f"/v1/corridors/{corridor.id}",
+                json={"destination_area_id": str(piassa.id)},
+                headers=signed_in(member.id),
+            )
+        )
+        await wait_for_lock_waiters(database)
+        await conn.execute("UPDATE gize.areas SET deleted_at = now() WHERE id = $1", piassa.id)
+    response = await request
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "/destination_area_id"
