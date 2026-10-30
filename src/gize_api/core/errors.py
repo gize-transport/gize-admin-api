@@ -69,6 +69,7 @@ class ErrorCode(StrEnum):
     ROUTE_HAS_RIDERS = "ROUTE_HAS_RIDERS"
     CORRIDOR_IN_USE = "CORRIDOR_IN_USE"
     COMPANY_IN_USE = "COMPANY_IN_USE"
+    ROUTE_HAS_NO_PRICES = "ROUTE_HAS_NO_PRICES"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -121,6 +122,7 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.ROUTE_HAS_RIDERS: ErrorSpec(409, "Route Has Riders"),
     ErrorCode.CORRIDOR_IN_USE: ErrorSpec(409, "Corridor In Use"),
     ErrorCode.COMPANY_IN_USE: ErrorSpec(409, "Company In Use"),
+    ErrorCode.ROUTE_HAS_NO_PRICES: ErrorSpec(409, "Route Has No Prices"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

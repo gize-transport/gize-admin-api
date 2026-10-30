@@ -276,6 +276,7 @@ A route is one van on a corridor at a morning and a return time (GZ-021). Staff 
 | `GET /v1/routes` (`routes_list`) | Newest first, with corridor, areas, company and seat counts; filters `q` (code prefix), `route_type`, `status`, `corridor_id`, `company_id`. |
 | `GET /v1/routes/{route_id}` (`routes_get`) | One route. |
 | `PATCH /v1/routes/{route_id}` (`routes_update`) | Change code, corridor, school or company, times, seats, launch minimum. |
+| `PUT /v1/routes/{route_id}/prices` (`routes_set_prices`) | **Admins.** `{round_trip, one_way, saturday?}`, whole birr a month (1–100,000). No Saturday price means no Saturday add-on; only public routes have one (`422` on `saturday` otherwise). Corporate routes have no prices (`409 ROUTE_HAS_NO_PRICES`). Audited as `route.prices_changed`. |
 
 - **Types** (fixed at creation, owner decision):
   - `public` (adults): a launch minimum; no school or company;
@@ -289,7 +290,8 @@ A route is one van on a corridor at a morning and a return time (GZ-021). Staff 
   - Seats can't drop below seats taken on any day from today (`409 SEATS_BELOW_TAKEN`) or below the stored launch minimum (`409 SEATS_BELOW_LAUNCH_MINIMUM`; both in one request and in disagreement is a `422`). This is checked under the route's row lock, the lock adding a rider takes (M3).
 - **Riders' guarantees:** corridor, school and company can't change while someone holds a seat today or later (`409 ROUTE_HAS_RIDERS`).
 - **Places:** a corridor or company that doesn't exist (or a company that isn't active) is a `422` on its field. Routes share-lock them while referring to them, so a delete or deactivation never crosses a new route.
-- **Audit:** `route.created`, `route.updated`, by value (routes hold no personal data).
+- **Prices** can't be changed by staff through any endpoint. A test walks every route write in the contract, naming each price field on its own, requires every call to be refused, and checks no route gained or lost a price. A malformed prices body is a `422` before the route is looked at.
+- **Audit:** `route.created`, `route.updated`, `route.prices_changed`, by value (routes hold no personal data).
 - **"Today"** is Addis Ababa's date (UTC+3 all year, `core/schedule.py`).
 
 ## Audit log

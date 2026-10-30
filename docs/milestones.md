@@ -153,15 +153,17 @@ Status: done · Depends on: GZ-012
 - Built: `gize.companies` (migration 0008; name unique ignoring case among live companies; phone E.164 and email lower-case, checked by the table; billing `postpaid`; notes optional; soft delete), `companies_*` endpoints, `COMPANY_NAME_TAKEN`, audit with contact details and notes redacted, activation as its own entries. Shared: `core/contact.py` (`Email`, `EthiopianMobile`: Ethiopian mobiles typed any usual way, stored `+2519…`/`+2517…`), `core/text.Notes` and `SearchText`, `core/db.escape_like`. Contact name, phone and email are all required (email for postpaid invoices later). `COMPANY_IN_USE` comes with GZ-021.
 
 ### GZ-021 · Routes – create, read, list, update
-Status: in review · Depends on: GZ-020, GZ-029
+Status: done · Depends on: GZ-020, GZ-029
 - Code (unique among live routes, `ROUTE_CODE_TAKEN`), corridor, type, school name (`student`, required) or company (`corporate`, required, active), morning and return times (local `HH:MM`), seats (1–60), launch minimum (`public`/`student`: 1 to seats; none for `corporate`). Created as `draft`. Status and prices are not set here.
 - Creates `route_assignments` with id, route_id, start_date, end_date, status (`reserved`/`active`/`ended`); GZ-023 adds the pickup point, M3 the rider, plan and Saturday add-on. Seats are counted per day: seats taken on a day = assignments covering it. Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken on any day from today (`SEATS_BELOW_TAKEN`, route row locked), nor below the launch minimum (`SEATS_BELOW_LAUNCH_MINIMUM`). Corridor, type, school and company cannot change while riders are on the route (`ROUTE_HAS_RIDERS`). Deleting a corridor a live route uses is refused (`CORRIDOR_IN_USE`, added here: GZ-020 left it for this ticket).
 - Filters (type, status, corridor, company), cursor pagination.
 - Built: `gize.routes` and `gize.route_assignments` (migration 0009; checks for type-dependent fields, times, seats, launch minimum, prices and corporate status; `uq_routes_code` among live routes), `routes_create`/`list`/`get`/`update`, seat counts per day (busiest day of this month from today, and of next month, two queries per page: `routes.repository.seat_counts`), `ROUTE_CODE_TAKEN`, `SEATS_BELOW_TAKEN`, `SEATS_BELOW_LAUNCH_MINIMUM`, `ROUTE_HAS_RIDERS`, `CORRIDOR_IN_USE` (delete, and changing its areas: owner decision), `COMPANY_IN_USE` (deactivate while a route runs, delete while it has one: GZ-029's hand-off). Type fixed at creation (owner decision). Shared: `core/schedule.py` (`LocalTime` "HH:MM", `addis_today`), audit stores times of day.
 
 ### GZ-022 · Route prices (admin only)
-Status: todo · Depends on: GZ-021
+Status: in review · Depends on: GZ-021
 - Separate endpoint for prices (round trip, one-way, optional Saturday add-on – Saturday only for `public` routes; whole birr 1–100,000). Refused for `corporate` routes. Staff cannot change prices via any endpoint (test every route endpoint); GZ-028's copy keeps the original's prices unchanged.
+- Built: `PUT /v1/routes/{route_id}/prices` (`routes_set_prices`, admins; `RoutePricesSet`, all prices at once; a missing or null Saturday price is none), `ROUTE_HAS_NO_PRICES` (corporate), Saturday on a non-public route a 422 on `saturday`, audit `route.prices_changed`, and a test that walks every route write in the contract as staff and finds no price changed. No migration: the price columns came with GZ-021.
+- For M3: today an admin may clear a public route's Saturday price at any time. Once riders can hold the Saturday add-on, decide whether clearing it is refused while someone holds it, or ends their add-on at the month's end.
 
 ### GZ-023 · Pickup points
 Status: todo · Depends on: GZ-021, GZ-026

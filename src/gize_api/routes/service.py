@@ -1,6 +1,6 @@
 """Route business rules (GZ-021). Any active staff member creates, lists, reads and edits
-routes; status (GZ-024), prices (GZ-022, admins) and deletion (GZ-024, admins) have their
-own endpoints. Every change is audited.
+routes; only admins set prices (GZ-022). Status and deletion (GZ-024) have their own
+endpoints. Every change is audited.
 
 A route refers to a live corridor and, for corporate routes, a live active company: it
 share-locks them while it is created or moved, and deactivating or deleting them takes an
@@ -36,6 +36,7 @@ from gize_api.routes.schemas import (
     RouteCreate,
     RouteListParams,
     RoutePage,
+    RoutePricesSet,
     RouteRead,
     RouteUpdate,
 )
@@ -165,6 +166,35 @@ async def update(
             session,
             actor_id=caller.id,
             action="route.updated",
+            entity=ROUTE_AUDIT,
+            entity_id=row.id,
+            before=before,
+            after=audit.snapshot(ROUTE_AUDIT, row),
+        )
+        return await _read_with_counts(session, row)
+
+
+async def set_prices(
+    session: AsyncSession, caller: CurrentStaff, route_id: uuid.UUID, prices: RoutePricesSet
+) -> RouteRead:
+    """Admins only (the route's require_role). Setting the prices already there records
+    nothing. When a change takes effect for riders is billing's concern (later)."""
+    async with session.begin():
+        row = await _live(session, route_id, for_update=True)
+        if row.route_type is RouteType.CORPORATE:
+            raise AppError(ErrorCode.ROUTE_HAS_NO_PRICES)  # billed per company
+        if prices.saturday is not None and row.route_type is not RouteType.PUBLIC:
+            raise invalid_field("body", "saturday")
+        before = audit.snapshot(ROUTE_AUDIT, row)
+        row.price_round_trip = prices.round_trip
+        row.price_one_way = prices.one_way
+        row.price_saturday = prices.saturday
+        await session.flush()
+        await session.refresh(row, ["updated_at"])
+        audit.record(
+            session,
+            actor_id=caller.id,
+            action="route.prices_changed",
             entity=ROUTE_AUDIT,
             entity_id=row.id,
             before=before,
