@@ -20,6 +20,10 @@ MOBILE = TypeAdapter(EthiopianMobile)
         " 0911 23 45 67 ",
         "+251-911-234-567",
         "(0911) 234.567",
+        "00251 911 234 567",  # the international prefix
+        "+251 (0) 911 234 567",  # with the trunk 0
+        "2510911234567",
+        "0911\u00a0234\u00a0567",
     ],
 )
 def test_usual_spellings_become_one_number(typed: str) -> None:
@@ -42,6 +46,10 @@ def test_safaricom_numbers_are_mobiles_too() -> None:
         "0911_234567",
         "+251 911 234 567 8",
         "0" * 21,  # past the typed limit
+        "0911\x1c234567",  # a control character is not a separator
+        "0911\n234567",
+        "+0911234567",
+        "000251911234567",
     ],
 )
 def test_other_text_is_refused(typed: str) -> None:

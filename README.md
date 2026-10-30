@@ -258,7 +258,7 @@ Postpaid customers whose staff ride their own corporate routes (GZ-029). Staff m
 | `POST /v1/companies` (`companies_create`) | `{name, contact_name, contact_phone, contact_email, notes?}`. Requires `Idempotency-Key`. Created active, billing `postpaid`. |
 | `GET /v1/companies` (`companies_list`) | Newest first; `q` (names starting with it) and `is_active`. |
 | `GET /v1/companies/{company_id}` (`companies_get`) | One company. |
-| `PATCH /v1/companies/{company_id}` (`companies_update`) | Change any field; `is_active: false` deactivates; empty `notes` clear them. |
+| `PATCH /v1/companies/{company_id}` (`companies_update`) | Change any field except billing; `is_active: false` deactivates; empty `notes` clear them. |
 | `DELETE /v1/companies/{company_id}` (`companies_delete`) | Admins. Soft delete, `204`. |
 
 - **Names** are unique ignoring case among live companies (`409 COMPANY_NAME_TAKEN`), trimmed and normalised like area names.

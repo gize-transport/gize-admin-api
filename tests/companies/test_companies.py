@@ -144,6 +144,7 @@ async def test_a_deleted_companys_name_can_be_used_again(
         {"contact_email": "hanna@acme"},
         {"notes": "x" * 1001},
         {"notes": "bell \u0007"},
+        {"notes": 7},
         {"notes": "\u0958" * 1000},  # 1000 characters that NFC makes 2000
         {"billing": "prepaid"},  # always postpaid: not a field
         {"is_active": False},  # a new company is active
@@ -189,6 +190,8 @@ async def test_filters(api: httpx.AsyncClient, db_session: AsyncSession) -> None
     acme = await _company(db_session, name="Acme Ethiopia")
     acme_old = await _company(db_session, name="Acme Old", is_active=False)
     await _company(db_session, name="Zemen Bank")
+    corner = await _company(db_session, name="50% Corner")
+    await _company(db_session, name="500 Club")
 
     async def found(**params: str) -> set[str]:
         response = await api.get(COMPANIES, params=params, headers=signed_in(member.id))
@@ -198,7 +201,8 @@ async def test_filters(api: httpx.AsyncClient, db_session: AsyncSession) -> None
     assert await found(q="acme", is_active="true") == {str(acme)}
     assert await found(is_active="false") == {str(acme_old)}
     assert await found(q="  ") == await found()  # blank is no filter
-    assert await found(q="50%") == set()
+    assert await found(q="50%") == {str(corner)}  # "%" is a plain character
+    assert await found(q="5_") == set()
 
 
 async def test_pages_follow_the_cursor(api: httpx.AsyncClient, db_session: AsyncSession) -> None:
@@ -301,6 +305,21 @@ async def test_an_empty_note_clears_the_notes(
     company = await _company(db_session, notes="Old note")
     response = await api.patch(_member(company), json={"notes": "  "}, headers=signed_in(member.id))
     assert (response.status_code, response.json()["notes"]) == (200, None)
+    assert await _changes(db_session, company) == [
+        ("company.updated", {"notes": REDACTED}, {"notes": None})
+    ]
+
+
+async def test_notes_keep_one_kind_of_line_break(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    member = await add_staff(db_session)
+    body = {**ACME, "notes": "a\r\nb\rc\u2028d\u2029e"}
+    response = await api.post(COMPANIES, json=body, headers=with_key(member.id))
+    assert response.json()["notes"] == "a\nb\nc\nd\ne"
+    long_crlf = {**ACME, "name": "Acme CRLF", "notes": "x" + "\r\n" * 600 + "y"}
+    response = await api.post(COMPANIES, json=long_crlf, headers=with_key(member.id))
+    assert response.status_code == 201  # 602 characters once line breaks are one each
 
 
 async def test_deactivating_and_reactivating_are_their_own_entries(
@@ -326,9 +345,11 @@ async def test_an_edit_to_what_is_there_records_nothing(
     member = await add_staff(db_session)
     company = await _company(db_session, name="Acme", contact_phone="+251911234567")
     body = {"name": " Acme ", "contact_phone": "0911234567", "is_active": True}
+    updated_at = (await _reread(db_session, company)).updated_at
     response = await api.patch(_member(company), json=body, headers=signed_in(member.id))
     assert response.status_code == 200
     assert await _changes(db_session, company) == []
+    assert (await _reread(db_session, company)).updated_at == updated_at  # no UPDATE sent
 
 
 async def test_renaming_to_a_name_in_use_is_409(
@@ -458,6 +479,8 @@ def test_companies_are_in_the_contract(make_settings: SettingsFactory) -> None:
         "IDEMPOTENCY_IN_PROGRESS",
     ]
     schemas = schema["components"]["schemas"]
+    for body in ("CompanyCreate", "CompanyUpdate"):
+        assert "Ethiopian mobile" in schemas[body]["properties"]["contact_phone"]["description"]
     billing = schemas["CompanyRead"]["properties"]["billing"]
     assert billing == {"$ref": "#/components/schemas/CompanyBilling"}
     assert schemas["CompanyBilling"]["enum"] == ["postpaid"]

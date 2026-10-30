@@ -44,10 +44,20 @@ ShortText = Annotated[
 ]
 
 
+_LINE_BREAKS = ("\r\n", "\r", "\u2028", "\u2029")
+
+
+def _one_kind_of_line_break(value: object) -> object:
+    """CRLF, CR and the Unicode line and paragraph separators all become LF, before the
+    length is checked (they break exports and SMS as they are)."""
+    if isinstance(value, str):
+        for line_break in _LINE_BREAKS:
+            value = value.replace(line_break, "\n")
+    return value
+
+
 def _no_control_characters_but_line_breaks(value: str) -> str:
-    return "\n".join(
-        no_control_characters(line) for line in value.replace("\r\n", "\n").split("\n")
-    )
+    return "\n".join(no_control_characters(line) for line in value.split("\n"))
 
 
 def _nfc(value: str) -> str:
@@ -63,6 +73,7 @@ def _notes_short_enough(value: str) -> str:
 # Free text staff write down: line breaks kept, may be empty (the service stores "" as none).
 Notes = Annotated[
     str,
+    BeforeValidator(_one_kind_of_line_break),
     StringConstraints(strip_whitespace=True, max_length=NOTES_MAX_LENGTH),
     AfterValidator(_no_control_characters_but_line_breaks),
     AfterValidator(_nfc),

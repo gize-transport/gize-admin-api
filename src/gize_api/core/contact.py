@@ -1,15 +1,15 @@
 """Contact details people type: email addresses and Ethiopian mobile numbers.
 
 - `Email`: trimmed and lower-case, ASCII, the HTML form rule with a dot in the domain.
-- `EthiopianMobile`: typed any usual way (`0911 23 45 67`, `+251-911-234567`, `911234567`)
-  and stored E.164, `+2519…` (Ethio Telecom) or `+2517…` (Safaricom): one number has one
-  spelling, so it can be compared, rate-limited and texted.
+- `EthiopianMobile`: typed any usual way (`0911 23 45 67`, `+251-911-234567`, `911234567`,
+  `00251 911…`, `+251 (0) 911…`) and stored E.164, `+2519…` (Ethio Telecom) or `+2517…`
+  (Safaricom): one number has one spelling, so it can be compared, rate-limited and texted.
 """
 
 import re
 from typing import Annotated
 
-from pydantic import AfterValidator, StringConstraints
+from pydantic import AfterValidator, Field, StringConstraints
 
 EMAIL_MAX_LENGTH = 320  # RFC 5321 path limit
 EMAIL_LOCAL_PART_MAX_LENGTH = 64  # RFC 5321
@@ -32,8 +32,10 @@ MOBILE_TYPED_MAX_LENGTH = 20
 MOBILE_E164_LENGTH = 13  # +251 and nine digits
 # What the database checks too.
 MOBILE_E164_PATTERN = r"^\+251[79][0-9]{8}$"
-_SEPARATORS = re.compile(r"[\s().-]")
-_MOBILE = re.compile(r"(?:\+?251|0)?([79][0-9]{8})")
+# Only what people put between digits: spaces (also non-breaking), dots, dashes, brackets.
+_SEPARATORS = re.compile(r"[ \u00a0\t().-]")
+# An optional country code (+251, 00251 or 251, maybe followed by the trunk 0) or trunk 0.
+_MOBILE = re.compile(r"(?:(?:\+|00)?2510?|0)?([79][0-9]{8})")
 
 
 def ethiopian_mobile(typed: str) -> str:
@@ -48,4 +50,5 @@ EthiopianMobile = Annotated[
     str,
     StringConstraints(strip_whitespace=True, max_length=MOBILE_TYPED_MAX_LENGTH),
     AfterValidator(ethiopian_mobile),
+    Field(description="An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…"),
 ]

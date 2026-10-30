@@ -246,6 +246,7 @@
             "type": "string"
           },
           "contact_phone": {
+            "description": "An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…",
             "maxLength": 20,
             "title": "Contact Phone",
             "type": "string"
@@ -399,6 +400,7 @@
             "type": "string"
           },
           "contact_phone": {
+            "description": "An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…",
             "maxLength": 20,
             "title": "Contact Phone",
             "type": "string"

@@ -60,3 +60,22 @@ async def test_a_change_waiting_on_a_delete_finds_the_company_gone(
         await conn.close()
     response = await request
     assert (response.status_code, response.json()["code"]) == (404, "NOT_FOUND")
+
+
+async def test_two_renames_to_one_name_leave_one(
+    committed_api: httpx.AsyncClient, committed_sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    async with committed_sessionmaker() as session:
+        member = await add_staff(session)
+        async with session.begin():
+            first, second = await CompanyFactory().create_batch(session, 2)
+    responses = await asyncio.gather(
+        *(
+            committed_api.patch(
+                f"/v1/companies/{company.id}", json={"name": "Zemen"}, headers=signed_in(member.id)
+            )
+            for company in (first, second)
+        )
+    )
+    assert sorted(r.status_code for r in responses) == [200, 409]
+    assert {r.json()["code"] for r in responses if r.status_code == 409} == {"COMPANY_NAME_TAKEN"}
