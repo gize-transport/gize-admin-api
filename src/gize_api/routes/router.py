@@ -147,6 +147,8 @@ async def set_prices(
     (left out or null: none). Staff can't change prices through any endpoint.
 
     - 409 ROUTE_HAS_NO_PRICES: a corporate route (billed per company).
+
+    A malformed body is a 422 before the route is looked at (so before any 404 or 409).
     """
     response.headers["Cache-Control"] = "no-store"
     return await service.set_prices(session, caller, route_id, prices)

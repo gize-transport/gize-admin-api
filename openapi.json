@@ -4624,7 +4624,7 @@
     },
     "/v1/routes/{route_id}/prices": {
       "put": {
-        "description": "Round trip and one-way, whole birr a month; Saturday add-on on public routes only\n(left out or null: none). Staff can't change prices through any endpoint.\n\n- 409 ROUTE_HAS_NO_PRICES: a corporate route (billed per company).",
+        "description": "Round trip and one-way, whole birr a month; Saturday add-on on public routes only\n(left out or null: none). Staff can't change prices through any endpoint.\n\n- 409 ROUTE_HAS_NO_PRICES: a corporate route (billed per company).\n\nA malformed body is a 422 before the route is looked at (so before any 404 or 409).",
         "operationId": "routes_set_prices",
         "parameters": [
           {

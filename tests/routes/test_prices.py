@@ -5,12 +5,14 @@ routes. Corporate routes have none (companies are billed per agreement). Staff c
 prices through any endpoint.
 """
 
+import re
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import httpx
 import pytest
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.db import get_session
@@ -22,6 +24,9 @@ from tests.support import SettingsFactory
 
 START = datetime(2026, 10, 29, 6, 30, tzinfo=UTC)
 PRICES = {"round_trip": 2400, "one_way": 1400, "saturday": 300}
+WRITES = {"post", "put", "patch", "delete"}
+# What a staff write naming a price may get: refused, never done, limited or broken.
+REFUSED = {403, 404, 405, 409, 422, 428}
 
 
 def _prices_path(route_id: uuid.UUID) -> str:
@@ -154,29 +159,52 @@ async def test_staff_cannot_set_prices(api: httpx.AsyncClient, db_session: Async
 async def test_no_route_endpoint_lets_staff_change_prices(
     api: httpx.AsyncClient, api_app: GizeAPI, db_session: AsyncSession
 ) -> None:
-    """Every write under /v1/routes, called by staff with every way of naming prices: none
-    changes a price. Endpoints added later are covered by walking the contract."""
+    """Every write under /v1/routes, called by staff, with each way of naming a price on its
+    own (one field accepted by mistake must show): every call is refused, and no route,
+    including any a write might create, has a price but the seeded one, unchanged. Endpoints
+    added later are covered by walking the contract."""
     member = await add_staff(db_session)
     route = await add_route(
         db_session, price_round_trip=2400, price_one_way=1400, price_saturday=300
     )
-    price_fields = [
-        PRICES,
-        {"prices": {"round_trip": 1, "one_way": 1}},
-        {"price_round_trip": 1, "price_one_way": 1, "price_saturday": 1},
+    bodies: list[dict[str, object]] = [
+        {name: 1}
+        for name in (
+            "round_trip",
+            "one_way",
+            "saturday",
+            "price_round_trip",
+            "price_one_way",
+            "price_saturday",
+        )
     ]
-    writes = [
-        (method.upper(), path.replace("{route_id}", str(route)))
-        for path, item in api_app.openapi()["paths"].items()
-        if path.startswith(ROUTES)
-        for method in item
-        if method in {"post", "put", "patch", "delete"}
-    ]
+    bodies += [{"prices": {"round_trip": 1, "one_way": 1}}, {"round_trip": 1, "one_way": 1}]
+    writes = []
+    for path, item in api_app.openapi()["paths"].items():
+        if not path.startswith(ROUTES):
+            continue
+        filled = path.replace("{route_id}", str(route))
+        filled = re.sub(r"\{[a-z_]+\}", lambda _: str(uuid.uuid4()), filled)
+        assert "{" not in filled, path
+        writes += [(method.upper(), filled) for method in item if method in WRITES]
     assert ("PUT", _prices_path(route)) in writes  # the walk sees the prices endpoint
     for method, path in writes:
-        for body in price_fields:
-            await api.request(method, path, json=body, headers=with_key(member.id))
-    assert await _stored(db_session, route) == (2400, 1400, 300)
+        for body in bodies:
+            response = await api.request(method, path, json=body, headers=with_key(member.id))
+            assert response.status_code in REFUSED, (method, path, body, response.status_code)
+    async with db_session.begin():
+        priced = await db_session.execute(
+            select(
+                Route.id, Route.price_round_trip, Route.price_one_way, Route.price_saturday
+            ).where(
+                or_(
+                    Route.price_round_trip.is_not(None),
+                    Route.price_one_way.is_not(None),
+                    Route.price_saturday.is_not(None),
+                )
+            )
+        )
+        assert [tuple(row) for row in priced] == [(route, 2400, 1400, 300)]
 
 
 async def test_callers_must_be_active_staff(

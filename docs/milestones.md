@@ -163,6 +163,7 @@ Status: done · Depends on: GZ-020, GZ-029
 Status: in review · Depends on: GZ-021
 - Separate endpoint for prices (round trip, one-way, optional Saturday add-on – Saturday only for `public` routes; whole birr 1–100,000). Refused for `corporate` routes. Staff cannot change prices via any endpoint (test every route endpoint); GZ-028's copy keeps the original's prices unchanged.
 - Built: `PUT /v1/routes/{route_id}/prices` (`routes_set_prices`, admins; `RoutePricesSet`, all prices at once; a missing or null Saturday price is none), `ROUTE_HAS_NO_PRICES` (corporate), Saturday on a non-public route a 422 on `saturday`, audit `route.prices_changed`, and a test that walks every route write in the contract as staff and finds no price changed. No migration: the price columns came with GZ-021.
+- For M3: today an admin may clear a public route's Saturday price at any time. Once riders can hold the Saturday add-on, decide whether clearing it is refused while someone holds it, or ends their add-on at the month's end.
 
 ### GZ-023 · Pickup points
 Status: todo · Depends on: GZ-021, GZ-026
