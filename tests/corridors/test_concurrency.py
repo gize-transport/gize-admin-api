@@ -103,16 +103,12 @@ async def test_two_creates_of_one_pair_make_one_corridor(
     assert {r.json()["code"] for r in responses if r.status_code == 409} == {"CORRIDOR_EXISTS"}
 
 
-@pytest.mark.parametrize(
-    ("method", "body", "status"),
-    [("PATCH", {"destination_area_id": None}, 200), ("DELETE", None, 204)],
-)
+@pytest.mark.parametrize(("method", "status"), [("PATCH", 200), ("DELETE", 204)])
 async def test_a_change_waiting_on_an_end_change_still_finds_the_corridor(
     committed_api: httpx.AsyncClient,
     committed_sessionmaker: async_sessionmaker[AsyncSession],
     database: DatabaseUrls,
     method: str,
-    body: dict[str, object] | None,
     status: int,
 ) -> None:
     """Another change moves the corridor's origin while this one waits for the row: this
@@ -123,8 +119,7 @@ async def test_a_change_waiting_on_an_end_change_still_finds_the_corridor(
             ayat, mexico, bole, piassa = await AreaFactory().create_batch(session, 4)
             corridor = Corridor(origin_area_id=ayat.id, destination_area_id=mexico.id)
             session.add(corridor)
-    if body is not None:
-        body = {"destination_area_id": str(piassa.id)}
+    body = {"destination_area_id": str(piassa.id)} if method == "PATCH" else None
     conn = await asyncpg.connect(database.migrator, timeout=3)
     try:
         async with conn.transaction():
