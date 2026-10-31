@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import date, datetime, time
+from enum import StrEnum
 from itertools import pairwise
 from typing import Annotated, Self
 
@@ -221,6 +222,33 @@ class MonthSeats(BaseModel):
     next_month: int
 
 
+class RouteBlocker(StrEnum):
+    """What stops a status change now (the 409 it would get): prices not set
+    (ROUTE_NOT_READY), a corporate route's company not active (ROUTE_NOT_READY), someone
+    reserved or riding today or later (ROUTE_HAS_RIDERS), fewer riders reserved for the
+    launch day than the launch minimum (NOT_ENOUGH_RIDERS)."""
+
+    PRICES_MISSING = "PRICES_MISSING"
+    COMPANY_INACTIVE = "COMPANY_INACTIVE"
+    ROUTE_HAS_RIDERS = "ROUTE_HAS_RIDERS"
+    NOT_ENOUGH_RIDERS = "NOT_ENOUGH_RIDERS"
+
+
+class StatusChange(BaseModel):
+    """A move the route's type allows from its status, and whether `PUT /status` would
+    accept it now."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    to: RouteStatus
+    ready: bool = Field(description="No blockers: the change would be accepted now.")
+    blocked_by: list[RouteBlocker] = Field(max_length=len(RouteBlocker))
+    launch_date: LocalDate | None = Field(
+        description="A launch (`forming` → `active`): judged for this day, the earliest a "
+        "launch may name (send it with the change). Other months: `GET /launch-months`."
+    )
+
+
 class RouteRead(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -249,8 +277,36 @@ class RouteRead(BaseModel):
     reserved: int = Field(
         description="Riders reserved for the next launch day (the 1st): launch progress."
     )
+    status_changes: list[StatusChange] = Field(
+        max_length=2,
+        description="The moves allowed from this status, each ready or with what blocks "
+        "it, by the rules `PUT /status` applies. A snapshot: a change can still be refused "
+        "if something moved meanwhile.",
+    )
     created_at: datetime
     updated_at: datetime
+
+
+class LaunchMonth(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    launch_date: LocalDate
+    reserved: int = Field(description="Riders a launch that day would start.")
+    ready: bool = Field(
+        description="A launch that day would be accepted now: the route is forming and "
+        "`reserved` reaches the launch minimum."
+    )
+
+
+class RouteLaunchMonths(BaseModel):
+    """Every day a launch may name: the 1st of each month, from the earliest (today on the
+    1st, else next month's) to a year ahead."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: RouteStatus
+    launch_minimum: int | None = Field(description="Null on corporate routes (no launch).")
+    months: list[LaunchMonth] = Field(max_length=13)
 
 
 class RoutePage(Page[RouteRead]):

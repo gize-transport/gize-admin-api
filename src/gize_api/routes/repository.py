@@ -8,7 +8,19 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from sqlalchemy import ColumnElement, Date, Select, cast, exists, func, literal, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    Date,
+    Select,
+    and_,
+    cast,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -46,11 +58,20 @@ def _reserved_for(launch_day: date) -> tuple[ColumnElement[bool], ...]:
     )
 
 
+def _holds_a_seat_from(today: date) -> tuple[ColumnElement[bool], ...]:
+    """A seat held today or later: not ended, and not gone before today."""
+    return (
+        _HOLDS_A_SEAT,
+        or_(RouteAssignment.end_date.is_(None), RouteAssignment.end_date >= today),
+    )
+
+
 @dataclass(frozen=True)
 class SeatCounts:
     this_month: int = 0
     next_month: int = 0
     reserved: int = 0
+    held: bool = False  # someone holds a seat today or later (`has_riders`)
 
 
 async def get_live_route(
@@ -114,13 +135,13 @@ def live_routes(
 async def seat_counts(
     session: AsyncSession, route_ids: list[uuid.UUID], today: date
 ) -> dict[uuid.UUID, SeatCounts]:
-    """Seats taken on the busiest day of this month (from today) and of next month, and
-    riders reserved for the next launch day (`next_launch_day`: launch progress), for every
-    route in two queries."""
+    """Seats taken on the busiest day of this month (from today) and of next month, riders
+    reserved for the next launch day (`next_launch_day`: launch progress), and whether
+    anyone holds a seat today or later, for every route in two queries."""
     if not route_ids:
         return {}
-    next_month = _first_of_next_month(today)
-    last_day = _first_of_next_month(next_month) - timedelta(days=1)
+    next_month = first_of_next_month(today)
+    last_day = first_of_next_month(next_month) - timedelta(days=1)
     launch_day = next_launch_day(today)
     peaks = {
         route_id: (this_month, next)
@@ -128,18 +149,42 @@ async def seat_counts(
             _peaks(route_ids, today, last_day, split=next_month)
         )
     }
+    # Riders from today on; those reserved for the launch day are among them (it's today
+    # or later). A route nobody holds has no row.
     reserved = {
         route_id: count
         for route_id, count in await session.execute(
-            select(RouteAssignment.route_id, func.count())
-            .where(RouteAssignment.route_id.in_(route_ids), *_reserved_for(launch_day))
+            select(
+                RouteAssignment.route_id,
+                func.count().filter(and_(*_reserved_for(launch_day))),
+            )
+            .where(RouteAssignment.route_id.in_(route_ids), *_holds_a_seat_from(today))
             .group_by(RouteAssignment.route_id)
         )
     }
     return {
-        route_id: SeatCounts(*peaks.get(route_id, (0, 0)), reserved=reserved.get(route_id, 0))
+        route_id: SeatCounts(
+            *peaks.get(route_id, (0, 0)),
+            reserved=reserved.get(route_id, 0),
+            held=route_id in reserved,
+        )
         for route_id in route_ids
     }
+
+
+async def reserved_by_month(
+    session: AsyncSession, route_id: uuid.UUID, launch_days: list[date]
+) -> list[int]:
+    """Riders a launch on each of `launch_days` would start (`_reserved_for`), in one
+    query (one count per day; callers pass at most 13)."""
+    row = (
+        await session.execute(
+            select(*(func.count().filter(and_(*_reserved_for(day))) for day in launch_days))
+            .select_from(RouteAssignment)
+            .where(RouteAssignment.route_id == route_id, _RESERVED)
+        )
+    ).one()
+    return [int(count) for count in row]
 
 
 async def peak_taken_from(session: AsyncSession, route_id: uuid.UUID, today: date) -> int:
@@ -157,11 +202,7 @@ async def peak_taken_from(session: AsyncSession, route_id: uuid.UUID, today: dat
 
 async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) -> bool:
     """Someone holds a seat today or later."""
-    statement = exists().where(
-        RouteAssignment.route_id == route_id,
-        _HOLDS_A_SEAT,
-        or_(RouteAssignment.end_date.is_(None), RouteAssignment.end_date >= today),
-    )
+    statement = exists().where(RouteAssignment.route_id == route_id, *_holds_a_seat_from(today))
     return bool(await session.scalar(select(statement)))
 
 
@@ -275,8 +316,8 @@ def next_launch_day(today: date) -> date:
     """The earliest day a forming route can launch: today if it's the 1st, else the 1st of
     next month (individual riders start on the 1st). Launch progress counts the riders a
     launch that day would start (`_reserved_for`)."""
-    return today if today.day == 1 else _first_of_next_month(today)
+    return today if today.day == 1 else first_of_next_month(today)
 
 
-def _first_of_next_month(day: date) -> date:
+def first_of_next_month(day: date) -> date:
     return date(day.year + day.month // 12, day.month % 12 + 1, 1)
