@@ -277,19 +277,18 @@ async def update(
             session, change.code, except_id=row.id
         ):
             raise AppError(ErrorCode.ROUTE_CODE_TAKEN)
-        moves = (
-            change.corridor_id not in (None, row.corridor_id)
-            or change.school_name not in (None, row.school_name)
-            or change.company_id not in (None, row.company_id)
+        # A school spelled in another case is the same school (requests and riders match it
+        # ignoring case): fixing the case moves nobody.
+        new_school = change.school_name is not None and (
+            row.school_name is None or change.school_name.casefold() != row.school_name.casefold()
         )
+        relocates = change.corridor_id not in (None, row.corridor_id) or new_school
+        moves = relocates or change.company_id not in (None, row.company_id)
         if moves and await repository.has_riders(session, row.id, today):
             raise AppError(ErrorCode.ROUTE_HAS_RIDERS)
         # Where it runs and whom it serves are frozen once it is priced or asked for (owner
         # decision, after M2): to serve somewhere else, add a route. Requests share-lock the
         # route, so none is recorded or matched while this change holds its lock.
-        new_corridor = change.corridor_id not in (None, row.corridor_id)
-        new_school = change.school_name not in (None, row.school_name)
-        relocates = new_corridor or new_school
         if relocates and await request_names_route(session, row.id):
             raise AppError(ErrorCode.ROUTE_HAS_REQUESTS)
         priced = (row.price_round_trip, row.price_one_way, row.price_saturday) != (None,) * 3

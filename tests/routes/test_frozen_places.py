@@ -5,6 +5,7 @@ changes (code, times, seats) stay open. Riders already freeze them (`ROUTE_HAS_R
 """
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -13,6 +14,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.main import create_app
+from gize_api.routes.models import Route
 from tests.factories import RouteFactory
 from tests.route_requests.support import add_request
 from tests.routes.support import add_corridor, add_route, route_path
@@ -20,6 +22,7 @@ from tests.staff.support import add_admin, add_staff, signed_in
 from tests.support import DatabaseUrls, SettingsFactory, wait_for_lock_waiters
 
 PRICES = {"price_round_trip": 2400, "price_one_way": 1400}
+DELETED = datetime(2026, 10, 29, 6, 30, tzinfo=UTC)
 
 
 async def _moves(session: AsyncSession) -> list[tuple[dict[str, Any], dict[str, str]]]:
@@ -88,6 +91,45 @@ async def test_a_frozen_route_still_changes_everything_else(
     change = {"code": "ICS-02", "morning_time": "06:45", "seats": 16, "school_name": "ICS"}
     response = await api.patch(route_path(route), json=change, headers=signed_in(member_id))
     assert (response.status_code, response.json()["code"]) == (200, "ICS-02")
+
+
+async def test_sending_what_is_there_is_no_move(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """The same corridor, or the same school in another case, moves nobody."""
+    member_id = (await add_staff(db_session)).id
+    route = await add_route(db_session, route_type="student", school_name="ics", **PRICES)
+    async with db_session.begin():
+        corridor_id = (await db_session.get_one(Route, route)).corridor_id
+    same = {"corridor_id": str(corridor_id), "school_name": "ICS"}
+    response = await api.patch(route_path(route), json=same, headers=signed_in(member_id))
+    assert (response.status_code, response.json()["school_name"]) == (200, "ICS")
+
+
+async def test_a_deleted_request_doesnt_freeze_a_route(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    member_id = (await add_staff(db_session)).id
+    other = await add_corridor(db_session)
+    route = await add_route(db_session)
+    await add_request(db_session, status="matched", matched_route_id=route, deleted_at=DELETED)
+    response = await api.patch(
+        route_path(route), json={"corridor_id": str(other)}, headers=signed_in(member_id)
+    )
+    assert response.status_code == 200
+
+
+async def test_requests_are_named_before_prices(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    member_id = (await add_staff(db_session)).id
+    other = await add_corridor(db_session)
+    route = await add_route(db_session, **PRICES)
+    await add_request(db_session, status="matched", matched_route_id=route)
+    response = await api.patch(
+        route_path(route), json={"corridor_id": str(other)}, headers=signed_in(member_id)
+    )
+    assert response.json()["code"] == "ROUTE_HAS_REQUESTS"
 
 
 async def test_a_move_waiting_on_a_new_request_is_refused(

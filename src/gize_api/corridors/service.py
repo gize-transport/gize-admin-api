@@ -99,7 +99,7 @@ async def update(
 ) -> CorridorRead:
     """Changing an end to what it is changes and records nothing. While a live route runs
     on the corridor its ends can't change (owner decision): routes move to another
-    corridor instead."""
+    corridor instead, or, once priced or requested, a route is added on the new one."""
     async with session.begin():
         row = await _live(session, corridor_id, lock="update")
         origin, destination = row.origin_area, row.destination_area
