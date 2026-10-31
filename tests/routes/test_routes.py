@@ -595,6 +595,8 @@ def test_routes_are_in_the_contract(make_settings: SettingsFactory) -> None:
     ]
     assert member["patch"]["responses"]["409"]["x-error-codes"] == [
         "ROUTE_CODE_TAKEN",
+        "ROUTE_HAS_PRICES",
+        "ROUTE_HAS_REQUESTS",
         "ROUTE_HAS_RIDERS",
         "SEATS_BELOW_LAUNCH_MINIMUM",
         "SEATS_BELOW_TAKEN",

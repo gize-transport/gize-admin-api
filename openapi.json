@@ -670,6 +670,7 @@
           "INVALID_STATUS_CHANGE",
           "ROUTE_REQUEST_EXISTS",
           "ROUTE_HAS_REQUESTS",
+          "ROUTE_HAS_PRICES",
           "INTERNAL_ERROR",
           "SERVICE_UNAVAILABLE"
         ],
@@ -6467,7 +6468,7 @@
         ]
       },
       "patch": {
-        "description": "Leave out what stays. The type is fixed.\n\n- 409 ROUTE_HAS_RIDERS: corridor, school or company while riders hold seats.\n- 409 SEATS_BELOW_TAKEN: fewer seats than are taken on some day from today.\n- 409 SEATS_BELOW_LAUNCH_MINIMUM: the launch minimum above the stored seats, or seats\n  below the stored minimum (both in one request and in disagreement: 422).",
+        "description": "Leave out what stays. The type is fixed.\n\n- 409 ROUTE_HAS_RIDERS: corridor, school or company while riders hold seats.\n- 409 ROUTE_HAS_REQUESTS, ROUTE_HAS_PRICES: corridor or school once open route requests\n  name the route, or once it has prices (to serve somewhere else, add a route).\n- 409 SEATS_BELOW_TAKEN: fewer seats than are taken on some day from today.\n- 409 SEATS_BELOW_LAUNCH_MINIMUM: the launch minimum above the stored seats, or seats\n  below the stored minimum (both in one request and in disagreement: 422).",
         "operationId": "routes_update",
         "parameters": [
           {
@@ -6549,9 +6550,11 @@
                 }
               }
             },
-            "description": "Route Code Taken, Route Has Riders, Seats Below Launch Minimum, Seats Below Taken",
+            "description": "Route Code Taken, Route Has Prices, Route Has Requests, Route Has Riders, Seats Below Launch Minimum, Seats Below Taken",
             "x-error-codes": [
               "ROUTE_CODE_TAKEN",
+              "ROUTE_HAS_PRICES",
+              "ROUTE_HAS_REQUESTS",
               "ROUTE_HAS_RIDERS",
               "SEATS_BELOW_LAUNCH_MINIMUM",
               "SEATS_BELOW_TAKEN"
