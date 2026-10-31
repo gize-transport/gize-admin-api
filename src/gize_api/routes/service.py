@@ -392,16 +392,12 @@ async def launch_months(session: AsyncSession, route_id: uuid.UUID) -> RouteLaun
     async with session.begin():
         row = await _live(session, route_id)
         counts = await repository.reserved_by_month(session, row.id, days)
-    forming, minimum = row.status is FORMING, row.launch_minimum
+    forming, minimum = row.status is FORMING, row.launch_minimum or 0  # as set_status
     return RouteLaunchMonths(
         status=row.status,
-        launch_minimum=minimum,
+        launch_minimum=row.launch_minimum,
         months=[
-            LaunchMonth(
-                launch_date=day,
-                reserved=count,
-                ready=forming and minimum is not None and count >= minimum,
-            )
+            LaunchMonth(launch_date=day, reserved=count, ready=forming and count >= minimum)
             for day, count in zip(days, counts, strict=True)
         ],
     )
