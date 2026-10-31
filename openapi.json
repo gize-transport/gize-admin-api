@@ -868,7 +868,7 @@
       },
       "RouteCopy": {
         "additionalProperties": false,
-        "description": "A van like the route (GZ-028): its corridor, type, school or company, times, prices\nand served areas are copied; it has its own code, seats and launch minimum (public and\nstudent routes only, at most its seats).",
+        "description": "A van like the route (GZ-028): its corridor, type, school or company, times, prices\nand served areas are copied; it has its own code and seats, and its own launch minimum:\nrequired for public and student routes (at most its seats), refused for corporate.",
         "properties": {
           "code": {
             "maxLength": 20,
@@ -6789,7 +6789,7 @@
     },
     "/v1/routes/{route_id}/copies": {
       "post": {
-        "description": "A new route like this one, for when it's full: corridor, type, school or company,\ntimes, prices (copied, never changed here) and served areas, with its own code, seats\nand launch minimum (public and student routes only; a 422 on `launch_minimum`\notherwise). It starts `forming` when the original has both prices (corporate: `draft`),\nelse `draft`, and names the original in `copied_from_route_id`. Requires\n`Idempotency-Key`.\n\n- 409 ROUTE_CODE_TAKEN: a live route has this code.\n- 409 ROUTE_NOT_READY: a corporate route whose company isn't active.",
+        "description": "A new route like this one, for when it's full: corridor, type, school or company,\ntimes, prices (copied, never changed here) and served areas, with its own code and\nseats, and its own launch minimum: required for public and student routes, refused for\ncorporate ones (a 422 on `launch_minimum` otherwise). It starts `forming` when the\noriginal has both prices (corporate: `draft`), else `draft`, and names the original in\n`copied_from_route_id`. Requires `Idempotency-Key`.\n\n- 409 ROUTE_CODE_TAKEN: a live route has this code.\n- 409 ROUTE_NOT_READY: a corporate route whose company isn't active.",
         "operationId": "routes_copy",
         "parameters": [
           {

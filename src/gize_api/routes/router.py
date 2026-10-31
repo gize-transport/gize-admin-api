@@ -101,11 +101,11 @@ async def copy(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
     """A new route like this one, for when it's full: corridor, type, school or company,
-    times, prices (copied, never changed here) and served areas, with its own code, seats
-    and launch minimum (public and student routes only; a 422 on `launch_minimum`
-    otherwise). It starts `forming` when the original has both prices (corporate: `draft`),
-    else `draft`, and names the original in `copied_from_route_id`. Requires
-    `Idempotency-Key`.
+    times, prices (copied, never changed here) and served areas, with its own code and
+    seats, and its own launch minimum: required for public and student routes, refused for
+    corporate ones (a 422 on `launch_minimum` otherwise). It starts `forming` when the
+    original has both prices (corporate: `draft`), else `draft`, and names the original in
+    `copied_from_route_id`. Requires `Idempotency-Key`.
 
     - 409 ROUTE_CODE_TAKEN: a live route has this code.
     - 409 ROUTE_NOT_READY: a corporate route whose company isn't active.

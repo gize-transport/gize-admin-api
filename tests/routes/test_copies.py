@@ -8,19 +8,20 @@ minimum, and names the original (`copied_from_route_id`). An individual route's 
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 import httpx
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.core.db import get_session
 from gize_api.main import GizeAPI, create_app
-from gize_api.routes.models import RouteArea
-from tests.factories import AreaFactory, RouteFactory
+from gize_api.routes.models import Route, RouteArea
+from tests.factories import AreaFactory, CompanyFactory, RouteFactory
 from tests.routes.support import ROUTES, add_company, add_route, route_path
 from tests.staff.support import add_admin, add_staff, audit_entries, signed_in, with_key
 from tests.support import DatabaseUrls, SettingsFactory, wait_for_lock_waiters
@@ -260,7 +261,11 @@ async def test_callers_must_be_active_staff(
     for caller in (uuid.uuid4(), gone_id):
         response = await api.post(copies_path(original), json=VAN, headers=with_key(caller))
         assert response.status_code == 403
-    assert await audit_entries(db_session, original) == []
+    async with db_session.begin():
+        copies = await db_session.scalar(
+            select(func.count()).select_from(Route).where(Route.copied_from_route_id == original)
+        )
+    assert copies == 0
 
 
 async def test_the_database_down_is_503(
@@ -305,6 +310,72 @@ async def test_a_copy_waiting_on_an_areas_change_copies_the_new_list(
         await conn.close()
     response = await request
     assert [a["id"] for a in response.json()["served_areas"]] == [str(area.id)]
+
+
+async def _while_held(
+    database: DatabaseUrls,
+    lock: str,
+    change: str,
+    row_id: uuid.UUID,
+    call: Coroutine[Any, Any, httpx.Response],
+) -> httpx.Response:
+    """Run `call` while another transaction holds `lock` on a row, then makes `change` to it
+    and commits."""
+    conn = await asyncpg.connect(database.migrator, timeout=3)
+    try:
+        async with conn.transaction():
+            await conn.execute(lock, row_id)
+            request = asyncio.create_task(call)
+            await wait_for_lock_waiters(database)
+            await conn.execute(change, row_id)
+    finally:
+        await conn.close()
+    return await request
+
+
+async def test_a_copy_waiting_on_a_delete_finds_the_route_gone(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+) -> None:
+    async with committed_sessionmaker() as session:
+        member = await add_staff(session)
+        async with session.begin():
+            original = await RouteFactory().create(session)
+    response = await _while_held(
+        database,
+        "SELECT 1 FROM gize.routes WHERE id = $1 FOR UPDATE",
+        "UPDATE gize.routes SET deleted_at = now() WHERE id = $1",
+        original.id,
+        committed_api.post(copies_path(original.id), json=VAN, headers=with_key(member.id)),
+    )
+    assert (response.status_code, response.json()["code"]) == (404, "NOT_FOUND")
+
+
+async def test_a_corporate_copy_waiting_on_a_company_deactivation_is_refused(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+) -> None:
+    async with committed_sessionmaker() as session:
+        member = await add_staff(session)
+        async with session.begin():
+            company = await CompanyFactory().create(session)
+            original = await RouteFactory().create(
+                session, route_type="corporate", company_id=company.id, launch_minimum=None
+            )
+    response = await _while_held(
+        database,
+        "SELECT 1 FROM gize.companies WHERE id = $1 FOR UPDATE",
+        "UPDATE gize.companies SET is_active = false WHERE id = $1",
+        company.id,
+        committed_api.post(
+            copies_path(original.id),
+            json={"code": "ACME-02", "seats": 20},
+            headers=with_key(member.id),
+        ),
+    )
+    assert (response.status_code, response.json()["code"]) == (409, "ROUTE_NOT_READY")
 
 
 def test_copies_are_in_the_contract(make_settings: SettingsFactory) -> None:

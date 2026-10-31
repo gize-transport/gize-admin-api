@@ -5,9 +5,10 @@ routes. Corporate routes have none (companies are billed per agreement). Staff c
 prices through any endpoint.
 """
 
+import itertools
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 
 import httpx
@@ -162,7 +163,10 @@ async def test_no_route_endpoint_lets_staff_change_prices(
     """Every write under /v1/routes, called by staff, with each way of naming a price on its
     own (one field accepted by mistake must show): every call is refused, and no route,
     including any a write might create, has a price but the seeded one, unchanged. Endpoints
-    added later are covered by walking the contract."""
+    added later are covered by walking the contract.
+
+    A write that creates a route (create, copy) gets a valid body with the price merged in,
+    and must be refused for the price field alone: the body is otherwise accepted."""
     member = await add_staff(db_session)
     route = await add_route(
         db_session, price_round_trip=2400, price_one_way=1400, price_saturday=300
@@ -179,6 +183,19 @@ async def test_no_route_endpoint_lets_staff_change_prices(
         )
     ]
     bodies += [{"prices": {"round_trip": 1, "one_way": 1}}, {"round_trip": 1, "one_way": 1}]
+    async with db_session.begin():
+        corridor_id = (await db_session.get_one(Route, route)).corridor_id
+    codes = (f"WALK-{n:02d}" for n in itertools.count(1))
+    bases: dict[tuple[str, str], Callable[[], dict[str, object]]] = {
+        ("POST", ROUTES): lambda: {
+            "code": next(codes), "corridor_id": str(corridor_id), "route_type": "public",
+            "morning_time": "06:30", "morning_arrival_time": "07:15", "return_time": "17:30",
+            "return_arrival_time": "18:15", "seats": 14, "launch_minimum": 10,
+        },
+        ("POST", f"{route_path(route)}/copies"): lambda: {
+            "code": next(codes), "seats": 12, "launch_minimum": 8,
+        },
+    }  # fmt: skip
     writes = []
     for path, item in api_app.openapi()["paths"].items():
         if not path.startswith(ROUTES):
@@ -188,10 +205,16 @@ async def test_no_route_endpoint_lets_staff_change_prices(
         assert "{" not in filled, path
         writes += [(method.upper(), filled) for method in item if method in WRITES]
     assert ("PUT", _prices_path(route)) in writes  # the walk sees the prices endpoint
+    assert set(bases) <= set(writes)  # and both writes that create a route
     for method, path in writes:
         for body in bodies:
-            response = await api.request(method, path, json=body, headers=with_key(member.id))
+            base = bases.get((method, path))
+            sent = body if base is None else {**base(), **body}
+            response = await api.request(method, path, json=sent, headers=with_key(member.id))
             assert response.status_code in REFUSED, (method, path, body, response.status_code)
+            if base is not None:  # refused for the price fields, nothing else
+                named = {e["field"].split("/")[1] for e in response.json()["errors"]}
+                assert named <= set(body), (path, body, named)
     async with db_session.begin():
         priced = await db_session.execute(
             select(

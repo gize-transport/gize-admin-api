@@ -102,7 +102,7 @@ Login rate limits for Supabase Auth are configured in the Supabase dashboard (Au
 Staff changes (invites, role and status changes, the first-admin command) all take one transaction-level advisory lock (`staff.repository.lock_staff_changes`), so rules that span rows, such as "at least one active admin", are checked with nothing changing underneath. A service that must call an outside service before writing (a staff invite calls Supabase) does it between two transactions: a short read block that also `peek`s the idempotency key, the call, then the write block that claims the key.
 
 Row locks never wait on each other in a circle:
-- Places (areas, corridors, companies) are locked exclusively only by their own changes and deletes, which then only read the routes and requests that use them (no lock). Everything else share-locks places, and share locks don't conflict with each other.
+- Places (areas, corridors, companies) are locked exclusively only by their own changes and deletes, which then only read the routes and requests that use them (no lock). Everything else share-locks places, and share locks don't conflict with each other; a copy of a route (GZ-028) locks only the original, which keeps its corridor and areas in use.
 - Between routes and their requests and assignments: the route first. GZ-027 `set_status` share-locks the matched route, then locks the request; GZ-040's freed seats lock the route, then its requests; M3 changes an assignment under its route's lock.
 - Within a table, the row lock comes before the joined load (lock-then-load).
 

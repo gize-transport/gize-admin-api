@@ -116,8 +116,8 @@ class RouteUpdate(PartialUpdate):
 
 class RouteCopy(BaseModel):
     """A van like the route (GZ-028): its corridor, type, school or company, times, prices
-    and served areas are copied; it has its own code, seats and launch minimum (public and
-    student routes only, at most its seats)."""
+    and served areas are copied; it has its own code and seats, and its own launch minimum:
+    required for public and student routes (at most its seats), refused for corporate."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
