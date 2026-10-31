@@ -91,6 +91,13 @@ async def test_the_reserved_count_is_launch_progress(
         await add_seat(db_session, route, status=RESERVED)
     for _ in range(4):  # for January: they don't help a December launch
         await add_seat(db_session, route, start_date=date(2027, 1, 1), status=RESERVED)
+    await add_seat(  # ends before December: it lapses at the launch, as GZ-024 counts
+        db_session,
+        route,
+        start_date=date(2026, 11, 1),
+        end_date=date(2026, 11, 30),
+        status=RESERVED,
+    )
     body = (await api.get(route_path(route), headers=signed_in(member.id))).json()
     assert (body["reserved"], body["launch_minimum"]) == (9, 12)  # "9 of 12"
 

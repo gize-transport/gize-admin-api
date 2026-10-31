@@ -584,7 +584,11 @@ def test_routes_are_in_the_contract(make_settings: SettingsFactory) -> None:
     schema = create_app(make_settings()).openapi()
     collection, member = schema["paths"][ROUTES], schema["paths"][f"{ROUTES}/{{route_id}}"]
     assert {op["operationId"] for op in collection.values()} == {"routes_create", "routes_list"}
-    assert {op["operationId"] for op in member.values()} == {"routes_get", "routes_update"}
+    assert {op["operationId"] for op in member.values()} == {
+        "routes_delete",
+        "routes_get",
+        "routes_update",
+    }
     assert collection["post"]["responses"]["409"]["x-error-codes"] == [
         "IDEMPOTENCY_IN_PROGRESS",
         "ROUTE_CODE_TAKEN",
