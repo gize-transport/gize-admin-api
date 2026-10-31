@@ -69,9 +69,10 @@ async def get_live_route(
 
 
 async def refer_to_live_route(session: AsyncSession, route_id: uuid.UUID) -> Route | None:
-    """The live route, share-locked (FOR SHARE) for something new that refers to it (a route
-    request, GZ-027): the route's delete, which takes its row lock, waits for it, or it
-    waits for the delete and finds the route gone. Loaded without its places."""
+    """The live route, share-locked (FOR SHARE) for something new that refers to it or copies
+    it (a route request, GZ-027; a van, GZ-028): the route's changes and delete, which take
+    its row lock, wait for it, or it waits for them and reads the result (or finds the
+    route gone). Loaded without its places."""
     live = (Route.id == route_id, Route.not_deleted())
     if await session.scalar(select(Route.id).where(*live).with_for_update(read=True)) is None:
         return None

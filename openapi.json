@@ -866,6 +866,44 @@
         "title": "RouteAreasSet",
         "type": "object"
       },
+      "RouteCopy": {
+        "additionalProperties": false,
+        "description": "A van like the route (GZ-028): its corridor, type, school or company, times, prices\nand served areas are copied; it has its own code and seats, and its own launch minimum:\nrequired for public and student routes (at most its seats), refused for corporate.",
+        "properties": {
+          "code": {
+            "maxLength": 20,
+            "minLength": 2,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,18}[A-Za-z0-9]$",
+            "title": "Code",
+            "type": "string"
+          },
+          "launch_minimum": {
+            "anyOf": [
+              {
+                "maximum": 60.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Minimum"
+          },
+          "seats": {
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Seats",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "seats"
+        ],
+        "title": "RouteCopy",
+        "type": "object"
+      },
       "RouteCreate": {
         "additionalProperties": false,
         "description": "A new route, `draft`. Its type is fixed: a student route names its school, a\ncorporate route its (active) company and has no launch minimum; a public route has\nneither. Times in order: leave A, arrive at B, leave B, arrive at A. Prices are set by\nadmins (GZ-022); the areas served by their own endpoint.",
@@ -6744,6 +6782,213 @@
           }
         ],
         "summary": "Set the areas a route serves",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{route_id}/copies": {
+      "post": {
+        "description": "A new route like this one, for when it's full: corridor, type, school or company,\ntimes, prices (copied, never changed here) and served areas, with its own code and\nseats, and its own launch minimum: required for public and student routes, refused for\ncorporate ones (a 422 on `launch_minimum` otherwise). It starts `forming` when the\noriginal has both prices (corporate: `draft`), else `draft`, and names the original in\n`copied_from_route_id`. Requires `Idempotency-Key`.\n\n- 409 ROUTE_CODE_TAKEN: a live route has this code.\n- 409 ROUTE_NOT_READY: a corporate route whose company isn't active.",
+        "operationId": "routes_copy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Route Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteCopy"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRead"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "Location": {
+                "description": "The new route.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Request In Progress, Route Code Taken, Route Not Ready",
+            "x-error-codes": [
+              "IDEMPOTENCY_IN_PROGRESS",
+              "ROUTE_CODE_TAKEN",
+              "ROUTE_NOT_READY"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Idempotency Key Mismatch, Validation Failed",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Add a van: copy a route",
         "tags": [
           "routes"
         ]

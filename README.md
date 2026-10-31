@@ -268,7 +268,7 @@ Postpaid customers whose staff ride their own corporate routes (GZ-029). Staff m
 
 ## Routes
 
-A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run leaves A and arrives at B at set times, the evening run back. Riders board at A or in an area the route serves on the way; there are no stops with their own times (owner decision). Staff create, list, read and edit routes and move them through their statuses (GZ-024); admins set prices (GZ-022) and delete routes.
+A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run leaves A and arrives at B at set times, the evening run back. Riders board at A or in an area the route serves on the way; there are no stops with their own times (owner decision). Staff create, list, read, edit and copy routes (a new van, GZ-028) and move them through their statuses (GZ-024); admins set prices (GZ-022) and delete routes.
 
 | Endpoint | What it does |
 | --- | --- |
@@ -277,6 +277,7 @@ A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run l
 | `GET /v1/routes/{route_id}` (`routes_get`) | One route. |
 | `PATCH /v1/routes/{route_id}` (`routes_update`) | Change code, corridor, school or company, times, seats, launch minimum. |
 | `PUT /v1/routes/{route_id}/areas` (`routes_set_areas`) | The areas the route passes between A and B, in order: `{area_ids}`, the whole list (empty clears). Not A or B themselves, each once, at most 20. Shown on every route as `served_areas`. A route serving areas can't change corridor until they're cleared. |
+| `POST /v1/routes/{route_id}/copies` (`routes_copy`) | Add a van: `{code, seats, launch_minimum}` (the launch minimum required for public and student routes, refused for corporate). Requires `Idempotency-Key`. Copies corridor, type, school or company, times, prices (never changed here) and served areas; starts `forming` when the original has both prices (corporate: `draft`), else `draft`; `copied_from_route_id` names the original, which may later be deleted (then a `404` if followed). `409 ROUTE_NOT_READY` for a corporate route whose company isn't active. Audited as `route.copied`. |
 | `PUT /v1/routes/{route_id}/status` (`routes_set_status`) | `{status, launch_date?}`: move the route (see **Status** below). The status it already has changes nothing, so a retried launch is harmless. |
 | `DELETE /v1/routes/{route_id}` (`routes_delete`) | **Admins.** Soft delete: hidden from lists, its code free again. `409 ROUTE_HAS_RIDERS` while anyone is reserved or rides today or later; `409 ROUTE_HAS_REQUESTS` while an open route request asks for it or was matched to it. Audited as `route.deleted`. |
 | `PUT /v1/routes/{route_id}/prices` (`routes_set_prices`) | **Admins.** `{round_trip, one_way, saturday?}`, whole birr a month (1–100,000). No Saturday price means no Saturday add-on; only public routes have one (`422` on `saturday` otherwise). Corporate routes have no prices (`409 ROUTE_HAS_NO_PRICES`). Audited as `route.prices_changed`. |

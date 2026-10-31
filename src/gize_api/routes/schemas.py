@@ -114,6 +114,24 @@ class RouteUpdate(PartialUpdate):
         return self
 
 
+class RouteCopy(BaseModel):
+    """A van like the route (GZ-028): its corridor, type, school or company, times, prices
+    and served areas are copied; it has its own code and seats, and its own launch minimum:
+    required for public and student routes (at most its seats), refused for corporate."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    code: RouteCode
+    seats: Seats
+    launch_minimum: LaunchMinimum | None = None
+
+    @model_validator(mode="after")
+    def _minimum_within_seats(self) -> Self:
+        if self.launch_minimum is not None and self.launch_minimum > self.seats:
+            raise ValueError("the launch minimum can't be more than the seats")
+        return self
+
+
 Price = Annotated[int, Field(ge=1, le=MAX_PRICE, strict=True, description="Whole birr a month.")]
 
 
