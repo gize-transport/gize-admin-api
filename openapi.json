@@ -706,6 +706,34 @@
         "title": "FieldError",
         "type": "object"
       },
+      "LaunchMonth": {
+        "additionalProperties": false,
+        "properties": {
+          "launch_date": {
+            "format": "date",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "title": "Launch Date",
+            "type": "string"
+          },
+          "ready": {
+            "description": "A launch that day would be accepted now: the route is forming and `reserved` reaches the launch minimum.",
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "reserved": {
+            "description": "Riders a launch that day would start.",
+            "title": "Reserved",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "launch_date",
+          "reserved",
+          "ready"
+        ],
+        "title": "LaunchMonth",
+        "type": "object"
+      },
       "MonthSeats": {
         "additionalProperties": false,
         "description": "On the busiest day of each: from today to the end of this month, and all of next.",
@@ -866,6 +894,17 @@
         ],
         "title": "RouteAreasSet",
         "type": "object"
+      },
+      "RouteBlocker": {
+        "description": "What stops a status change now (the 409 it would get): prices not set\n(ROUTE_NOT_READY), a corporate route's company not active (ROUTE_NOT_READY), someone\nreserved or riding today or later (ROUTE_HAS_RIDERS), fewer riders reserved for the\nlaunch day than the launch minimum (NOT_ENOUGH_RIDERS).",
+        "enum": [
+          "PRICES_MISSING",
+          "COMPANY_INACTIVE",
+          "ROUTE_HAS_RIDERS",
+          "NOT_ENOUGH_RIDERS"
+        ],
+        "title": "RouteBlocker",
+        "type": "string"
       },
       "RouteCopy": {
         "additionalProperties": false,
@@ -1031,6 +1070,42 @@
           "seats_free_next_month"
         ],
         "title": "RouteDemand",
+        "type": "object"
+      },
+      "RouteLaunchMonths": {
+        "additionalProperties": false,
+        "description": "Every day a launch may name: the 1st of each month, from the earliest (today on the\n1st, else next month's) to a year ahead.",
+        "properties": {
+          "launch_minimum": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null on corporate routes (no launch).",
+            "title": "Launch Minimum"
+          },
+          "months": {
+            "items": {
+              "$ref": "#/components/schemas/LaunchMonth"
+            },
+            "maxItems": 13,
+            "title": "Months",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RouteStatus"
+          }
+        },
+        "required": [
+          "status",
+          "launch_minimum",
+          "months"
+        ],
+        "title": "RouteLaunchMonths",
         "type": "object"
       },
       "RoutePage": {
@@ -1249,6 +1324,15 @@
           "status": {
             "$ref": "#/components/schemas/RouteStatus"
           },
+          "status_changes": {
+            "description": "The moves allowed from this status, each ready or with what blocks it, by the rules `PUT /status` applies. A snapshot: a change can still be refused if something moved meanwhile.",
+            "items": {
+              "$ref": "#/components/schemas/StatusChange"
+            },
+            "maxItems": 2,
+            "title": "Status Changes",
+            "type": "array"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -1275,6 +1359,7 @@
           "seats_taken",
           "seats_free",
           "reserved",
+          "status_changes",
           "created_at",
           "updated_at"
         ],
@@ -2107,6 +2192,50 @@
           }
         },
         "title": "StaffUpdate",
+        "type": "object"
+      },
+      "StatusChange": {
+        "additionalProperties": false,
+        "description": "A move the route's type allows from its status, and whether `PUT /status` would\naccept it now.",
+        "properties": {
+          "blocked_by": {
+            "items": {
+              "$ref": "#/components/schemas/RouteBlocker"
+            },
+            "maxItems": 4,
+            "title": "Blocked By",
+            "type": "array"
+          },
+          "launch_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A launch (`forming` → `active`): judged for this day, the earliest a launch may name (send it with the change). Other months: `GET /launch-months`.",
+            "title": "Launch Date"
+          },
+          "ready": {
+            "description": "No blockers: the change would be accepted now.",
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "to": {
+            "$ref": "#/components/schemas/RouteStatus"
+          }
+        },
+        "required": [
+          "to",
+          "ready",
+          "blocked_by",
+          "launch_date"
+        ],
+        "title": "StatusChange",
         "type": "object"
       },
       "ValidationProblem": {
@@ -6992,6 +7121,136 @@
           }
         ],
         "summary": "Add a van: copy a route",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{route_id}/launch-months": {
+      "get": {
+        "description": "Every `launch_date` a launch may name (the 1st of each month, from the earliest to a\nyear ahead), with the riders reserved for it and whether a launch that day would be\naccepted now (`ready`: the route is forming and they reach its launch minimum). Other\nroutes show their reservations, never ready. A snapshot: a launch can still be refused\nif riders leave meanwhile.",
+        "operationId": "routes_launch_months",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Route Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteLaunchMonths"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The months a route can launch",
         "tags": [
           "routes"
         ]

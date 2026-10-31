@@ -47,17 +47,21 @@ from gize_api.routes.repository import SeatCounts
 from gize_api.routes.schemas import (
     CompanyRef,
     CorridorRef,
+    LaunchMonth,
     MonthSeats,
     Prices,
     RouteAreasSet,
+    RouteBlocker,
     RouteCopy,
     RouteCreate,
+    RouteLaunchMonths,
     RouteListParams,
     RoutePage,
     RoutePricesSet,
     RouteRead,
     RouteStatusSet,
     RouteUpdate,
+    StatusChange,
     times_in_order,
 )
 
@@ -116,7 +120,7 @@ async def create(
             before=None,
             after=audit.snapshot(ROUTE_AUDIT, row),
         )
-        payload = _read(row, SeatCounts()).model_dump(mode="json")
+        payload = _read(row, SeatCounts(), schedule.addis_today()).model_dump(mode="json")
         location = f"/v1/routes/{row.id}"
         await record(session, claimed, status=201, body=payload, headers={"Location": location})
     return JSONResponse(payload, status_code=201, headers={"Location": location})
@@ -196,7 +200,7 @@ async def copy(
                 before={"served_area_ids": []},
                 after={"served_area_ids": [served.area_id for served in row.route_areas]},
             )
-        payload = _read(row, SeatCounts()).model_dump(mode="json")
+        payload = _read(row, SeatCounts(), schedule.addis_today()).model_dump(mode="json")
         location = f"/v1/routes/{row.id}"
         await record(session, claimed, status=201, body=payload, headers={"Location": location})
     return JSONResponse(payload, status_code=201, headers={"Location": location})
@@ -219,11 +223,10 @@ async def list_routes(session: AsyncSession, params: RouteListParams) -> RoutePa
             id=Route.id,
             newest_first=True,
         )
-        counts = await repository.seat_counts(
-            session, [route.id for route in page.items], schedule.addis_today()
-        )
+        today = schedule.addis_today()
+        counts = await repository.seat_counts(session, [route.id for route in page.items], today)
         return RoutePage(
-            items=[_read(route, counts[route.id]) for route in page.items],
+            items=[_read(route, counts[route.id], today) for route in page.items],
             next_cursor=page.next_cursor,
         )
 
@@ -380,6 +383,26 @@ async def set_areas(
         return await _read_with_counts(session, row)
 
 
+async def launch_months(session: AsyncSession, route_id: uuid.UUID) -> RouteLaunchMonths:
+    """Each day a launch may name (`set_status`'s window), with the riders it would start."""
+    today = schedule.addis_today()
+    days = [repository.next_launch_day(today)]
+    while (later := repository.first_of_next_month(days[-1])) <= _latest_launch(today):
+        days.append(later)
+    async with session.begin():
+        row = await _live(session, route_id)
+        counts = await repository.reserved_by_month(session, row.id, days)
+    forming, minimum = row.status is FORMING, row.launch_minimum or 0  # as set_status
+    return RouteLaunchMonths(
+        status=row.status,
+        launch_minimum=row.launch_minimum,
+        months=[
+            LaunchMonth(launch_date=day, reserved=count, ready=forming and count >= minimum)
+            for day, count in zip(days, counts, strict=True)
+        ],
+    )
+
+
 async def set_status(
     session: AsyncSession, caller: CurrentStaff, route_id: uuid.UUID, change: RouteStatusSet
 ) -> RouteRead:
@@ -485,6 +508,38 @@ async def _company_still_active(session: AsyncSession, row: Route) -> None:
         raise AppError(ErrorCode.ROUTE_NOT_READY)
 
 
+def _status_changes(row: Route, counts: SeatCounts, today: date) -> list[StatusChange]:
+    """The moves `set_status` allows from the route's status, each with what would refuse
+    it now (the same checks, in the same order). A launch is judged for the earliest day it
+    may name, the day `counts.reserved` is for."""
+    kind = "corporate" if row.route_type is RouteType.CORPORATE else "individual"
+    changes = []
+    for to in RouteStatus:
+        move = (row.status, to)
+        if move not in _MOVES[kind]:
+            continue
+        blocked_by = []
+        if to is FORMING and None in (row.price_round_trip, row.price_one_way):
+            blocked_by.append(RouteBlocker.PRICES_MISSING)
+        if move == (FORMING, DRAFT) and counts.held:
+            blocked_by.append(RouteBlocker.ROUTE_HAS_RIDERS)
+        company = row.company
+        inactive = company is None or company.deleted_at is not None or not company.is_active
+        if kind == "corporate" and to is ACTIVE and inactive:
+            blocked_by.append(RouteBlocker.COMPANY_INACTIVE)
+        launch_date = None
+        if move == (FORMING, ACTIVE):
+            launch_date = repository.next_launch_day(today)
+            if counts.reserved < (row.launch_minimum or 0):
+                blocked_by.append(RouteBlocker.NOT_ENOUGH_RIDERS)
+        changes.append(
+            StatusChange(
+                to=to, ready=not blocked_by, blocked_by=blocked_by, launch_date=launch_date
+            )
+        )
+    return changes
+
+
 def _new[T](change: T | None, current: T) -> T:
     return current if change is None else change
 
@@ -531,11 +586,12 @@ async def _company_to_refer_to(session: AsyncSession, company_id: uuid.UUID) -> 
 
 
 async def _read_with_counts(session: AsyncSession, row: Route) -> RouteRead:
-    counts = await repository.seat_counts(session, [row.id], schedule.addis_today())
-    return _read(row, counts[row.id])
+    today = schedule.addis_today()
+    counts = await repository.seat_counts(session, [row.id], today)
+    return _read(row, counts[row.id], today)
 
 
-def _read(row: Route, counts: SeatCounts) -> RouteRead:
+def _read(row: Route, counts: SeatCounts, today: date) -> RouteRead:
     taken = MonthSeats(this_month=counts.this_month, next_month=counts.next_month)
     return RouteRead(
         id=row.id,
@@ -568,6 +624,7 @@ def _read(row: Route, counts: SeatCounts) -> RouteRead:
             next_month=max(row.seats - taken.next_month, 0),
         ),
         reserved=counts.reserved,
+        status_changes=_status_changes(row, counts, today),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

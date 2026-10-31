@@ -198,6 +198,11 @@ Status: done · Depends on: GZ-024
 - Built: `POST /v1/routes/{route_id}/copies` (`routes_copy`, staff, Idempotency-Key; `RouteCopy {code, seats, launch_minimum?}`: prices can't be named, the price walk covers it). The original is share-locked (`refer_to_live_route`), so its areas and prices are copied whole; a corporate original's company is share-locked and must be active (`409 ROUTE_NOT_READY`). Audit `route.copied` (and `route.areas_changed` for the copied areas). Copies of copies work; a deleted original stays named. No migration. The price walk now sends each write that creates a route a valid body with the price merged in.
 - Owner decisions (2026-10-31, M2 report): a route's corridor and school are frozen once it has prices or open route requests, for everyone (`409 ROUTE_HAS_PRICES`, `409 ROUTE_HAS_REQUESTS`, checked under the route's lock; GZ-021 follow-up): to serve somewhere else, add a route. Copies of routes made before arrival times existed keep none, until staff set both. The request summary's area pairs count only requests not matched yet.
 
+### GZ-067 · Route readiness for the admin frontend
+Status: done · Depends on: GZ-024
+- Asked by the frontend (2026-10-31): the UI must not work out the status rules itself. What does a route still need before it can start forming, and when can it launch for a given month?
+- Built: every route (list, read and every write's response) has `status_changes`: the moves its type allows from its status, each with `ready`, `blocked_by` (`RouteBlocker`: `PRICES_MISSING`, `COMPANY_INACTIVE`, `ROUTE_HAS_RIDERS`, `NOT_ENOUGH_RIDERS`) and, for a launch, the earliest `launch_date` it is judged for. Same checks as `PUT /status`; a test walks every listed change through `PUT /status`. `GET /v1/routes/{route_id}/launch-months` (`routes_launch_months`, staff): every 1st a launch may name (12, or 13 on the 1st), riders reserved for each, `ready` only on a forming route at its minimum; one query. Whether anyone holds a seat comes from the existing reserved-count query, so a page still takes four. Both are snapshots: a change can still be refused if something moves meanwhile. No migration.
+
 ---
 
 ## M3 – Riders and registration

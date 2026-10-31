@@ -78,6 +78,9 @@ async def test_staff_create_a_public_route(
         "seats_taken": {"this_month": 0, "next_month": 0},
         "seats_free": {"this_month": 14, "next_month": 14},
         "reserved": 0,
+        "status_changes": [  # what it needs to start forming (GZ-067)
+            {"to": "forming", "ready": False, "blocked_by": ["PRICES_MISSING"], "launch_date": None}
+        ],
         "created_at": route["created_at"],
         "updated_at": route["updated_at"],
     }

@@ -16,6 +16,7 @@ from gize_api.routes.schemas import (
     RouteAreasSet,
     RouteCopy,
     RouteCreate,
+    RouteLaunchMonths,
     RouteListParams,
     RoutePage,
     RoutePricesSet,
@@ -146,6 +147,27 @@ async def get(
 ) -> RouteRead:
     response.headers["Cache-Control"] = "no-store"
     return await service.get(session, route_id)
+
+
+@router.get(
+    "/{route_id}/launch-months",
+    operation_id="routes_launch_months",
+    summary="The months a route can launch",
+    responses=problem_responses(ErrorCode.NOT_FOUND),
+)
+async def launch_months(
+    route_id: uuid.UUID,
+    response: Response,
+    _: CurrentStaff = Depends(current_staff),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> RouteLaunchMonths:
+    """Every `launch_date` a launch may name (the 1st of each month, from the earliest to a
+    year ahead), with the riders reserved for it and whether a launch that day would be
+    accepted now (`ready`: the route is forming and they reach its launch minimum). Other
+    routes show their reservations, never ready. A snapshot: a launch can still be refused
+    if riders leave meanwhile."""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.launch_months(session, route_id)
 
 
 @router.patch(
