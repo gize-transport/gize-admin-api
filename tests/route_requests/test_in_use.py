@@ -195,3 +195,27 @@ async def test_a_route_delete_waiting_on_a_new_request_is_refused(
 async def add_request_committed(sessions: async_sessionmaker[AsyncSession]) -> uuid.UUID:
     async with sessions() as session:
         return await add_request(session)
+
+
+async def test_two_corrections_into_one_request_at_once_make_one(
+    committed_api: httpx.AsyncClient, committed_sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    """Each correction locks its own request, so the checks can't see each other: the
+    unique index refuses the second, as the same 409."""
+    async with committed_sessionmaker() as session:
+        member = await add_staff(session)
+    pair = {"from_area_name": "Ayat", "to_area_name": "Bole", "contact_phone": "+251911234567"}
+    async with committed_sessionmaker() as session:
+        first = await add_request(session, **pair, rider_name="Liya")
+        second = await add_request(session, **pair, rider_name="Lia")
+    responses = await asyncio.gather(
+        *(
+            committed_api.patch(
+                request_path(request), json={"rider_name": "Abebe"}, headers=signed_in(member.id)
+            )
+            for request in (first, second)
+        )
+    )
+    assert sorted(r.status_code for r in responses) == [200, 409]
+    refused = next(r for r in responses if r.status_code == 409)
+    assert refused.json()["code"] == "ROUTE_REQUEST_EXISTS"

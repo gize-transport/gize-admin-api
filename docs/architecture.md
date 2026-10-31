@@ -101,6 +101,8 @@ Login rate limits for Supabase Auth are configured in the Supabase dashboard (Au
 
 Staff changes (invites, role and status changes, the first-admin command) all take one transaction-level advisory lock (`staff.repository.lock_staff_changes`), so rules that span rows, such as "at least one active admin", are checked with nothing changing underneath. A service that must call an outside service before writing (a staff invite calls Supabase) does it between two transactions: a short read block that also `peek`s the idempotency key, the call, then the write block that claims the key.
 
+Row locks are taken in one order, so two changes never wait on each other: places (areas, corridors, companies), then routes, then route requests and route assignments. A change that needs a route's lock and a request's takes the route's first (GZ-027 `set_status`; GZ-040's freed seats lock the route, then requests). Within a table, a row lock comes before the joined load (lock-then-load).
+
 ## Data model (MVP – refine in the plan for each ticket)
 
 All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC, timestamptz) on every table. Soft delete via `deleted_at` on business tables; default queries exclude deleted rows. Money as integer whole birr. Phones stored E.164 (`+2519…` / `+2517…`).

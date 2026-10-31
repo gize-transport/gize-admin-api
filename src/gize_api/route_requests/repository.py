@@ -194,7 +194,8 @@ async def area_pair_demand(session: AsyncSession, limit: int) -> list[PairDemand
             RouteRequest.status == RequestStatus.NEW,
         )
         .group_by(*from_key, *to_key)
-        .order_by(func.count().desc(), func.min(RouteRequest.created_at))
+        # The pair itself breaks ties: the same order every call, so the cut at `limit` too.
+        .order_by(func.count().desc(), func.min(RouteRequest.created_at), *from_key, *to_key)
         .limit(limit)
     )
     return [PairDemand(*row) for row in rows]
@@ -208,7 +209,7 @@ async def route_demand(session: AsyncSession, limit: int) -> list[tuple[uuid.UUI
         select(target, func.count())
         .where(RouteRequest.not_deleted(), _OPEN, target.is_not(None))
         .group_by(target)
-        .order_by(func.count().desc(), func.min(RouteRequest.created_at))
+        .order_by(func.count().desc(), func.min(RouteRequest.created_at), target)
         .limit(limit)
     )
     return [(route_id, count) for route_id, count in rows]

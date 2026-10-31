@@ -498,6 +498,44 @@ async def test_a_students_school_is_corrected(
         assert response.status_code == status, school
 
 
+async def test_a_matched_students_school_stays_the_routes(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    member_id = (await add_staff(db_session)).id
+    route = await add_route(db_session, route_type="student", school_name="ICS")
+    request = await add_request(
+        db_session, rider_type="student", school_name="ICS", status="matched",
+        matched_route_id=route,
+    )  # fmt: skip
+    response = await api.patch(
+        request_path(request), json={"school_name": "Sandford"}, headers=signed_in(member_id)
+    )
+    assert [e["field"] for e in response.json()["errors"]] == ["/school_name"]
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        ({"preferred_morning_time": "18:00"}, "/preferred_morning_time"),
+        ({"preferred_return_time": "06:00"}, "/preferred_return_time"),
+        (
+            {"preferred_morning_time": "18:00", "preferred_return_time": "17:00"},
+            "/preferred_return_time",
+        ),
+    ],
+    ids=str,
+)
+async def test_preferred_times_out_of_order_name_the_field(
+    api: httpx.AsyncClient, db_session: AsyncSession, change: dict[str, str], field: str
+) -> None:
+    member_id = (await add_staff(db_session)).id
+    request = await add_request(
+        db_session, preferred_morning_time=time(6, 30), preferred_return_time=time(17, 30)
+    )
+    response = await api.patch(request_path(request), json=change, headers=signed_in(member_id))
+    assert [e["field"] for e in response.json()["errors"]] == [field]
+
+
 async def test_a_closed_request_may_look_like_an_open_one(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:

@@ -157,8 +157,10 @@ async def update(
         row = await _live(session, request_id, for_update=True)
         if "school_name" in change.model_fields_set:
             school = change.school_name
-            not_for_it = row.rider_type is not RiderType.STUDENT or (
-                row.route is not None and not _fits(row.route, row.rider_type, school)
+            # Still the school of the route it asks for, and of the one it's matched to.
+            names = [row.route, row.matched_route if row.status in OPEN_STATUSES else None]
+            not_for_it = row.rider_type is not RiderType.STUDENT or any(
+                route is not None and not _fits(route, row.rider_type, school) for route in names
             )
             if not_for_it:
                 raise invalid_field("body", "school_name")
@@ -167,7 +169,13 @@ async def update(
         try:
             preferred_times_in_order(morning, back)
         except ValueError:
-            raise invalid_field("body") from None
+            sent = change.model_fields_set
+            field = (
+                "preferred_return_time"
+                if "preferred_return_time" in sent
+                else "preferred_morning_time"
+            )
+            raise invalid_field("body", field) from None
         before = audit.snapshot(ROUTE_REQUEST_AUDIT, row)
         for field in ("rider_name", "school_name", "contact_name", "contact_phone"):
             value = getattr(change, field)
@@ -201,19 +209,26 @@ async def set_status(
     request_id: uuid.UUID,
     change: RouteRequestStatusSet,
 ) -> RouteRequestRead:
-    """Move the request; the status it has (matched: to the same route) changes nothing."""
+    """Move the request; the status it has (matched: to the same route) changes nothing.
+    The route it names is judged first (a 422), then the move (a 409).
+
+    Lock order: the route, then the request (architecture.md): whatever holds a route's
+    lock may go on to lock its requests (GZ-040, freed seats)."""
     async with session.begin():
+        await _live(session, request_id)  # unknown or deleted: a 404 before anything else
+        route = None
+        if change.matched_route_id is not None:
+            route = await _route_to_refer_to(session, change.matched_route_id, "matched_route_id")
         row = await _live(session, request_id, for_update=True)
+        if route is not None and not _fits(route, row.rider_type, row.school_name):
+            raise invalid_field("body", "matched_route_id")
         same_route = change.matched_route_id in (None, row.matched_route_id)
         if change.status is row.status and same_route:
             return RouteRequestRead.model_validate(row)
         if (row.status, change.status) not in _MOVES:
             raise AppError(ErrorCode.INVALID_STATUS_CHANGE)
         before = audit.snapshot(ROUTE_REQUEST_AUDIT, row)
-        if change.matched_route_id is not None:
-            route = await _route_to_refer_to(session, change.matched_route_id, "matched_route_id")
-            if not _fits(route, row.rider_type, row.school_name):
-                raise invalid_field("body", "matched_route_id")
+        if route is not None:
             row.matched_route = route
         row.status = change.status
         row.decline_reason = change.decline_reason

@@ -210,6 +210,19 @@ async def test_the_route_matched_must_fit_the_rider(
     assert response.json()["status"] == "matched"
 
 
+async def test_the_route_named_is_judged_before_the_move(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """What a body names first, as on create: an unknown route is a 422 even when the move
+    itself would be refused."""
+    member_id = (await add_staff(db_session)).id
+    done = await add_request(db_session, status="fulfilled")
+    response = await api.put(
+        status_path(done), json=_match(uuid.uuid4()), headers=signed_in(member_id)
+    )
+    assert [e["field"] for e in response.json()["errors"]] == ["/matched_route_id"]
+
+
 @pytest.mark.parametrize(
     ("body", "field"),
     [
