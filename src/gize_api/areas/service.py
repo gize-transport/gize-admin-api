@@ -19,6 +19,7 @@ from gize_api.core.idempotency import IdempotentRequest, claim, record, replay_r
 from gize_api.core.pagination import paginate
 from gize_api.core.security import CurrentStaff
 from gize_api.corridors.repository import uses_area as corridor_uses_area
+from gize_api.route_requests.repository import names_area as request_names_area
 from gize_api.routes.repository import serves_area as route_serves_area
 
 
@@ -119,9 +120,13 @@ async def delete(session: AsyncSession, caller: CurrentStaff, area_id: uuid.UUID
 
 
 async def _in_use(session: AsyncSession, area_id: uuid.UUID) -> bool:
-    """Live corridors (GZ-020) or live routes serving it (GZ-023) use it. Requests (GZ-027)
-    and riders (M3) add their checks here."""
-    return await corridor_uses_area(session, area_id) or await route_serves_area(session, area_id)
+    """Live corridors (GZ-020), live routes serving it (GZ-023) or open requests naming it
+    (GZ-027) use it. Riders (M3) add their check here."""
+    return (
+        await corridor_uses_area(session, area_id)
+        or await route_serves_area(session, area_id)
+        or await request_names_area(session, area_id)
+    )
 
 
 async def _live(

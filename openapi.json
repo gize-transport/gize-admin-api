@@ -30,6 +30,68 @@
         "title": "AreaPage",
         "type": "object"
       },
+      "AreaPairDemand": {
+        "additionalProperties": false,
+        "properties": {
+          "from_area": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AreaRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from_area_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Area Name"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "to_area": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AreaRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to_area_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Area Name"
+          }
+        },
+        "required": [
+          "from_area",
+          "from_area_name",
+          "to_area",
+          "to_area_name",
+          "open"
+        ],
+        "title": "AreaPairDemand",
+        "type": "object"
+      },
       "AreaRead": {
         "additionalProperties": false,
         "properties": {
@@ -606,6 +668,8 @@
           "ROUTE_NOT_READY",
           "NOT_ENOUGH_RIDERS",
           "INVALID_STATUS_CHANGE",
+          "ROUTE_REQUEST_EXISTS",
+          "ROUTE_HAS_REQUESTS",
           "INTERNAL_ERROR",
           "SERVICE_UNAVAILABLE"
         ],
@@ -747,6 +811,41 @@
         "title": "Problem",
         "type": "object"
       },
+      "RequestKind": {
+        "enum": [
+          "new_areas",
+          "route"
+        ],
+        "title": "RequestKind",
+        "type": "string"
+      },
+      "RequestSource": {
+        "enum": [
+          "staff",
+          "app"
+        ],
+        "title": "RequestSource",
+        "type": "string"
+      },
+      "RequestStatus": {
+        "enum": [
+          "new",
+          "matched",
+          "fulfilled",
+          "declined"
+        ],
+        "title": "RequestStatus",
+        "type": "string"
+      },
+      "RiderType": {
+        "description": "Individual riders only: company riders come through their company.",
+        "enum": [
+          "adult",
+          "student"
+        ],
+        "title": "RiderType",
+        "type": "string"
+      },
       "RouteAreasSet": {
         "additionalProperties": false,
         "description": "The areas the route passes between A and B, in order: the whole list (empty: none).\nNot A or B themselves (the corridor's); each once; at most 20.",
@@ -866,6 +965,33 @@
           "seats"
         ],
         "title": "RouteCreate",
+        "type": "object"
+      },
+      "RouteDemand": {
+        "additionalProperties": false,
+        "properties": {
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          },
+          "route": {
+            "$ref": "#/components/schemas/RouteRef"
+          },
+          "seats_free_next_month": {
+            "title": "Seats Free Next Month",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RouteStatus"
+          }
+        },
+        "required": [
+          "route",
+          "status",
+          "open",
+          "seats_free_next_month"
+        ],
+        "title": "RouteDemand",
         "type": "object"
       },
       "RoutePage": {
@@ -1114,6 +1240,541 @@
           "updated_at"
         ],
         "title": "RouteRead",
+        "type": "object"
+      },
+      "RouteRef": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 20,
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code"
+        ],
+        "title": "RouteRef",
+        "type": "object"
+      },
+      "RouteRequestCreate": {
+        "additionalProperties": false,
+        "description": "A new request, `new`, recorded by staff.\n\n- `new_areas`: each end once, a listed area (`*_area_id`) or one not listed yet\n  (`*_area_name`); A and B different. No `route_id`.\n- `route`: `route_id`, a running (active or paused) route for this rider (public for\n  adults; student, of the rider's school, for students). No areas.\n\nA student names their school; an adult doesn't. The phone may be typed any usual way.\nOne open request per phone, kind, route or area pair and rider (`ROUTE_REQUEST_EXISTS`).",
+        "properties": {
+          "contact_name": {
+            "description": "Who to call: a student's parent or guardian.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Contact Name",
+            "type": "string"
+          },
+          "contact_phone": {
+            "description": "An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…",
+            "maxLength": 20,
+            "title": "Contact Phone",
+            "type": "string"
+          },
+          "from_area_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Area Id"
+          },
+          "from_area_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An area not listed yet.",
+            "title": "From Area Name"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RequestKind"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "preferred_morning_time": {
+            "anyOf": [
+              {
+                "description": "Local Addis Ababa time, HH:MM.",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Morning Time"
+          },
+          "preferred_return_time": {
+            "anyOf": [
+              {
+                "description": "Local Addis Ababa time, HH:MM.",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Return Time"
+          },
+          "rider_name": {
+            "description": "Who will ride: a student's own name.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Rider Name",
+            "type": "string"
+          },
+          "rider_type": {
+            "$ref": "#/components/schemas/RiderType"
+          },
+          "route_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Id"
+          },
+          "school_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "School Name"
+          },
+          "to_area_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Area Id"
+          },
+          "to_area_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An area not listed yet.",
+            "title": "To Area Name"
+          }
+        },
+        "required": [
+          "kind",
+          "rider_type",
+          "rider_name",
+          "contact_name",
+          "contact_phone"
+        ],
+        "title": "RouteRequestCreate",
+        "type": "object"
+      },
+      "RouteRequestPage": {
+        "description": "A page of requests (a named schema: generated clients keep the name).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RouteRequestRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "RouteRequestPage",
+        "type": "object"
+      },
+      "RouteRequestRead": {
+        "additionalProperties": false,
+        "properties": {
+          "contact_name": {
+            "maxLength": 100,
+            "title": "Contact Name",
+            "type": "string"
+          },
+          "contact_phone": {
+            "description": "E.164, +2519…/+2517…",
+            "maxLength": 13,
+            "title": "Contact Phone",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decline_reason": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decline Reason"
+          },
+          "from_area": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AreaRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from_area_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Area Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RequestKind"
+          },
+          "matched_route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RouteRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "preferred_morning_time": {
+            "anyOf": [
+              {
+                "description": "Local Addis Ababa time, HH:MM.",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Morning Time"
+          },
+          "preferred_return_time": {
+            "anyOf": [
+              {
+                "description": "Local Addis Ababa time, HH:MM.",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Return Time"
+          },
+          "rider_name": {
+            "maxLength": 100,
+            "title": "Rider Name",
+            "type": "string"
+          },
+          "rider_type": {
+            "$ref": "#/components/schemas/RiderType"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RouteRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The route asked for (kind `route`)."
+          },
+          "school_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "School Name"
+          },
+          "source": {
+            "$ref": "#/components/schemas/RequestSource"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequestStatus"
+          },
+          "to_area": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AreaRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to_area_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Area Name"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "from_area",
+          "from_area_name",
+          "to_area",
+          "to_area_name",
+          "route",
+          "rider_type",
+          "rider_name",
+          "school_name",
+          "preferred_morning_time",
+          "preferred_return_time",
+          "contact_name",
+          "contact_phone",
+          "notes",
+          "source",
+          "status",
+          "matched_route",
+          "decline_reason",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RouteRequestRead",
+        "type": "object"
+      },
+      "RouteRequestStatusSet": {
+        "additionalProperties": false,
+        "description": "The status to move to. `matched` names the route (`matched_route_id`, a live route\nfor this rider, any status: a van to come may still be a draft); `declined` gives a\nreason. Neither goes with another status.",
+        "properties": {
+          "decline_reason": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decline Reason"
+          },
+          "matched_route_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Route Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequestStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "RouteRequestStatusSet",
+        "type": "object"
+      },
+      "RouteRequestSummary": {
+        "additionalProperties": false,
+        "description": "Busiest first, at most 100 of each (`*_truncated`: there were more).",
+        "properties": {
+          "area_pairs": {
+            "description": "Open new-areas requests not matched yet, per area pair.",
+            "items": {
+              "$ref": "#/components/schemas/AreaPairDemand"
+            },
+            "maxItems": 100,
+            "title": "Area Pairs",
+            "type": "array"
+          },
+          "area_pairs_truncated": {
+            "title": "Area Pairs Truncated",
+            "type": "boolean"
+          },
+          "routes": {
+            "description": "Open requests per route: matched to it, else asking for it.",
+            "items": {
+              "$ref": "#/components/schemas/RouteDemand"
+            },
+            "maxItems": 100,
+            "title": "Routes",
+            "type": "array"
+          },
+          "routes_truncated": {
+            "title": "Routes Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "area_pairs",
+          "area_pairs_truncated",
+          "routes",
+          "routes_truncated"
+        ],
+        "title": "RouteRequestSummary",
+        "type": "object"
+      },
+      "RouteRequestUpdate": {
+        "additionalProperties": false,
+        "description": "Correct who and when (leave out what stays; empty notes clear them). What is asked\nfor (kind, areas, route) doesn't change: decline the request and record a new one. A\nschool only on a student's request (still the route's, for a route request).",
+        "minProperties": 1,
+        "properties": {
+          "contact_name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Contact Name",
+            "type": "string"
+          },
+          "contact_phone": {
+            "description": "An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…",
+            "maxLength": 20,
+            "title": "Contact Phone",
+            "type": "string"
+          },
+          "notes": {
+            "maxLength": 1000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "preferred_morning_time": {
+            "description": "Local Addis Ababa time, HH:MM.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "title": "Preferred Morning Time",
+            "type": "string"
+          },
+          "preferred_return_time": {
+            "description": "Local Addis Ababa time, HH:MM.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "title": "Preferred Return Time",
+            "type": "string"
+          },
+          "rider_name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Rider Name",
+            "type": "string"
+          },
+          "school_name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "School Name",
+            "type": "string"
+          }
+        },
+        "title": "RouteRequestUpdate",
         "type": "object"
       },
       "RouteStatus": {
@@ -4034,6 +4695,1068 @@
         ]
       }
     },
+    "/v1/route-requests": {
+      "get": {
+        "description": "Oldest first: the order free seats are offered in.",
+        "operationId": "route_requests_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequestStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequestKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "open",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Open"
+            }
+          },
+          {
+            "in": "query",
+            "name": "route_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Route Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRequestPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid Cursor, Validation Failed",
+            "x-error-codes": [
+              "INVALID_CURSOR",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Route requests, oldest first",
+        "tags": [
+          "route-requests"
+        ]
+      },
+      "post": {
+        "description": "A `new` request from `staff`. Requires `Idempotency-Key`. 409 ROUTE_REQUEST_EXISTS:\nthe same rider already has an open request for this. An area or route that doesn't exist\nor doesn't fit is a 422 on its field.",
+        "operationId": "route_requests_create",
+        "parameters": [
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequestCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRequestRead"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "Location": {
+                "description": "The new request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Request In Progress, Route Request Exists",
+            "x-error-codes": [
+              "IDEMPOTENCY_IN_PROGRESS",
+              "ROUTE_REQUEST_EXISTS"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Idempotency Key Mismatch, Validation Failed",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Record a route request",
+        "tags": [
+          "route-requests"
+        ]
+      }
+    },
+    "/v1/route-requests/summary": {
+      "get": {
+        "description": "Where the next route or van should go: open new-areas requests not matched yet per\narea pair, and open requests per route (matched to it, else asking for it) next to its\nfree seats next month. Busiest first, at most 100 of each.",
+        "operationId": "route_requests_summary",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRequestSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open demand per area pair and per route",
+        "tags": [
+          "route-requests"
+        ]
+      }
+    },
+    "/v1/route-requests/{request_id}": {
+      "delete": {
+        "description": "Soft delete, for a mistaken record: hidden from lists and counts; history keeps it.",
+        "operationId": "route_requests_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete a route request (admins only)",
+        "tags": [
+          "route-requests"
+        ]
+      },
+      "get": {
+        "operationId": "route_requests_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRequestRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "One route request",
+        "tags": [
+          "route-requests"
+        ]
+      },
+      "patch": {
+        "description": "Who and when; what is asked for doesn't change. 409 ROUTE_REQUEST_EXISTS: the change\nwould make it the same as another open request.",
+        "operationId": "route_requests_update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequestUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRequestRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Route Request Exists",
+            "x-error-codes": [
+              "ROUTE_REQUEST_EXISTS"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Correct a route request",
+        "tags": [
+          "route-requests"
+        ]
+      }
+    },
+    "/v1/route-requests/{request_id}/status": {
+      "put": {
+        "description": "`new` → `matched` (`matched_route_id`) → `fulfilled`; `new` → `fulfilled`; `new` or\n`matched` → `declined` (`decline_reason`). A matched request may be matched to another\nroute. The status it has changes nothing.\n\n- 409 INVALID_STATUS_CHANGE: any other move (fulfilled and declined are final).\n- 422 on `matched_route_id`: not a live route for this rider (public for adults;\n  student, of their school, for students).",
+        "operationId": "route_requests_set_status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequestStatusSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRequestRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid Status Change",
+            "x-error-codes": [
+              "INVALID_STATUS_CHANGE"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Match, fulfil or decline a route request",
+        "tags": [
+          "route-requests"
+        ]
+      }
+    },
     "/v1/routes": {
       "get": {
         "description": "With corridor, areas, company, and seats taken and free this month and next.",
@@ -4444,7 +6167,7 @@
     },
     "/v1/routes/{route_id}": {
       "delete": {
-        "description": "Soft delete: hidden from lists, its code free again; history keeps it. 409\nROUTE_HAS_RIDERS while anyone is reserved or rides today or later.",
+        "description": "Soft delete: hidden from lists, its code free again; history keeps it.\n\n- 409 ROUTE_HAS_RIDERS: anyone is reserved or rides today or later.\n- 409 ROUTE_HAS_REQUESTS: an open route request asks for it or was matched to it.",
         "operationId": "routes_delete",
         "parameters": [
           {
@@ -4509,8 +6232,9 @@
                 }
               }
             },
-            "description": "Route Has Riders",
+            "description": "Route Has Requests, Route Has Riders",
             "x-error-codes": [
+              "ROUTE_HAS_REQUESTS",
               "ROUTE_HAS_RIDERS"
             ]
           },

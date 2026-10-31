@@ -31,6 +31,7 @@ from gize_api.core.security import CurrentStaff
 from gize_api.corridors.models import Corridor
 from gize_api.corridors.repository import get_live_corridor
 from gize_api.corridors.schemas import AreaRef
+from gize_api.route_requests.repository import names_route as request_names_route
 from gize_api.routes import repository
 from gize_api.routes.models import (
     ROUTE_AREAS_AUDIT,
@@ -357,6 +358,8 @@ async def delete(session: AsyncSession, caller: CurrentStaff, route_id: uuid.UUI
         row = await _live(session, route_id, for_update=True)
         if await repository.has_riders(session, row.id, schedule.addis_today()):
             raise AppError(ErrorCode.ROUTE_HAS_RIDERS)
+        if await request_names_route(session, row.id):  # requests share-lock it (GZ-027)
+            raise AppError(ErrorCode.ROUTE_HAS_REQUESTS)
         before = audit.snapshot(ROUTE_AUDIT, row)
         row.deleted_at = func.now()  # the database's clock, like every other timestamp
         await session.flush()
