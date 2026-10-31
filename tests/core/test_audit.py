@@ -108,7 +108,7 @@ async def test_values_are_stored_as_json(db_session: AsyncSession) -> None:
         "d": Colour.RED,
         "e": StaffRole.ADMIN,
         "f": time(6, 30),  # a schedule time: local, no zone (GZ-021)
-        "g": [uuid.UUID(int=2), "x"],  # an ordered list (GZ-023)
+        "g": [uuid.UUID(int=2), "x", [1, None]],  # lists, nested too (GZ-023)
     }
     async with db_session.begin():
         record(
@@ -123,7 +123,7 @@ async def test_values_are_stored_as_json(db_session: AsyncSession) -> None:
         "d": "red",
         "e": "admin",
         "f": "06:30:00",
-        "g": [str(uuid.UUID(int=2)), "x"],
+        "g": [str(uuid.UUID(int=2)), "x", [1, None]],
     }
 
 
@@ -278,6 +278,7 @@ async def test_every_declared_field_is_required(
         (float("nan"), "finite"),
         (float("inf"), "finite"),
         ("nan-in-a-hidden-field", "finite"),
+        (["x", [float("nan")]], "finite"),  # inside a list too
         (datetime(2026, 10, 29, 8, 0), "time zone"),  # noqa: DTZ001 - the case under test
     ],
 )

@@ -276,7 +276,7 @@ A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run l
 | `GET /v1/routes` (`routes_list`) | Newest first, with corridor, areas, company and seat counts; filters `q` (code prefix), `route_type`, `status`, `corridor_id`, `company_id`. |
 | `GET /v1/routes/{route_id}` (`routes_get`) | One route. |
 | `PATCH /v1/routes/{route_id}` (`routes_update`) | Change code, corridor, school or company, times, seats, launch minimum. |
-| `PUT /v1/routes/{route_id}/areas` (`routes_set_areas`) | The areas the route passes between A and B, in order: `{area_ids}`, the whole list (empty clears). Not A or B themselves, each once, at most 20. Shown on every route as `served_areas`. |
+| `PUT /v1/routes/{route_id}/areas` (`routes_set_areas`) | The areas the route passes between A and B, in order: `{area_ids}`, the whole list (empty clears). Not A or B themselves, each once, at most 20. Shown on every route as `served_areas`. A route serving areas can't change corridor until they're cleared. |
 | `PUT /v1/routes/{route_id}/prices` (`routes_set_prices`) | **Admins.** `{round_trip, one_way, saturday?}`, whole birr a month (1–100,000). No Saturday price means no Saturday add-on; only public routes have one (`422` on `saturday` otherwise). Corporate routes have no prices (`409 ROUTE_HAS_NO_PRICES`). Audited as `route.prices_changed`. |
 
 - **Types** (fixed at creation, owner decision):
@@ -284,7 +284,7 @@ A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run l
   - `student`: a school name and a launch minimum;
   - `corporate`: an active company; no launch minimum and no prices on the route (billed per company).
 - **Codes** are letters, digits and dashes, 2–20, stored upper-case, unique among live routes (`409 ROUTE_CODE_TAKEN`).
-- **Times** are local Addis Ababa `"HH:MM"`, in order: `morning_time` (leaves A), `morning_arrival_time` (at B), `return_time` (leaves B), `return_arrival_time` (at A). Riders get 5 minutes at A to board and the van may reach B up to 5 minutes late (fixed rules, checked once trips are recorded). Routes made before arrival times existed show them as `null` until edited.
+- **Times** are local Addis Ababa `"HH:MM"`, in order: `morning_time` (leaves A), `morning_arrival_time` (at B), `return_time` (leaves B), `return_arrival_time` (at A). Riders get 5 minutes at A to board and the van may reach B up to 5 minutes late (fixed rules, checked once trips are recorded). Routes made before arrival times existed show them as `null` until both are set (one alone is a `422`).
 - **Seats** (1–60) are counted per day: a rider holds a seat every day from their start date to their end date.
   - `seats_taken` and `seats_free` show the busiest day from today to the end of this month, and of next month. A rider leaving at the end of the month frees a seat for next month; company riders swapping mid-month take one seat.
   - `reserved` is launch progress ("9 of 12" with `launch_minimum`): riders reserved for the next launch day, today if it's the 1st, else the 1st of next month. Later reservations don't count yet.

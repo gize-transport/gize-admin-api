@@ -12,13 +12,13 @@ from datetime import UTC, datetime
 import asyncpg
 import httpx
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
 from gize_api.core.db import get_session
 from gize_api.corridors.models import Corridor
 from gize_api.main import GizeAPI, create_app
-from gize_api.routes.models import Route
+from gize_api.routes.models import Route, RouteArea
 from tests.factories import AreaFactory, RouteFactory
 from tests.routes.support import ROUTES, add_corridor, add_route, route_path
 from tests.staff.support import add_admin, add_staff, audit_entries, signed_in
@@ -119,6 +119,7 @@ async def test_invalid_lists_are_422(
     }[problem]
     response = await api.put(_areas_path(route), json=_ids(*area_ids), headers=signed_in(member.id))
     assert (response.status_code, response.json()["code"]) == (422, "VALIDATION_FAILED")
+    assert [e["field"] for e in response.json()["errors"]] == ["/area_ids"]
 
 
 @pytest.mark.parametrize(
@@ -145,24 +146,23 @@ async def test_an_unknown_or_deleted_route_is_404(
     assert (response.status_code, response.json()["code"]) == (404, "NOT_FOUND")
 
 
-async def test_moving_to_a_corridor_ending_in_a_served_area_is_refused(
+async def test_a_route_serving_areas_keeps_its_corridor_until_they_are_cleared(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
-    """A served area can't become A or B."""
+    """The served areas lie between this corridor's A and B (in its direction): another
+    corridor, even the way back, would make them wrong."""
     member_id = (await add_staff(db_session)).id
     route = await add_route(db_session)
     (cmc,) = await _new_areas(db_session, "CMC")
     await api.put(_areas_path(route), json=_ids(cmc), headers=signed_in(member_id))
-    async with db_session.begin():
-        elsewhere = (await AreaFactory().create(db_session)).id
-    to_cmc = await add_corridor(db_session)
-    async with db_session.begin():
-        corridor = await db_session.get_one(Corridor, to_cmc)
-        corridor.origin_area_id, corridor.destination_area_id = elsewhere, cmc
-    response = await api.patch(
-        route_path(route), json={"corridor_id": str(to_cmc)}, headers=signed_in(member_id)
-    )
-    assert [e["field"] for e in response.json()["errors"]] == ["/corridor_id"]
+    other = await add_corridor(db_session)
+    move = {"corridor_id": str(other)}
+    refused = await api.patch(route_path(route), json=move, headers=signed_in(member_id))
+    assert [e["field"] for e in refused.json()["errors"]] == ["/corridor_id"]
+    await api.put(_areas_path(route), json={"area_ids": []}, headers=signed_in(member_id))
+    assert (
+        await api.patch(route_path(route), json=move, headers=signed_in(member_id))
+    ).status_code == 200
 
 
 async def test_an_area_a_live_route_serves_cannot_be_deleted(
@@ -258,6 +258,81 @@ async def test_a_list_waiting_on_an_area_delete_is_refused(
         await conn.close()
     response = await request
     assert response.status_code == 422
+    assert [e["field"] for e in response.json()["errors"]] == ["/area_ids"]
+    async with committed_sessionmaker() as session, session.begin():
+        assert await session.scalar(select(func.count()).select_from(RouteArea)) == 0
+
+
+async def test_an_area_delete_waiting_on_a_new_list_is_refused(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+) -> None:
+    async with committed_sessionmaker() as session:
+        admin = await add_admin(session)
+        async with session.begin():
+            route = await RouteFactory().create(session)
+            area = await AreaFactory().create(session)
+    conn = await asyncpg.connect(database.migrator, timeout=3)
+    try:
+        async with conn.transaction():
+            await conn.execute("SELECT 1 FROM gize.areas WHERE id = $1 FOR SHARE", area.id)
+            request = asyncio.create_task(
+                committed_api.delete(f"/v1/areas/{area.id}", headers=signed_in(admin.id))
+            )
+            await wait_for_lock_waiters(database)
+            await conn.execute(
+                "INSERT INTO gize.route_areas (route_id, area_id, position) VALUES ($1, $2, 1)",
+                route.id,
+                area.id,
+            )
+    finally:
+        await conn.close()
+    response = await request
+    assert (response.status_code, response.json()["code"]) == (409, "AREA_IN_USE")
+
+
+async def test_two_lists_at_once_leave_one_whole(
+    committed_api: httpx.AsyncClient, committed_sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    """Both take the route's row lock: one list, then the other, never a mix."""
+    async with committed_sessionmaker() as session:
+        member = await add_staff(session)
+        async with session.begin():
+            route = await RouteFactory().create(session)
+            first = [(await AreaFactory().create(session)).id for _ in range(3)]
+            second = [(await AreaFactory().create(session)).id for _ in range(3)]
+    responses = await asyncio.gather(
+        *(
+            committed_api.put(_areas_path(route.id), json=_ids(*ids), headers=signed_in(member.id))
+            for ids in (first, second)
+        )
+    )
+    assert [r.status_code for r in responses] == [200, 200]
+    async with committed_sessionmaker() as session, session.begin():
+        rows = await session.execute(
+            select(RouteArea.area_id, RouteArea.position)
+            .where(RouteArea.route_id == route.id)
+            .order_by(RouteArea.position)
+        )
+        stored = [(area_id, position) for area_id, position in rows]
+    assert [position for _, position in stored] == [1, 2, 3]
+    assert [area_id for area_id, _ in stored] in (first, second)
+
+
+async def test_setting_areas_marks_the_route_updated(
+    committed_api: httpx.AsyncClient, committed_sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    async with committed_sessionmaker() as session:
+        member = await add_staff(session)
+        async with session.begin():
+            route = await RouteFactory().create(session)
+            area = await AreaFactory().create(session)
+    before = (await committed_api.get(route_path(route.id), headers=signed_in(member.id))).json()
+    after = await committed_api.put(
+        _areas_path(route.id), json=_ids(area.id), headers=signed_in(member.id)
+    )
+    assert after.json()["updated_at"] > before["updated_at"]
 
 
 def test_areas_served_are_in_the_contract(make_settings: SettingsFactory) -> None:

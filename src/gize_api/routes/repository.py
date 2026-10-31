@@ -50,7 +50,7 @@ async def get_live_route(
     the route against places read before the wait; see corridors.repository)."""
     live = (Route.id == route_id, Route.not_deleted())
     # FOR NO KEY UPDATE: serialises changes to the route (and M3's rider inserts, which
-    # take it first) without blocking inserts that only refer to it (pickup points).
+    # take it first) without blocking inserts that only refer to it (its served areas).
     locked = select(Route.id).where(*live).with_for_update(key_share=True)
     if for_update and await session.scalar(locked) is None:
         return None

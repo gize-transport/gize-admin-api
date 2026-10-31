@@ -10,7 +10,7 @@ Its type is fixed at creation (owner decision):
 
 A `RouteAssignment` holds a seat on every day from `start_date` to `end_date` (open-ended
 while `end_date` is null), unless `ended`. Seats are counted per day, so company riders
-swapping mid-month take one seat. GZ-023 adds the pickup point; M3 the rider, plan and
+swapping mid-month take one seat. M3 adds the rider, plan and
 Saturday add-on. Assignments are never deleted: they end.
 """
 

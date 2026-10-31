@@ -12,6 +12,7 @@ import uuid
 from typing import NoReturn
 
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -150,13 +151,19 @@ async def update(
             times_in_order(*times)
         except ValueError:
             raise invalid_field("body") from None
+        # A route made before arrival times existed gets both at once, never one.
+        for field, own, other in (
+            ("morning_arrival_time", times[1], times[3]),
+            ("return_arrival_time", times[3], times[1]),
+        ):
+            if own is None and other is not None:
+                raise invalid_field("body", field)
         # Places first: one that doesn't exist is a 422, whatever else is refused.
         corridor, company = row.corridor, row.company
         if change.corridor_id not in (None, row.corridor_id):
+            if row.route_areas:  # they lie between this corridor's A and B: clear them first
+                raise invalid_field("body", "corridor_id")
             corridor = await _corridor_to_refer_to(session, change.corridor_id)
-            ends = {corridor.origin_area_id, corridor.destination_area_id}
-            if ends & {served.area_id for served in row.route_areas}:
-                raise invalid_field("body", "corridor_id")  # a served area can't be A or B
         if change.company_id not in (None, row.company_id):
             company = await _company_to_refer_to(session, change.company_id)
         seats = _new(change.seats, row.seats)
@@ -247,6 +254,7 @@ async def set_areas(
             RouteArea(route_id=row.id, area=area, position=place)
             for place, area in enumerate(served, start=1)
         ]
+        row.updated_at = func.now()  # the route changed, though none of its own columns did
         await session.flush()
         await session.refresh(row, ["updated_at"])
         audit.record(

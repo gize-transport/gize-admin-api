@@ -42,7 +42,8 @@ LaunchMinimum = Annotated[int, Field(ge=1, le=MAX_SEATS, strict=True)]
 class RouteCreate(BaseModel):
     """A new route, `draft`. Its type is fixed: a student route names its school, a
     corporate route its (active) company and has no launch minimum; a public route has
-    neither. The morning time comes before the return. Prices are set by admins (GZ-022)."""
+    neither. Times in order: leave A, arrive at B, leave B, arrive at A. Prices are set by
+    admins (GZ-022); the areas served by their own endpoint."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -82,16 +83,18 @@ class RouteCreate(BaseModel):
 
 class RouteUpdate(PartialUpdate):
     """Change any of these (leave out what stays). The type can't change; corridor, school
-    and company can't while riders hold seats (`ROUTE_HAS_RIDERS`)."""
+    and company can't while riders hold seats (`ROUTE_HAS_RIDERS`), and the corridor not
+    while the route serves areas (clear them first). A route made before arrival times
+    existed gets both at once."""
 
     code: RouteCode | None = None
     corridor_id: uuid.UUID | None = None
     school_name: ShortText | None = None
     company_id: uuid.UUID | None = None
-    morning_time: LocalTime | None = None
-    morning_arrival_time: LocalTime | None = None
-    return_time: LocalTime | None = None
-    return_arrival_time: LocalTime | None = None
+    morning_time: LocalTime | None = Field(default=None, description="Leaves A.")
+    morning_arrival_time: LocalTime | None = Field(default=None, description="Arrives at B.")
+    return_time: LocalTime | None = Field(default=None, description="Leaves B.")
+    return_arrival_time: LocalTime | None = Field(default=None, description="Arrives at A.")
     seats: Seats | None = None
     launch_minimum: LaunchMinimum | None = None
 
@@ -182,7 +185,9 @@ class RouteRead(BaseModel):
         description="Arrives at B (null only on routes made before arrival times existed)."
     )
     return_time: LocalTime = Field(description="Leaves B.")
-    return_arrival_time: LocalTime | None = Field(description="Arrives at A.")
+    return_arrival_time: LocalTime | None = Field(
+        description="Arrives at A (null only on routes made before arrival times existed)."
+    )
     served_areas: list[AreaRef] = Field(description="Areas passed between A and B, in order.")
     seats: int
     launch_minimum: int | None = Field(description="Reserved riders needed to launch.")

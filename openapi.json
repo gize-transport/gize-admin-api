@@ -766,7 +766,7 @@
       },
       "RouteCreate": {
         "additionalProperties": false,
-        "description": "A new route, `draft`. Its type is fixed: a student route names its school, a\ncorporate route its (active) company and has no launch minimum; a public route has\nneither. The morning time comes before the return. Prices are set by admins (GZ-022).",
+        "description": "A new route, `draft`. Its type is fixed: a student route names its school, a\ncorporate route its (active) company and has no launch minimum; a public route has\nneither. Times in order: leave A, arrive at B, leave B, arrive at A. Prices are set by\nadmins (GZ-022); the areas served by their own endpoint.",
         "properties": {
           "code": {
             "maxLength": 20,
@@ -1036,7 +1036,7 @@
                 "type": "null"
               }
             ],
-            "description": "Arrives at A.",
+            "description": "Arrives at A (null only on routes made before arrival times existed).",
             "title": "Return Arrival Time"
           },
           "return_time": {
@@ -1134,7 +1134,7 @@
       },
       "RouteUpdate": {
         "additionalProperties": false,
-        "description": "Change any of these (leave out what stays). The type can't change; corridor, school\nand company can't while riders hold seats (`ROUTE_HAS_RIDERS`).",
+        "description": "Change any of these (leave out what stays). The type can't change; corridor, school\nand company can't while riders hold seats (`ROUTE_HAS_RIDERS`), and the corridor not\nwhile the route serves areas (clear them first). A route made before arrival times\nexisted gets both at once.",
         "minProperties": 1,
         "properties": {
           "code": {

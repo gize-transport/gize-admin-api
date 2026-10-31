@@ -400,6 +400,29 @@ async def test_arrival_times_change_and_stay_in_order(
     assert (refused.status_code, refused.json()["code"]) == (422, "VALIDATION_FAILED")
 
 
+async def test_an_older_route_gets_both_arrival_times_at_once(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """Made before arrival times existed (both null): one alone is a 422, never a 500."""
+    member_id = (await add_staff(db_session)).id
+    route = await add_route(db_session, morning_arrival_time=None, return_arrival_time=None)
+    shown = (await api.get(route_path(route), headers=signed_in(member_id))).json()
+    assert (shown["morning_arrival_time"], shown["return_arrival_time"]) == (None, None)
+    for one, missing in (
+        ("morning_arrival_time", "return_arrival_time"),
+        ("return_arrival_time", "morning_arrival_time"),
+    ):
+        at = "07:15" if one == "morning_arrival_time" else "18:15"
+        response = await api.patch(route_path(route), json={one: at}, headers=signed_in(member_id))
+        assert [e["field"] for e in response.json()["errors"]] == [f"/{missing}"]
+    other = await api.patch(route_path(route), json={"seats": 15}, headers=signed_in(member_id))
+    assert other.status_code == 200  # other changes still work
+    both = {"morning_arrival_time": "07:15", "return_arrival_time": "18:15"}
+    assert (
+        await api.patch(route_path(route), json=both, headers=signed_in(member_id))
+    ).status_code == 200
+
+
 async def test_an_edit_to_what_is_there_records_nothing(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
