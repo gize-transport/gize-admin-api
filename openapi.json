@@ -744,9 +744,29 @@
         "title": "Problem",
         "type": "object"
       },
+      "RouteAreasSet": {
+        "additionalProperties": false,
+        "description": "The areas the route passes between A and B, in order: the whole list (empty: none).\nNot A or B themselves (the corridor's); each once; at most 20.",
+        "properties": {
+          "area_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Area Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "area_ids"
+        ],
+        "title": "RouteAreasSet",
+        "type": "object"
+      },
       "RouteCreate": {
         "additionalProperties": false,
-        "description": "A new route, `draft`. Its type is fixed: a student route names its school, a\ncorporate route its (active) company and has no launch minimum; a public route has\nneither. The morning time comes before the return. Prices are set by admins (GZ-022).",
+        "description": "A new route, `draft`. Its type is fixed: a student route names its school, a\ncorporate route its (active) company and has no launch minimum; a public route has\nneither. Times in order: leave A, arrive at B, leave B, arrive at A. Prices are set by\nadmins (GZ-022); the areas served by their own endpoint.",
         "properties": {
           "code": {
             "maxLength": 20,
@@ -785,14 +805,26 @@
             ],
             "title": "Launch Minimum"
           },
+          "morning_arrival_time": {
+            "description": "Arrives at B.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "title": "Morning Arrival Time",
+            "type": "string"
+          },
           "morning_time": {
-            "description": "Local Addis Ababa time, HH:MM.",
+            "description": "Leaves A.",
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
             "title": "Morning Time",
             "type": "string"
           },
+          "return_arrival_time": {
+            "description": "Arrives at A.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "title": "Return Arrival Time",
+            "type": "string"
+          },
           "return_time": {
-            "description": "Local Addis Ababa time, HH:MM.",
+            "description": "Leaves B.",
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
             "title": "Return Time",
             "type": "string"
@@ -825,7 +857,9 @@
           "corridor_id",
           "route_type",
           "morning_time",
+          "morning_arrival_time",
           "return_time",
+          "return_arrival_time",
           "seats"
         ],
         "title": "RouteCreate",
@@ -955,8 +989,22 @@
             "description": "Reserved riders needed to launch.",
             "title": "Launch Minimum"
           },
+          "morning_arrival_time": {
+            "anyOf": [
+              {
+                "description": "Local Addis Ababa time, HH:MM.",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Arrives at B (null only on routes made before arrival times existed).",
+            "title": "Morning Arrival Time"
+          },
           "morning_time": {
-            "description": "Local Addis Ababa time, HH:MM.",
+            "description": "Leaves A.",
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
             "title": "Morning Time",
             "type": "string"
@@ -977,8 +1025,22 @@
             "title": "Reserved",
             "type": "integer"
           },
+          "return_arrival_time": {
+            "anyOf": [
+              {
+                "description": "Local Addis Ababa time, HH:MM.",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Arrives at A (null only on routes made before arrival times existed).",
+            "title": "Return Arrival Time"
+          },
           "return_time": {
-            "description": "Local Addis Ababa time, HH:MM.",
+            "description": "Leaves B.",
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
             "title": "Return Time",
             "type": "string"
@@ -1008,6 +1070,14 @@
           "seats_taken": {
             "$ref": "#/components/schemas/MonthSeats"
           },
+          "served_areas": {
+            "description": "Areas passed between A and B, in order.",
+            "items": {
+              "$ref": "#/components/schemas/AreaRef"
+            },
+            "title": "Served Areas",
+            "type": "array"
+          },
           "status": {
             "$ref": "#/components/schemas/RouteStatus"
           },
@@ -1025,7 +1095,10 @@
           "school_name",
           "company",
           "morning_time",
+          "morning_arrival_time",
           "return_time",
+          "return_arrival_time",
+          "served_areas",
           "seats",
           "launch_minimum",
           "prices",
@@ -1061,7 +1134,7 @@
       },
       "RouteUpdate": {
         "additionalProperties": false,
-        "description": "Change any of these (leave out what stays). The type can't change; corridor, school\nand company can't while riders hold seats (`ROUTE_HAS_RIDERS`).",
+        "description": "Change any of these (leave out what stays). The type can't change; corridor, school\nand company can't while riders hold seats (`ROUTE_HAS_RIDERS`), and the corridor not\nwhile the route serves areas (clear them first). A route made before arrival times\nexisted gets both at once.",
         "minProperties": 1,
         "properties": {
           "code": {
@@ -1087,10 +1160,22 @@
             "title": "Launch Minimum",
             "type": "integer"
           },
+          "morning_arrival_time": {
+            "description": "Local Addis Ababa time, HH:MM.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "title": "Morning Arrival Time",
+            "type": "string"
+          },
           "morning_time": {
             "description": "Local Addis Ababa time, HH:MM.",
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
             "title": "Morning Time",
+            "type": "string"
+          },
+          "return_arrival_time": {
+            "description": "Local Addis Ababa time, HH:MM.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "title": "Return Arrival Time",
             "type": "string"
           },
           "return_time": {
@@ -4617,6 +4702,159 @@
           }
         ],
         "summary": "Change a route",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{route_id}/areas": {
+      "put": {
+        "description": "The areas the route passes between A and B, where riders board or get off, in order\n(no times: a route is A to B). The whole list at once; empty clears it. Not A or B\nthemselves, each once, live areas, at most 20 (a 422 on `area_ids` otherwise).",
+        "operationId": "routes_set_areas",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Route Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteAreasSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set the areas a route serves",
         "tags": [
           "routes"
         ]

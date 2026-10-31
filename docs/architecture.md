@@ -113,11 +113,11 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 | `areas` | id, name (unique ignoring case among live areas), deleted_at |
 | `corridors` | id, origin_area_id, destination_area_id (each pair once among live corridors), deleted_at |
 | `companies` | id, name, contact_name, contact_phone, contact_email, billing (`postpaid`), is_active, notes, deleted_at |
-| `routes` | id, code, corridor_id, route_type (`public`/`student`/`corporate`), school_name (student), company_id (corporate), morning_time, return_time (local `HH:MM`), seats, launch_minimum (public/student), price_round_trip, price_one_way, price_saturday (public only), status (`draft`/`forming`/`active`/`paused`; corporate never `forming`), copied_from_route_id, driver_id (nullable), deleted_at |
-| `pickup_points` | id, route_id, area_id, description, stop_order, pickup_time (local), lat, lng, deleted_at |
+| `routes` | id, code, corridor_id, route_type (`public`/`student`/`corporate`), school_name (student), company_id (corporate), morning_time (leaves A), morning_arrival_time (at B), return_time (leaves B), return_arrival_time (at A) (local `HH:MM`, in that order), seats, launch_minimum (public/student), price_round_trip, price_one_way, price_saturday (public only), status (`draft`/`forming`/`active`/`paused`; corporate never `forming`), copied_from_route_id, driver_id (nullable), deleted_at |
+| `route_areas` | id, route_id, area_id, position – the areas a route passes between A and B, in order (no times); replaced as a whole list, rows not soft-deleted (the audit log keeps each list) |
 | `guardians` | id, full_name, phone |
 | `riders` | id, rider_type (`adult`/`student`/`corporate`), full_name, phone (adults and company riders), guardian_id (students), company_id (company riders), school_name (exact match with the route's, until a schools list exists), grade_level, home_area_id, destination_area_id, status, deleted_at |
-| `route_assignments` | id, route_id, start_date, end_date (null while ongoing), status (`reserved` on a forming route / `active` / `ended`) (GZ-021); pickup_point_id (GZ-023); rider_id, plan, saturday_addon (M3) – individual riders start on the 1st and end on a month's last day, company riders any day; seats are counted per day, enforced with a row lock on `routes`; never deleted (ended instead) |
+| `route_assignments` | id, route_id, start_date, end_date (null while ongoing), status (`reserved` on a forming route / `active` / `ended`) (GZ-021); rider_id, plan, saturday_addon (M3) – individual riders start on the 1st and end on a month's last day, company riders any day; seats are counted per day, enforced with a row lock on `routes`; never deleted (ended instead) |
 | `route_requests` | id, kind (`new_areas`/`route`), from_area_id, to_area_id (or free-text areas not listed yet), route_id (kind `route`), rider_type (`adult`/`student`), school_name, preferred_morning_time, preferred_return_time, contact_name, contact_phone, notes, source (`staff`/`app`), status (`new`/`matched`/`fulfilled`/`declined`; open = `new` or `matched`), matched_route_id, decline_reason, created_at, deleted_at (admin) – seat offers (M4) add their own columns |
 | `phone_verifications` | id, phone, code_hash, attempts, expires_at, verified_at |
 | `drivers` | id, full_name, phone, is_owner, status (`applied`/`approved`/`rejected`/`inactive`) |
@@ -126,8 +126,8 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 
 ## API conventions
 
-- All routes under `/v1/`, except `/health/live` and `/health/ready` (for the load balancer; not in the OpenAPI contract). Plural nouns: `/v1/routes`, `/v1/routes/{id}/pickup-points`.
-- JSON, snake_case. Timestamps (`created_at` and the like) are ISO 8601 UTC; the client converts to Africa/Addis_Ababa. Schedule times of day (a route's morning and return times, pickup times) are local Addis Ababa time, `"HH:MM"`: a daily timetable, not a moment (Ethiopia has no daylight saving).
+- All routes under `/v1/`, except `/health/live` and `/health/ready` (for the load balancer; not in the OpenAPI contract). Plural nouns: `/v1/routes`, `/v1/routes/{id}/areas`.
+- JSON, snake_case. Timestamps (`created_at` and the like) are ISO 8601 UTC; the client converts to Africa/Addis_Ababa. Schedule times of day (a route's leave and arrive times) are local Addis Ababa time, `"HH:MM"`: a daily timetable, not a moment (Ethiopia has no daylight saving).
 - Errors: RFC 9457 `application/problem+json` with `type`, `title`, `status`, `code` (stable machine code, e.g. `ROUTE_FULL`), `request_id`. Validation errors list field names and reasons only.
 - Lists: cursor pagination – `?limit=25&cursor=…` (max 100); response `{ "items": [...], "next_cursor": "…" | null }`. Stable ordering (`created_at, id`).
 - `Idempotency-Key` header **required** on POSTs that create or trigger side effects (creating a record, registration, a route request, approve driver, send SMS). Same key + same body → same stored response; same key + different body → 422.

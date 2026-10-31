@@ -34,7 +34,9 @@ def _public(corridor_id: uuid.UUID, **changes: object) -> dict[str, object]:
         "corridor_id": str(corridor_id),
         "route_type": "public",
         "morning_time": "06:30",
+        "morning_arrival_time": "07:15",
         "return_time": "17:30",
+        "return_arrival_time": "18:15",
         "seats": 14,
         "launch_minimum": 10,
         **changes,
@@ -63,8 +65,11 @@ async def test_staff_create_a_public_route(
         "route_type": "public",
         "school_name": None,
         "company": None,
-        "morning_time": "06:30",  # local Addis Ababa time
-        "return_time": "17:30",
+        "morning_time": "06:30",  # leaves A, local Addis Ababa time
+        "morning_arrival_time": "07:15",  # at B
+        "return_time": "17:30",  # leaves B
+        "return_arrival_time": "18:15",  # at A
+        "served_areas": [],
         "seats": 14,
         "launch_minimum": 10,
         "prices": {"round_trip": None, "one_way": None, "saturday": None},
@@ -211,6 +216,11 @@ async def test_a_retried_create_replays(api: httpx.AsyncClient, db_session: Asyn
         {"morning_time": "06:60"},
         {"morning_time": "18:00"},  # not before the return
         {"return_time": "06:30"},  # same as the morning
+        {"morning_arrival_time": "06:30"},  # arrives at B as it leaves A
+        {"return_time": "07:00"},  # leaves B before it gets there
+        {"return_arrival_time": "17:30"},
+        {"morning_arrival_time": None},  # both arrival times are required
+        {"return_arrival_time": None},
         {"seats": 0},
         {"seats": 61},
         {"seats": "14"},
@@ -227,7 +237,11 @@ async def test_invalid_bodies_are_422(
 ) -> None:
     member = await add_staff(db_session)
     corridor = await add_corridor(db_session)
-    response = await api.post(ROUTES, json=_public(corridor, **change), headers=with_key(member.id))
+    response = await api.post(
+        ROUTES,
+        json={k: v for k, v in _public(corridor, **change).items() if v is not None},
+        headers=with_key(member.id),
+    )
     assert (response.status_code, response.json()["code"]) == (422, "VALIDATION_FAILED")
 
 
@@ -367,6 +381,46 @@ async def test_staff_edit_a_route(api: httpx.AsyncClient, db_session: AsyncSessi
         {"code": "BOLE-01", "morning_time": "06:30:00", "seats": 14, "launch_minimum": 10},
         {"code": "BOLE-02", "morning_time": "06:45:00", "seats": 18, "launch_minimum": 12},
     )
+
+
+async def test_arrival_times_change_and_stay_in_order(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    member = await add_staff(db_session)
+    route = await add_route(db_session)
+    later = {"morning_arrival_time": "07:30", "return_arrival_time": "18:30"}
+    response = await api.patch(route_path(route), json=later, headers=signed_in(member.id))
+    assert response.status_code == 200
+    assert (response.json()["morning_arrival_time"], response.json()["return_arrival_time"]) == (
+        "07:30",
+        "18:30",
+    )
+    late = {"morning_arrival_time": "17:45"}  # after the return leaves B
+    refused = await api.patch(route_path(route), json=late, headers=signed_in(member.id))
+    assert (refused.status_code, refused.json()["code"]) == (422, "VALIDATION_FAILED")
+
+
+async def test_an_older_route_gets_both_arrival_times_at_once(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """Made before arrival times existed (both null): one alone is a 422, never a 500."""
+    member_id = (await add_staff(db_session)).id
+    route = await add_route(db_session, morning_arrival_time=None, return_arrival_time=None)
+    shown = (await api.get(route_path(route), headers=signed_in(member_id))).json()
+    assert (shown["morning_arrival_time"], shown["return_arrival_time"]) == (None, None)
+    for one, missing in (
+        ("morning_arrival_time", "return_arrival_time"),
+        ("return_arrival_time", "morning_arrival_time"),
+    ):
+        at = "07:15" if one == "morning_arrival_time" else "18:15"
+        response = await api.patch(route_path(route), json={one: at}, headers=signed_in(member_id))
+        assert [e["field"] for e in response.json()["errors"]] == [f"/{missing}"]
+    other = await api.patch(route_path(route), json={"seats": 15}, headers=signed_in(member_id))
+    assert other.status_code == 200  # other changes still work
+    both = {"morning_arrival_time": "07:15", "return_arrival_time": "18:15"}
+    assert (
+        await api.patch(route_path(route), json=both, headers=signed_in(member_id))
+    ).status_code == 200
 
 
 async def test_an_edit_to_what_is_there_records_nothing(
@@ -542,6 +596,9 @@ def test_routes_are_in_the_contract(make_settings: SettingsFactory) -> None:
         "SEATS_BELOW_TAKEN",
     ]
     schemas = schema["components"]["schemas"]
+    assert {"morning_arrival_time", "return_arrival_time"} <= set(
+        schemas["RouteCreate"]["required"]
+    )
     time_field = schemas["RouteCreate"]["properties"]["morning_time"]
     assert time_field["type"] == "string"
     assert time_field["pattern"] == "^([01][0-9]|2[0-3]):[0-5][0-9]$"

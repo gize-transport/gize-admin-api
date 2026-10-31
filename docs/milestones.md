@@ -139,7 +139,7 @@ Status: done · Depends on: –
 
 ### GZ-026 · Areas
 Status: done · Depends on: GZ-012
-- Staff manage the list of areas (neighbourhoods, landmarks): create, list (search by name), read, rename. Name unique ignoring case among live areas (`AREA_NAME_TAKEN`). Admin soft-delete, refused while something uses it (`AREA_IN_USE`). Each later ticket that adds a use of areas (GZ-020 corridors, GZ-023 pickup points, GZ-027 requests, M3 riders) extends the check.
+- Staff manage the list of areas (neighbourhoods, landmarks): create, list (search by name), read, rename. Name unique ignoring case among live areas (`AREA_NAME_TAKEN`). Admin soft-delete, refused while something uses it (`AREA_IN_USE`). Each later ticket that adds a use of areas (GZ-020 corridors, GZ-023 areas served, GZ-027 requests, M3 riders) extends the check.
 - Built: `gize.areas` (migration 0006; name trimmed, unique ignoring case among live areas via `uq_areas_name` on `lower(name)`; soft delete), `POST`/`GET /v1/areas`, `GET`/`PATCH`/`DELETE /v1/areas/{area_id}` (`areas_*`), `AREA_NAME_TAKEN`, audit `area.created`/`renamed`/`deleted`. Shared pieces: `core/text.py` (`ShortText`), `core/db.violated_unique_constraint` (the race behind a pre-check), and `committed_api` moved to tests/conftest.py. No in-use check yet: nothing refers to areas until GZ-020.
 
 ### GZ-020 · Corridors
@@ -155,23 +155,27 @@ Status: done · Depends on: GZ-012
 ### GZ-021 · Routes – create, read, list, update
 Status: done · Depends on: GZ-020, GZ-029
 - Code (unique among live routes, `ROUTE_CODE_TAKEN`), corridor, type, school name (`student`, required) or company (`corporate`, required, active), morning and return times (local `HH:MM`), seats (1–60), launch minimum (`public`/`student`: 1 to seats; none for `corporate`). Created as `draft`. Status and prices are not set here.
-- Creates `route_assignments` with id, route_id, start_date, end_date, status (`reserved`/`active`/`ended`); GZ-023 adds the pickup point, M3 the rider, plan and Saturday add-on. Seats are counted per day: seats taken on a day = assignments covering it. Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken on any day from today (`SEATS_BELOW_TAKEN`, route row locked), nor below the launch minimum (`SEATS_BELOW_LAUNCH_MINIMUM`). Corridor, type, school and company cannot change while riders are on the route (`ROUTE_HAS_RIDERS`). Deleting a corridor a live route uses is refused (`CORRIDOR_IN_USE`, added here: GZ-020 left it for this ticket).
+- Creates `route_assignments` with id, route_id, start_date, end_date, status (`reserved`/`active`/`ended`); M3 adds the rider, plan and Saturday add-on. Seats are counted per day: seats taken on a day = assignments covering it. Responses show seats taken and free for this month and next, and launch progress ("9 of 12"), computed without N+1. Seats never below seats taken on any day from today (`SEATS_BELOW_TAKEN`, route row locked), nor below the launch minimum (`SEATS_BELOW_LAUNCH_MINIMUM`). Corridor, type, school and company cannot change while riders are on the route (`ROUTE_HAS_RIDERS`). Deleting a corridor a live route uses is refused (`CORRIDOR_IN_USE`, added here: GZ-020 left it for this ticket).
 - Filters (type, status, corridor, company), cursor pagination.
 - Built: `gize.routes` and `gize.route_assignments` (migration 0009; checks for type-dependent fields, times, seats, launch minimum, prices and corporate status; `uq_routes_code` among live routes), `routes_create`/`list`/`get`/`update`, seat counts per day (busiest day of this month from today, and of next month, two queries per page: `routes.repository.seat_counts`), `ROUTE_CODE_TAKEN`, `SEATS_BELOW_TAKEN`, `SEATS_BELOW_LAUNCH_MINIMUM`, `ROUTE_HAS_RIDERS`, `CORRIDOR_IN_USE` (delete, and changing its areas: owner decision), `COMPANY_IN_USE` (deactivate while a route runs, delete while it has one: GZ-029's hand-off). Type fixed at creation (owner decision). Shared: `core/schedule.py` (`LocalTime` "HH:MM", `addis_today`), audit stores times of day.
 
 ### GZ-022 · Route prices (admin only)
-Status: in review · Depends on: GZ-021
+Status: done · Depends on: GZ-021
 - Separate endpoint for prices (round trip, one-way, optional Saturday add-on – Saturday only for `public` routes; whole birr 1–100,000). Refused for `corporate` routes. Staff cannot change prices via any endpoint (test every route endpoint); GZ-028's copy keeps the original's prices unchanged.
 - Built: `PUT /v1/routes/{route_id}/prices` (`routes_set_prices`, admins; `RoutePricesSet`, all prices at once; a missing or null Saturday price is none), `ROUTE_HAS_NO_PRICES` (corporate), Saturday on a non-public route a 422 on `saturday`, audit `route.prices_changed`, and a test that walks every route write in the contract as staff and finds no price changed. No migration: the price columns came with GZ-021.
 - For M3: today an admin may clear a public route's Saturday price at any time. Once riders can hold the Saturday add-on, decide whether clearing it is refused while someone holds it, or ends their add-on at the month's end.
 
-### GZ-023 · Pickup points
-Status: todo · Depends on: GZ-021, GZ-026
-- Add, edit, remove, reorder pickup points: area, description, morning pickup time (local), optional location (latitude and longitude together, within Ethiopia). Unique order per route, times ascending for the morning run. Removing is a soft delete staff may do (an owner-approved exception to admin-only deletes), refused while riders use the stop (`PICKUP_POINT_HAS_RIDERS`) and, unless the route is `draft`, for its last stop (`LAST_PICKUP_POINT`).
+### GZ-023 · Route times and areas served
+Status: in review · Depends on: GZ-021, GZ-026
+- A route is A to B (owner decision, 2026-10-31; replaces pickup points with their own times, never merged). Arrival times: `morning_arrival_time` (at B) and `return_arrival_time` (at A), required on every route, in order: leave A < arrive at B < leave B < arrive at A. A breaking change to GZ-021's released contract, approved by the owner (`breaking-change-approved`; nothing used it yet).
+- Areas served: the areas a route passes between A and B, in order, no times (`PUT /v1/routes/{route_id}/areas`, the whole list; staff). Not A or B themselves; each once; live areas; at most 20. Shown on every route as `served_areas`, without N+1. An area a live route serves can't be deleted (`AREA_IN_USE`).
+- The 5-minute boarding wait at A and arrival allowance at B are fixed rules, recorded in the brief, checked once trips are recorded (later).
+- For M3: if a rider's boarding area is recorded, setting a route's areas must refuse to drop one a rider boards in.
+- Built: migration 0010 (`routes.morning_arrival_time`/`return_arrival_time`, nullable in the table until a contract step after deploys, `ck_routes_arrival_times`; `route_areas` with `uq_route_areas_route_id_position`/`_area_id`); `RouteCreate` requires both arrival times; `RouteUpdate` changes them, the four in order; `PUT /v1/routes/{route_id}/areas` (`routes_set_areas`, `RouteAreasSet`, staff), `served_areas` on every route (one extra query per page), audit `route.areas_changed`; a route serving areas keeps its corridor until its list is cleared (422 on `corridor_id`); an older route without arrival times must get both at once; `AREA_IN_USE` for areas live routes serve. The pickup-point design (stops with times) was dropped before merging.
 
 ### GZ-024 · Route status and deletion
 Status: todo · Depends on: GZ-022, GZ-023
-- `public`/`student`: `draft` → `forming` (round-trip and one-way prices and a pickup point, else `ROUTE_NOT_READY`) → `active` (staff choose the launch date, the 1st of a month not before today; riders reserved for that month ≥ launch minimum, else `NOT_ENOUGH_RIDERS`; reservations become active from that date in the same transaction, earlier ones moved to it, later ones active from their own start date) ⇄ `paused`; `forming` → `draft` only while nobody is reserved. `corporate`: `draft` → `active` (a pickup point and an active company) ⇄ `paused`. Other moves: `INVALID_STATUS_CHANGE`. Repeating a move changes nothing. Staff.
+- `public`/`student`: `draft` → `forming` (round-trip and one-way prices, else `ROUTE_NOT_READY`) → `active` (staff choose the launch date, the 1st of a month not before today; riders reserved for that month ≥ launch minimum, else `NOT_ENOUGH_RIDERS`; reservations become active from that date in the same transaction, earlier ones moved to it, later ones active from their own start date) ⇄ `paused`; `forming` → `draft` only while nobody is reserved. `corporate`: `draft` → `active` (an active company) ⇄ `paused`. Other moves: `INVALID_STATUS_CHANGE`. Repeating a move changes nothing. Staff.
 - Admin soft delete, refused while a rider is reserved or active (`ROUTE_HAS_RIDERS`).
 - From GZ-021's review: a status change locks the route, then share-locks a corporate route's company and requires it active (a deactivation racing an activation must not both commit); launch progress and the launch count use one rule (`routes.repository.next_launch_day`: riders reserved from that day or earlier).
 - After this ticket: report to the owner (routes working end to end; launching is tested with reservations made by test factories, since sign-ups come in M3) before GZ-027.
@@ -183,7 +187,7 @@ Status: todo · Depends on: GZ-024
 
 ### GZ-028 · Add a van
 Status: todo · Depends on: GZ-024
-- Copy a route: corridor, type, school or company, times, prices (unchanged: staff may copy, not change, them), pickup points; new code, own seats and launch minimum, `copied_from_route_id`. An individual route's copy starts `forming` if the original meets the forming requirements, otherwise `draft`; a corporate copy starts `draft`. Idempotency-Key.
+- Copy a route: corridor, type, school or company, times, prices (unchanged: staff may copy, not change, them), areas served; new code, own seats and launch minimum, `copied_from_route_id`. An individual route's copy starts `forming` if the original meets the forming requirements, otherwise `draft`; a corporate copy starts `draft`. Idempotency-Key.
 
 ---
 
@@ -211,7 +215,7 @@ Status: todo · Depends on: GZ-032
 
 ### GZ-035 · Assign rider to route
 Status: todo · Depends on: GZ-034, GZ-023, GZ-032
-- Assign/move a rider to a route + pickup point with plan and Saturday add-on; route row locked; never exceeds seats on any day; rule checks (student ↔ student route, adult ↔ public route, corporate ↔ that company's route). Individual riders: a `forming` route gives a reservation, an `active` one a place, starting on the 1st of a month; company riders (recorded by Gize staff) start on any day. Placing an individual rider on an active route while that route has older open requests needs a skip reason, audited (the brief's skip rule).
+- Assign/move a rider to a route (boarding at A or a served area) with plan and Saturday add-on; route row locked; never exceeds seats on any day; rule checks (student ↔ student route, adult ↔ public route, corporate ↔ that company's route). Individual riders: a `forming` route gives a reservation, an `active` one a place, starting on the 1st of a month; company riders (recorded by Gize staff) start on any day. Placing an individual rider on an active route while that route has older open requests needs a skip reason, audited (the brief's skip rule).
 - A rider leaves a route: individual riders at the end of a month (the seat stays empty until the next month), company riders on any day.
 - Acceptance: parallel test – two assignments for the last seat → exactly one succeeds (`ROUTE_FULL` for the other, who can be recorded as a route request); uses GZ-032's assignment service, extended to staff assignment and company riders.
 - The parallel test needs committed data on two connections: `db_session` runs inside one rolled-back transaction, so add a committed-data fixture that truncates its tables afterwards (from GZ-006 review).

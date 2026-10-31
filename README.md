@@ -215,7 +215,7 @@ Admins manage staff under `/v1/staff` (GZ-013). Every route is for **active admi
 
 ## Areas
 
-The list of neighbourhoods and landmarks everyone picks from (GZ-026), so "Ayat" typed three ways is one place. Corridors, pickup points, route requests and riders refer to areas by ID.
+The list of neighbourhoods and landmarks everyone picks from (GZ-026), so "Ayat" typed three ways is one place. Corridors, the areas routes serve, route requests and riders refer to areas by ID.
 
 | Endpoint | Who | What it does |
 | --- | --- | --- |
@@ -228,7 +228,7 @@ The list of neighbourhoods and landmarks everyone picks from (GZ-026), so "Ayat"
 - Names are trimmed and kept as typed. They're unique ignoring case among areas that aren't deleted (`409 AREA_NAME_TAKEN`). Two people adding the same name at once get one area and one `409`: the database's index decides.
 - Deleted areas answer `404`, like unknown ones.
 - Every change is audited (`area.created`, `area.renamed`, `area.deleted`), by value: areas hold no personal data.
-- Deleting an area a live corridor uses is refused (`409 AREA_IN_USE`). Pickup points, requests and riders add their checks in later tickets.
+- Deleting an area a live corridor uses, or a live route serves, is refused (`409 AREA_IN_USE`). Requests and riders add their checks in later tickets.
 
 ## Corridors
 
@@ -268,14 +268,15 @@ Postpaid customers whose staff ride their own corporate routes (GZ-029). Staff m
 
 ## Routes
 
-A route is one van on a corridor at a morning and a return time (GZ-021). Staff create, list, read and edit routes; status (`draft` → `forming` → `active` ⇄ `paused`), prices (admins) and deletion come in GZ-024 and GZ-022.
+A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run leaves A and arrives at B at set times, the evening run back. Riders board at A or in an area the route serves on the way; there are no stops with their own times (owner decision). Staff create, list, read and edit routes; status (`draft` → `forming` → `active` ⇄ `paused`), prices (admins) and deletion come in GZ-024 and GZ-022.
 
 | Endpoint | What it does |
 | --- | --- |
-| `POST /v1/routes` (`routes_create`) | `{code, corridor_id, route_type, school_name?, company_id?, morning_time, return_time, seats, launch_minimum?}`. Requires `Idempotency-Key`. Created `draft`. |
+| `POST /v1/routes` (`routes_create`) | `{code, corridor_id, route_type, school_name?, company_id?, morning_time, morning_arrival_time, return_time, return_arrival_time, seats, launch_minimum?}`. Requires `Idempotency-Key`. Created `draft`. |
 | `GET /v1/routes` (`routes_list`) | Newest first, with corridor, areas, company and seat counts; filters `q` (code prefix), `route_type`, `status`, `corridor_id`, `company_id`. |
 | `GET /v1/routes/{route_id}` (`routes_get`) | One route. |
 | `PATCH /v1/routes/{route_id}` (`routes_update`) | Change code, corridor, school or company, times, seats, launch minimum. |
+| `PUT /v1/routes/{route_id}/areas` (`routes_set_areas`) | The areas the route passes between A and B, in order: `{area_ids}`, the whole list (empty clears). Not A or B themselves, each once, at most 20. Shown on every route as `served_areas`. A route serving areas can't change corridor until they're cleared. |
 | `PUT /v1/routes/{route_id}/prices` (`routes_set_prices`) | **Admins.** `{round_trip, one_way, saturday?}`, whole birr a month (1–100,000). No Saturday price means no Saturday add-on; only public routes have one (`422` on `saturday` otherwise). Corporate routes have no prices (`409 ROUTE_HAS_NO_PRICES`). Audited as `route.prices_changed`. |
 
 - **Types** (fixed at creation, owner decision):
@@ -283,7 +284,7 @@ A route is one van on a corridor at a morning and a return time (GZ-021). Staff 
   - `student`: a school name and a launch minimum;
   - `corporate`: an active company; no launch minimum and no prices on the route (billed per company).
 - **Codes** are letters, digits and dashes, 2–20, stored upper-case, unique among live routes (`409 ROUTE_CODE_TAKEN`).
-- **Times** are local Addis Ababa `"HH:MM"`; the morning time comes before the return.
+- **Times** are local Addis Ababa `"HH:MM"`, in order: `morning_time` (leaves A), `morning_arrival_time` (at B), `return_time` (leaves B), `return_arrival_time` (at A). Riders get 5 minutes at A to board and the van may reach B up to 5 minutes late (fixed rules, checked once trips are recorded). Routes made before arrival times existed show them as `null` until both are set (one alone is a `422`).
 - **Seats** (1–60) are counted per day: a rider holds a seat every day from their start date to their end date.
   - `seats_taken` and `seats_free` show the busiest day from today to the end of this month, and of next month. A rider leaving at the end of the month frees a seat for next month; company riders swapping mid-month take one seat.
   - `reserved` is launch progress ("9 of 12" with `launch_minimum`): riders reserved for the next launch day, today if it's the 1st, else the 1st of next month. Later reservations don't count yet.
@@ -291,7 +292,7 @@ A route is one van on a corridor at a morning and a return time (GZ-021). Staff 
 - **Riders' guarantees:** corridor, school and company can't change while someone holds a seat today or later (`409 ROUTE_HAS_RIDERS`).
 - **Places:** a corridor or company that doesn't exist (or a company that isn't active) is a `422` on its field. Routes share-lock them while referring to them, so a delete or deactivation never crosses a new route.
 - **Prices** can't be changed by staff through any endpoint. A test walks every route write in the contract, naming each price field on its own, requires every call to be refused, and checks no route gained or lost a price. A malformed prices body is a `422` before the route is looked at.
-- **Audit:** `route.created`, `route.updated`, `route.prices_changed`, by value (routes hold no personal data).
+- **Audit:** `route.created`, `route.updated`, `route.prices_changed`, `route.areas_changed` (the served areas, before and after), by value (routes hold no personal data).
 - **"Today"** is Addis Ababa's date (UTC+3 all year, `core/schedule.py`).
 
 ## Audit log

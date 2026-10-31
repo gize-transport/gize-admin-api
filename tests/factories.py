@@ -103,7 +103,9 @@ class RouteFactory(Factory[Route]):
             "code": f"R-{sequence:04d}",
             "route_type": RouteType.PUBLIC,
             "morning_time": time(6, 30),
+            "morning_arrival_time": time(7, 15),
             "return_time": time(17, 30),
+            "return_arrival_time": time(18, 15),
             "seats": 14,
             "launch_minimum": 10,
         }

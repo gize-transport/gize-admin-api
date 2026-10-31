@@ -175,4 +175,6 @@ def _json(value: object) -> Any:  # noqa: ANN401 - a JSON value
         return value.isoformat()
     if isinstance(value, time):  # a schedule time: local, no zone (core/schedule.py)
         return value.isoformat()
+    if isinstance(value, list | tuple):  # e.g. the ordered areas a route serves
+        return [_json(item) for item in value]
     raise TypeError(f"cannot store a {type(value).__name__} in the audit log as JSON")

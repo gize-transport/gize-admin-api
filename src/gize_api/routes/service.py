@@ -12,9 +12,12 @@ import uuid
 from typing import NoReturn
 
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gize_api.areas.models import Area
+from gize_api.areas.repository import get_live_area
 from gize_api.companies.models import Company
 from gize_api.companies.repository import get_live_company
 from gize_api.core import audit, schedule
@@ -25,20 +28,30 @@ from gize_api.core.pagination import paginate
 from gize_api.core.security import CurrentStaff
 from gize_api.corridors.models import Corridor
 from gize_api.corridors.repository import get_live_corridor
+from gize_api.corridors.schemas import AreaRef
 from gize_api.routes import repository
-from gize_api.routes.models import ROUTE_AUDIT, ROUTE_CODE_UNIQUE, Route, RouteType
+from gize_api.routes.models import (
+    ROUTE_AREAS_AUDIT,
+    ROUTE_AUDIT,
+    ROUTE_CODE_UNIQUE,
+    Route,
+    RouteArea,
+    RouteType,
+)
 from gize_api.routes.repository import SeatCounts
 from gize_api.routes.schemas import (
     CompanyRef,
     CorridorRef,
     MonthSeats,
     Prices,
+    RouteAreasSet,
     RouteCreate,
     RouteListParams,
     RoutePage,
     RoutePricesSet,
     RouteRead,
     RouteUpdate,
+    times_in_order,
 )
 
 
@@ -63,9 +76,12 @@ async def create(
             school_name=route.school_name,
             company=company,
             morning_time=route.morning_time,
+            morning_arrival_time=route.morning_arrival_time,
             return_time=route.return_time,
+            return_arrival_time=route.return_arrival_time,
             seats=route.seats,
             launch_minimum=route.launch_minimum,
+            route_areas=[],  # set later (PUT .../areas); never loaded lazily
         )
         session.add(row)
         await _flush(session)
@@ -125,13 +141,28 @@ async def update(
         row = await _live(session, route_id, for_update=True)
         today = schedule.addis_today()
         _fits_the_type(row.route_type, change)
-        morning = _new(change.morning_time, row.morning_time)
-        return_time = _new(change.return_time, row.return_time)
-        if morning >= return_time:
-            raise invalid_field("body")
+        times = (
+            _new(change.morning_time, row.morning_time),
+            _new(change.morning_arrival_time, row.morning_arrival_time),
+            _new(change.return_time, row.return_time),
+            _new(change.return_arrival_time, row.return_arrival_time),
+        )
+        try:
+            times_in_order(*times)
+        except ValueError:
+            raise invalid_field("body") from None
+        # A route made before arrival times existed gets both at once, never one.
+        for field, own, other in (
+            ("morning_arrival_time", times[1], times[3]),
+            ("return_arrival_time", times[3], times[1]),
+        ):
+            if own is None and other is not None:
+                raise invalid_field("body", field)
         # Places first: one that doesn't exist is a 422, whatever else is refused.
         corridor, company = row.corridor, row.company
         if change.corridor_id not in (None, row.corridor_id):
+            if row.route_areas:  # they lie between this corridor's A and B: clear them first
+                raise invalid_field("body", "corridor_id")
             corridor = await _corridor_to_refer_to(session, change.corridor_id)
         if change.company_id not in (None, row.company_id):
             company = await _company_to_refer_to(session, change.company_id)
@@ -159,7 +190,7 @@ async def update(
             value = getattr(change, field)
             if value is not None:
                 setattr(row, field, value)
-        row.morning_time, row.return_time = morning, return_time
+        row.morning_time, row.morning_arrival_time, row.return_time, row.return_arrival_time = times
         await _flush(session)
         await session.refresh(row, ["updated_at"])
         audit.record(
@@ -203,6 +234,41 @@ async def set_prices(
         return await _read_with_counts(session, row)
 
 
+async def set_areas(
+    session: AsyncSession, caller: CurrentStaff, route_id: uuid.UUID, areas: RouteAreasSet
+) -> RouteRead:
+    """Replace the areas the route serves. The same list records nothing."""
+    async with session.begin():
+        row = await _live(session, route_id, for_update=True)
+        ends = {row.corridor.origin_area_id, row.corridor.destination_area_id}
+        if len(set(areas.area_ids)) != len(areas.area_ids) or ends & set(areas.area_ids):
+            raise invalid_field("body", "area_ids")  # each once; A and B are the corridor's
+        before = [served.area_id for served in row.route_areas]
+        if before == areas.area_ids:
+            return await _read_with_counts(session, row)
+        served = [await _area_to_refer_to(session, area_id) for area_id in areas.area_ids]
+        for old in row.route_areas:
+            await session.delete(old)
+        await session.flush()
+        row.route_areas = [
+            RouteArea(route_id=row.id, area=area, position=place)
+            for place, area in enumerate(served, start=1)
+        ]
+        row.updated_at = func.now()  # the route changed, though none of its own columns did
+        await session.flush()
+        await session.refresh(row, ["updated_at"])
+        audit.record(
+            session,
+            actor_id=caller.id,
+            action="route.areas_changed",
+            entity=ROUTE_AREAS_AUDIT,
+            entity_id=row.id,
+            before={"served_area_ids": before},
+            after={"served_area_ids": list(areas.area_ids)},
+        )
+        return await _read_with_counts(session, row)
+
+
 def _new[T](change: T | None, current: T) -> T:
     return current if change is None else change
 
@@ -233,6 +299,13 @@ async def _corridor_to_refer_to(session: AsyncSession, corridor_id: uuid.UUID) -
     return corridor
 
 
+async def _area_to_refer_to(session: AsyncSession, area_id: uuid.UUID) -> Area:
+    area = await get_live_area(session, area_id, lock="share")
+    if area is None:
+        raise invalid_field("body", "area_ids")
+    return area
+
+
 async def _company_to_refer_to(session: AsyncSession, company_id: uuid.UUID) -> Company:
     """A live, active company, share-locked: it can't be deactivated or deleted meanwhile."""
     company = await get_live_company(session, company_id, lock="share")
@@ -256,7 +329,10 @@ def _read(row: Route, counts: SeatCounts) -> RouteRead:
         school_name=row.school_name,
         company=None if row.company is None else CompanyRef.model_validate(row.company),
         morning_time=row.morning_time,
+        morning_arrival_time=row.morning_arrival_time,
         return_time=row.return_time,
+        return_arrival_time=row.return_arrival_time,
+        served_areas=[AreaRef.model_validate(served.area) for served in row.route_areas],
         seats=row.seats,
         launch_minimum=row.launch_minimum,
         prices=(

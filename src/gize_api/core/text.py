@@ -34,7 +34,7 @@ def short_enough(value: str) -> str:
     return value
 
 
-# A name or short description: an area, a pickup point, a company.
+# A name or short description: an area, a company, a school.
 ShortText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=SHORT_TEXT_MAX_LENGTH),

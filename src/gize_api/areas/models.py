@@ -1,5 +1,5 @@
 """Areas (GZ-026): one list of neighbourhoods and landmarks, so "Ayat" typed three ways is
-one place. Corridors, pickup points, requests and riders refer to areas by ID.
+one place. Corridors, the areas routes serve, requests and riders refer to areas by ID.
 
 Names are kept as typed and unique ignoring case among live areas; a deleted area's name
 can be used again. Areas are a short list (hundreds), so a name search scans it.
