@@ -284,6 +284,17 @@ async def update(
         )
         if moves and await repository.has_riders(session, row.id, today):
             raise AppError(ErrorCode.ROUTE_HAS_RIDERS)
+        # Where it runs and whom it serves are frozen once it is priced or asked for (owner
+        # decision, after M2): to serve somewhere else, add a route. Requests share-lock the
+        # route, so none is recorded or matched while this change holds its lock.
+        new_corridor = change.corridor_id not in (None, row.corridor_id)
+        new_school = change.school_name not in (None, row.school_name)
+        relocates = new_corridor or new_school
+        if relocates and await request_names_route(session, row.id):
+            raise AppError(ErrorCode.ROUTE_HAS_REQUESTS)
+        priced = (row.price_round_trip, row.price_one_way, row.price_saturday) != (None,) * 3
+        if relocates and priced:
+            raise AppError(ErrorCode.ROUTE_HAS_PRICES)
 
         before = audit.snapshot(ROUTE_AUDIT, row)
         row.corridor, row.company = corridor, company

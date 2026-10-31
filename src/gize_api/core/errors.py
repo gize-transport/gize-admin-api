@@ -75,6 +75,7 @@ class ErrorCode(StrEnum):
     INVALID_STATUS_CHANGE = "INVALID_STATUS_CHANGE"
     ROUTE_REQUEST_EXISTS = "ROUTE_REQUEST_EXISTS"
     ROUTE_HAS_REQUESTS = "ROUTE_HAS_REQUESTS"
+    ROUTE_HAS_PRICES = "ROUTE_HAS_PRICES"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -133,6 +134,7 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.INVALID_STATUS_CHANGE: ErrorSpec(409, "Invalid Status Change"),
     ErrorCode.ROUTE_REQUEST_EXISTS: ErrorSpec(409, "Route Request Exists"),
     ErrorCode.ROUTE_HAS_REQUESTS: ErrorSpec(409, "Route Has Requests"),
+    ErrorCode.ROUTE_HAS_PRICES: ErrorSpec(409, "Route Has Prices"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

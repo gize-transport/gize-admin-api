@@ -51,6 +51,7 @@ Public (unauthenticated, rate-limited) endpoints exist only for rider registrati
   - `public` and `student`: `draft` → `forming` (needs round-trip and one-way prices) → `active` (staff launch it for the 1st of a month, not before today, once riders reserved for that month reach the route's launch minimum; they become active riders from that day, reservations for an earlier month move to it, and reservations for a later month become active from their own start date; a launch for a later month makes the route `active` at once, owner decision 2026-10-31) ⇄ `paused`. Back from `forming` to `draft` only while nobody is reserved.
   - `corporate`: `draft` → `active` (needs an active company) ⇄ `paused`.
   - Admin soft-deletes a route only while no rider is reserved or active on it.
+- A route's corridor and school are fixed once it has prices or open route requests (owner decision, after M2): to serve somewhere else, Gize adds a new route.
 - When a route is full, Gize adds another van: staff copy the route (times, areas served, prices, type, school or company) under a new code, with its own seats and launch minimum. A copy of an individual route starts `forming` if the original meets the forming requirements, otherwise `draft`; a copy of a corporate route starts `draft`.
 
 **Riders**

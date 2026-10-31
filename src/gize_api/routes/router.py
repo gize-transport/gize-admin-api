@@ -155,6 +155,8 @@ async def get(
     responses=problem_responses(
         ErrorCode.NOT_FOUND,
         ErrorCode.ROUTE_CODE_TAKEN,
+        ErrorCode.ROUTE_HAS_PRICES,
+        ErrorCode.ROUTE_HAS_REQUESTS,
         ErrorCode.ROUTE_HAS_RIDERS,
         ErrorCode.SEATS_BELOW_LAUNCH_MINIMUM,
         ErrorCode.SEATS_BELOW_TAKEN,
@@ -170,6 +172,8 @@ async def update(
     """Leave out what stays. The type is fixed.
 
     - 409 ROUTE_HAS_RIDERS: corridor, school or company while riders hold seats.
+    - 409 ROUTE_HAS_REQUESTS, ROUTE_HAS_PRICES: corridor or school once open route requests
+      name the route, or once it has prices (to serve somewhere else, add a route).
     - 409 SEATS_BELOW_TAKEN: fewer seats than are taken on some day from today.
     - 409 SEATS_BELOW_LAUNCH_MINIMUM: the launch minimum above the stored seats, or seats
       below the stored minimum (both in one request and in disagreement: 422).
