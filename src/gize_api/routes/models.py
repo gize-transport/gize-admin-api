@@ -1,6 +1,7 @@
 """Routes and the seats riders hold on them (GZ-021).
 
-A route is one van running a corridor at a morning and a return time (local Addis Ababa).
+A route is one van going from A to B (its corridor): the morning run leaves A and arrives
+at B at set times, the evening run back (local Addis Ababa), passing the areas it serves.
 Its type is fixed at creation (owner decision):
 - `public` and `student` routes are for prepaid individuals: they have prices (GZ-022) and
   a launch minimum, and collect reservations while `forming` (GZ-024);
@@ -31,6 +32,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from gize_api.areas.models import Area
 from gize_api.companies.models import Company
 from gize_api.core.audit import AuditedEntity
 from gize_api.core.models import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
@@ -83,7 +85,9 @@ ROUTE_AUDIT = AuditedEntity(
         "school_name",
         "company_id",
         "morning_time",
+        "morning_arrival_time",
         "return_time",
+        "return_arrival_time",
         "seats",
         "launch_minimum",
         "price_round_trip",
@@ -101,7 +105,9 @@ ROUTE_AUDIT = AuditedEntity(
             "school_name",
             "company_id",
             "morning_time",
+            "morning_arrival_time",
             "return_time",
+            "return_arrival_time",
             "seats",
             "launch_minimum",
             "price_round_trip",
@@ -129,6 +135,14 @@ class Route(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         ),
         CheckConstraint("(route_type = 'corporate') = (company_id IS NOT NULL)", name="company"),
         CheckConstraint("morning_time < return_time", name="times"),
+        # Arrival times (GZ-023): required by the API; nullable here until every deployed
+        # row has them (expand, then contract).
+        CheckConstraint(
+            "(morning_arrival_time IS NULL) = (return_arrival_time IS NULL)"
+            " AND (morning_arrival_time IS NULL OR (morning_time < morning_arrival_time"
+            " AND morning_arrival_time < return_time AND return_time < return_arrival_time))",
+            name="arrival_times",
+        ),
         CheckConstraint(f"seats BETWEEN 1 AND {MAX_SEATS}", name="seats"),
         CheckConstraint(
             "(route_type = 'corporate' AND launch_minimum IS NULL)"
@@ -163,8 +177,10 @@ class Route(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     company_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("gize.companies.id", ondelete="RESTRICT")
     )
-    morning_time: Mapped[time] = mapped_column(Time)
-    return_time: Mapped[time] = mapped_column(Time)
+    morning_time: Mapped[time] = mapped_column(Time)  # leaves A
+    morning_arrival_time: Mapped[time | None] = mapped_column(Time)  # at B
+    return_time: Mapped[time] = mapped_column(Time)  # leaves B
+    return_arrival_time: Mapped[time | None] = mapped_column(Time)  # at A
     seats: Mapped[int] = mapped_column(SmallInteger)
     launch_minimum: Mapped[int | None] = mapped_column(SmallInteger)
     price_round_trip: Mapped[int | None] = mapped_column(Integer)
@@ -181,6 +197,35 @@ class Route(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     # Loaded with the route where needed (repository); never lazily, which async can't do.
     corridor: Mapped[Corridor] = relationship(lazy="raise")
     company: Mapped[Company | None] = relationship(lazy="raise")
+    route_areas: Mapped[list["RouteArea"]] = relationship(
+        lazy="raise", order_by="RouteArea.position"
+    )
+
+
+MAX_SERVED_AREAS = 20
+
+# The served areas are recorded as one ordered list on the route.
+ROUTE_AREAS_AUDIT = AuditedEntity(
+    type="route", fields=("served_area_ids",), visible=frozenset({"served_area_ids"})
+)
+
+
+class RouteArea(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """An area a route passes between A and B, where riders board or get off (GZ-023): in
+    order, no times (owner decision). Replaced as a whole list; A and B are the corridor's."""
+
+    __tablename__ = "route_areas"
+    __table_args__ = (
+        CheckConstraint("position >= 1", name="position"),
+        Index("uq_route_areas_route_id_position", "route_id", "position", unique=True),
+        Index("uq_route_areas_route_id_area_id", "route_id", "area_id", unique=True),
+        Index("ix_route_areas_area_id", "area_id"),  # "area in use"
+    )
+
+    route_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("gize.routes.id", ondelete="RESTRICT"))
+    area_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("gize.areas.id", ondelete="RESTRICT"))
+    position: Mapped[int] = mapped_column(SmallInteger)
+    area: Mapped[Area] = relationship(lazy="raise")
 
 
 class RouteAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):

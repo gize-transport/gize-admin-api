@@ -13,6 +13,7 @@ from gize_api.core.idempotency import IdempotentRequest, idempotent_request
 from gize_api.core.security import CurrentStaff, current_staff, require_role, staff_router
 from gize_api.routes import service
 from gize_api.routes.schemas import (
+    RouteAreasSet,
     RouteCreate,
     RouteListParams,
     RoutePage,
@@ -152,3 +153,23 @@ async def set_prices(
     """
     response.headers["Cache-Control"] = "no-store"
     return await service.set_prices(session, caller, route_id, prices)
+
+
+@router.put(
+    "/{route_id}/areas",
+    operation_id="routes_set_areas",
+    summary="Set the areas a route serves",
+    responses=problem_responses(ErrorCode.NOT_FOUND),
+)
+async def set_areas(
+    route_id: uuid.UUID,
+    areas: RouteAreasSet,
+    response: Response,
+    caller: CurrentStaff = Depends(current_staff),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> RouteRead:
+    """The areas the route passes between A and B, where riders board or get off, in order
+    (no times: a route is A to B). The whole list at once; empty clears it. Not A or B
+    themselves, each once, live areas, at most 20 (a 422 on `area_ids` otherwise)."""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.set_areas(session, caller, route_id, areas)

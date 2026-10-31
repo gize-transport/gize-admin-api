@@ -10,11 +10,18 @@ from datetime import date, timedelta
 
 from sqlalchemy import Date, Select, cast, exists, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from gize_api.core.db import LIKE_ESCAPE, escape_like
 from gize_api.corridors.models import Corridor
-from gize_api.routes.models import AssignmentStatus, Route, RouteAssignment, RouteStatus, RouteType
+from gize_api.routes.models import (
+    AssignmentStatus,
+    Route,
+    RouteArea,
+    RouteAssignment,
+    RouteStatus,
+    RouteType,
+)
 
 # The corridor (with both areas) and company in the same query; inner joins where required.
 _WITH_PLACES = (
@@ -23,6 +30,7 @@ _WITH_PLACES = (
         Corridor.destination_area, innerjoin=True
     ),
     joinedload(Route.company),
+    selectinload(Route.route_areas).joinedload(RouteArea.area, innerjoin=True),
 )
 _HOLDS_A_SEAT = RouteAssignment.status != AssignmentStatus.ENDED
 
@@ -135,6 +143,14 @@ async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) ->
         RouteAssignment.route_id == route_id,
         _HOLDS_A_SEAT,
         or_(RouteAssignment.end_date.is_(None), RouteAssignment.end_date >= today),
+    )
+    return bool(await session.scalar(select(statement)))
+
+
+async def serves_area(session: AsyncSession, area_id: uuid.UUID) -> bool:
+    """A live route serves this area (index: ix_route_areas_area_id)."""
+    statement = exists().where(
+        RouteArea.area_id == area_id, RouteArea.route_id == Route.id, Route.not_deleted()
     )
     return bool(await session.scalar(select(statement)))
 

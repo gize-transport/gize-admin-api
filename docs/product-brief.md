@@ -2,7 +2,7 @@
 
 ## The business
 
-Gize Transport (ጊዜ ትራንስፖርት) sells **monthly minibus subscriptions** in Addis Ababa, Ethiopia. Riders board partner minibuses at fixed pickup points along a corridor at fixed times and ride to work or school every weekday. Gize matches riders to routes, collects payment and pays partner drivers. Website: gizetransport.com. Target scale: up to ~15,000 subscribers and ~1,000 vans at peak; under 1,000 subscribers in the first six months.
+Gize Transport (ጊዜ ትራንስፖርት) sells **monthly minibus subscriptions** in Addis Ababa, Ethiopia. A route takes riders from one area to another (A to B) within set times; riders board at A or in an area the route passes, and ride to work or school every weekday. Gize matches riders to routes, collects payment and pays partner drivers. Website: gizetransport.com. Target scale: up to ~15,000 subscribers and ~1,000 vans at peak; under 1,000 subscribers in the first six months.
 
 ## Who uses this API
 
@@ -16,12 +16,12 @@ Gize Transport (ጊዜ ትራንስፖርት) sells **monthly minibus subscripti
 
 | Action | Staff | Admin |
 | --- | --- | --- |
-| View and edit routes, pickup points, times, seats | Yes | Yes |
+| View and edit routes, the areas they serve, times, seats | Yes | Yes |
 | Change prices | No | Yes |
 | View and edit riders, move riders between routes | Yes | Yes |
 | Manage areas, corridors, companies (including deactivating one) and route requests; move routes through their statuses (forming, launch, pause); add a van | Yes | Yes |
 | Review driver applications, record inspections, approve drivers | Yes | Yes |
-| Delete (soft-delete) any record (one exception: staff may remove a pickup point, a route edit, owner decision GZ-025) | No | Yes |
+| Delete (soft-delete) any record | No | Yes |
 | Create, deactivate and change staff accounts and roles | No | Yes |
 | Read the audit log | No | Yes |
 
@@ -40,22 +40,23 @@ Public (unauthenticated, rate-limited) endpoints exist only for rider registrati
 ## Business rules the API must enforce
 
 **Routes**
-- A route runs one corridor with fixed pickup points (ordered), a morning time and an evening return time.
+- A route goes from point A to point B: it runs one corridor (A to B) and may pass other areas on the way, the **areas it serves** (in order, e.g. Ayat → CMC → Megenagna), where riders also board or get off. There are no stops with their own times (owner decision, 2026-10-31): what counts is punctuality from A to B.
+- Times: the morning run **leaves A** and **arrives at B** at set times; the evening run leaves B and arrives at A. Riders get **5 minutes** at A to board, and the van may reach B up to **5 minutes** after its arrival time (fixed rules; checked once trips are recorded, later).
 - Route types: `public` (adult commuters), `student` (one school per route), `corporate` (one company's staff).
 - Each route is one van, with a seat count; a route is never overbooked. Seats are counted per day: a rider holds a seat on every day from their start date to their end date. Individual riders hold whole months (they start on the 1st and leave at a month's end); company riders can swap on any day.
 - Prices (ETB per month, whole birr): round trip, one-way, Saturday add-on (`public` routes only, optional). Only `public` and `student` routes have prices. Only Admin changes prices; copying a route (add a van) copies its prices unchanged.
-- Areas (neighbourhoods and landmarks) are a list staff manage; a corridor is a pair of areas (from, to), and each pickup point is in an area.
-- Morning and return times, and pickup times, are local Addis Ababa times of day.
+- Areas (neighbourhoods and landmarks) are a list staff manage; a corridor is a pair of areas (from, to); a route's served areas come from the same list.
+- Route times are local Addis Ababa times of day, in order: leave A, arrive at B, leave B, arrive at A.
 - Route status:
-  - `public` and `student`: `draft` → `forming` (needs round-trip and one-way prices and at least one pickup point) → `active` (staff launch it for the 1st of a month, not before today, once riders reserved for that month reach the route's launch minimum; they become active riders from that day, reservations for an earlier month move to it, and reservations for a later month become active from their own start date) ⇄ `paused`. Back from `forming` to `draft` only while nobody is reserved.
-  - `corporate`: `draft` → `active` (needs at least one pickup point and an active company) ⇄ `paused`.
+  - `public` and `student`: `draft` → `forming` (needs round-trip and one-way prices) → `active` (staff launch it for the 1st of a month, not before today, once riders reserved for that month reach the route's launch minimum; they become active riders from that day, reservations for an earlier month move to it, and reservations for a later month become active from their own start date) ⇄ `paused`. Back from `forming` to `draft` only while nobody is reserved.
+  - `corporate`: `draft` → `active` (needs an active company) ⇄ `paused`.
   - Admin soft-deletes a route only while no rider is reserved or active on it.
-- When a route is full, Gize adds another van: staff copy the route (stops, times, prices, type, school or company) under a new code, with its own seats and launch minimum. A copy of an individual route starts `forming` if the original meets the forming requirements, otherwise `draft`; a copy of a corporate route starts `draft`.
+- When a route is full, Gize adds another van: staff copy the route (times, areas served, prices, type, school or company) under a new code, with its own seats and launch minimum. A copy of an individual route starts `forming` if the original meets the forming requirements, otherwise `draft`; a copy of a corporate route starts `draft`.
 
 **Riders**
 - Adult riders register themselves with name, phone, home area, destination area, plan (round trip / morning only / evening only), optional Saturday add-on.
 - Students (elementary or high school) never have their own login; a **parent/guardian** registers and owns the child's record. Students ride only on their school's student route, never with adults.
-- Corporate riders belong to a company and ride that company's dedicated route. Gize staff record them (name, phone, company) so drivers have a pickup list and seats are counted.
+- Corporate riders belong to a company and ride that company's dedicated route. Gize staff record them (name, phone, company) so drivers have a passenger list and seats are counted.
 - Phone numbers are verified by SMS one-time code before a public registration is accepted.
 - Individual subscriptions are prepaid and monthly; no mid-month start, no trial, no pause. A rider who leaves keeps their seat to the end of the paid month: **a freed seat stays empty until the next month** (owner decision, GZ-025). Company riders start and stop on any day.
 - (Payments and invoicing are out of scope now, but the data model must not block either path.)

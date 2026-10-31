@@ -19,7 +19,9 @@ BODY = {
     "code": "BOLE-01",
     "route_type": "public",
     "morning_time": "06:30",
+    "morning_arrival_time": "07:15",
     "return_time": "17:30",
+    "return_arrival_time": "18:15",
     "seats": 14,
     "launch_minimum": 10,
 }

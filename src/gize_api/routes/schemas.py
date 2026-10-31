@@ -1,7 +1,8 @@
 """Route request and response bodies."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
+from itertools import pairwise
 from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -14,6 +15,7 @@ from gize_api.corridors.schemas import AreaRef
 from gize_api.routes.models import (
     MAX_PRICE,
     MAX_SEATS,
+    MAX_SERVED_AREAS,
     ROUTE_CODE_MAX_LENGTH,
     RouteStatus,
     RouteType,
@@ -49,8 +51,10 @@ class RouteCreate(BaseModel):
     route_type: RouteType
     school_name: ShortText | None = None
     company_id: uuid.UUID | None = None
-    morning_time: LocalTime
-    return_time: LocalTime
+    morning_time: LocalTime = Field(description="Leaves A.")
+    morning_arrival_time: LocalTime = Field(description="Arrives at B.")
+    return_time: LocalTime = Field(description="Leaves B.")
+    return_arrival_time: LocalTime = Field(description="Arrives at A.")
     seats: Seats
     launch_minimum: LaunchMinimum | None = None
 
@@ -70,8 +74,9 @@ class RouteCreate(BaseModel):
             )
         if self.launch_minimum is not None and self.launch_minimum > self.seats:
             raise ValueError("the launch minimum can't be more than the seats")
-        if self.morning_time >= self.return_time:
-            raise ValueError("the morning time comes before the return time")
+        times_in_order(
+            self.morning_time, self.morning_arrival_time, self.return_time, self.return_arrival_time
+        )
         return self
 
 
@@ -84,7 +89,9 @@ class RouteUpdate(PartialUpdate):
     school_name: ShortText | None = None
     company_id: uuid.UUID | None = None
     morning_time: LocalTime | None = None
+    morning_arrival_time: LocalTime | None = None
     return_time: LocalTime | None = None
+    return_arrival_time: LocalTime | None = None
     seats: Seats | None = None
     launch_minimum: LaunchMinimum | None = None
 
@@ -108,6 +115,23 @@ class RoutePricesSet(BaseModel):
     round_trip: Price
     one_way: Price
     saturday: Price | None = None
+
+
+class RouteAreasSet(BaseModel):
+    """The areas the route passes between A and B, in order: the whole list (empty: none).
+    Not A or B themselves (the corridor's); each once; at most 20."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    area_ids: list[uuid.UUID] = Field(max_length=MAX_SERVED_AREAS)
+
+
+def times_in_order(*times: time | None) -> None:
+    """Leave A, arrive at B, leave B, arrive at A: each after the one before (None: not set
+    on an older route)."""
+    known = [moment for moment in times if moment is not None]
+    if any(later <= earlier for earlier, later in pairwise(known)):
+        raise ValueError("leave A, arrive at B, leave B, arrive at A: in that order")
 
 
 class CorridorRef(BaseModel):
@@ -153,8 +177,13 @@ class RouteRead(BaseModel):
     route_type: RouteType
     school_name: str | None = Field(max_length=SHORT_TEXT_MAX_LENGTH)
     company: CompanyRef | None
-    morning_time: LocalTime
-    return_time: LocalTime
+    morning_time: LocalTime = Field(description="Leaves A.")
+    morning_arrival_time: LocalTime | None = Field(
+        description="Arrives at B (null only on routes made before arrival times existed)."
+    )
+    return_time: LocalTime = Field(description="Leaves B.")
+    return_arrival_time: LocalTime | None = Field(description="Arrives at A.")
+    served_areas: list[AreaRef] = Field(description="Areas passed between A and B, in order.")
     seats: int
     launch_minimum: int | None = Field(description="Reserved riders needed to launch.")
     prices: Prices | None = Field(description="Null on corporate routes (billed per company).")
