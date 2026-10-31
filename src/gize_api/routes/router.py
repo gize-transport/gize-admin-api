@@ -1,5 +1,5 @@
-"""/v1/routes: routes, created, listed, read and edited by staff (GZ-021); prices set by
-admins (GZ-022). Status and deletion have their own endpoints (GZ-024)."""
+"""/v1/routes: routes, created, listed, read, edited and moved through their statuses by
+staff (GZ-021, GZ-024); prices set and routes deleted by admins (GZ-022, GZ-024)."""
 
 import uuid
 from typing import Annotated
@@ -19,6 +19,7 @@ from gize_api.routes.schemas import (
     RoutePage,
     RoutePricesSet,
     RouteRead,
+    RouteStatusSet,
     RouteUpdate,
 )
 from gize_api.staff.models import StaffRole
@@ -173,3 +174,60 @@ async def set_areas(
     themselves, each once, live areas, at most 20 (a 422 on `area_ids` otherwise)."""
     response.headers["Cache-Control"] = "no-store"
     return await service.set_areas(session, caller, route_id, areas)
+
+
+@router.put(
+    "/{route_id}/status",
+    operation_id="routes_set_status",
+    summary="Move a route to another status",
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND,
+        ErrorCode.INVALID_STATUS_CHANGE,
+        ErrorCode.NOT_ENOUGH_RIDERS,
+        ErrorCode.ROUTE_HAS_RIDERS,
+        ErrorCode.ROUTE_NOT_READY,
+    ),
+)
+async def set_status(
+    route_id: uuid.UUID,
+    change: RouteStatusSet,
+    response: Response,
+    caller: CurrentStaff = Depends(current_staff),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> RouteRead:
+    """Public and student routes: `draft` → `forming` → `active` ⇄ `paused`, and `forming`
+    → `draft`. Corporate routes: `draft` → `active` ⇄ `paused`. The status a route already
+    has changes nothing.
+
+    Launching (`forming` → `active`) takes `launch_date`, the 1st of a month not before
+    today (a 422 on `launch_date` otherwise, or when another move sends one). Riders
+    reserved for that month or earlier must reach the launch minimum; they all start that
+    day, and later reservations from their own date.
+
+    - 409 INVALID_STATUS_CHANGE: any other move.
+    - 409 ROUTE_NOT_READY: forming without round-trip and one-way prices; a corporate
+      route starting while its company isn't active.
+    - 409 NOT_ENOUGH_RIDERS: fewer riders reserved for the launch month than the minimum.
+    - 409 ROUTE_HAS_RIDERS: back to draft while someone is reserved.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return await service.set_status(session, caller, route_id, change)
+
+
+@router.delete(
+    "/{route_id}",
+    operation_id="routes_delete",
+    summary="Delete a route (admins only)",
+    status_code=204,
+    response_class=Response,
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.ROUTE_HAS_RIDERS),
+)
+async def delete(
+    route_id: uuid.UUID,
+    caller: CurrentStaff = Depends(require_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Response:
+    """Soft delete: hidden from lists, its code free again; history keeps it. 409
+    ROUTE_HAS_RIDERS while anyone is reserved or rides today or later."""
+    await service.delete(session, caller, route_id)
+    return Response(status_code=204)

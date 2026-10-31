@@ -1,14 +1,22 @@
 """Route request and response bodies."""
 
 import uuid
-from datetime import datetime, time
+from datetime import date, datetime, time
 from itertools import pairwise
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from gize_api.core.pagination import Page, PageParams
-from gize_api.core.schedule import LocalTime
+from gize_api.core.schedule import LocalDate, LocalTime
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, ShortText
 from gize_api.core.updates import PartialUpdate
 from gize_api.corridors.schemas import AreaRef
@@ -127,6 +135,30 @@ class RouteAreasSet(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     area_ids: list[uuid.UUID] = Field(max_length=MAX_SERVED_AREAS)
+
+
+class RouteStatusSet(BaseModel):
+    """The status to move the route to. Launching a forming route (`active`) needs a
+    `launch_date`: the 1st of a month, not before today; no other move takes one."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: RouteStatus
+    launch_date: LocalDate | None = Field(
+        default=None,
+        description="Launching only: the day reserved riders start (the 1st of a month).",
+    )
+
+    @field_validator("launch_date")
+    @classmethod
+    def _launches_on_the_1st(cls, value: date | None, info: ValidationInfo) -> date | None:
+        if value is None:
+            return value
+        if info.data.get("status") is not RouteStatus.ACTIVE:
+            raise ValueError("a launch date comes only with status active")
+        if value.day != 1:
+            raise ValueError("routes launch on the 1st of a month")
+        return value
 
 
 def times_in_order(*times: time | None) -> None:

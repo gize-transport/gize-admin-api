@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from sqlalchemy import Date, Select, cast, exists, func, literal, or_, select
+from sqlalchemy import ColumnElement, Date, Select, cast, exists, func, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -33,6 +33,17 @@ _WITH_PLACES = (
     selectinload(Route.route_areas).joinedload(RouteArea.area, innerjoin=True),
 )
 _HOLDS_A_SEAT = RouteAssignment.status != AssignmentStatus.ENDED
+_RESERVED = RouteAssignment.status == AssignmentStatus.RESERVED
+
+
+def _reserved_for(launch_day: date) -> tuple[ColumnElement[bool], ...]:
+    """Riders a launch on `launch_day` counts: reserved from that day or earlier, and not
+    gone before it. Launch progress and the launch itself both use this rule."""
+    return (
+        _RESERVED,
+        RouteAssignment.start_date <= launch_day,
+        or_(RouteAssignment.end_date.is_(None), RouteAssignment.end_date >= launch_day),
+    )
 
 
 @dataclass(frozen=True)
@@ -110,11 +121,7 @@ async def seat_counts(
         route_id: count
         for route_id, count in await session.execute(
             select(RouteAssignment.route_id, func.count())
-            .where(
-                RouteAssignment.route_id.in_(route_ids),
-                RouteAssignment.status == AssignmentStatus.RESERVED,
-                RouteAssignment.start_date <= launch_day,
-            )
+            .where(RouteAssignment.route_id.in_(route_ids), *_reserved_for(launch_day))
             .group_by(RouteAssignment.route_id)
         )
     }
@@ -145,6 +152,47 @@ async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) ->
         or_(RouteAssignment.end_date.is_(None), RouteAssignment.end_date >= today),
     )
     return bool(await session.scalar(select(statement)))
+
+
+async def has_reservations(session: AsyncSession, route_id: uuid.UUID) -> bool:
+    """Someone is reserved on the route, for any month."""
+    statement = exists().where(RouteAssignment.route_id == route_id, _RESERVED)
+    return bool(await session.scalar(select(statement)))
+
+
+async def reserved_for(session: AsyncSession, route_id: uuid.UUID, launch_day: date) -> int:
+    """Riders a launch on `launch_day` would start (`_reserved_for`)."""
+    statement = select(func.count()).where(
+        RouteAssignment.route_id == route_id, *_reserved_for(launch_day)
+    )
+    return int(await session.scalar(statement.select_from(RouteAssignment)) or 0)
+
+
+async def start_reserved(
+    session: AsyncSession, route_id: uuid.UUID, launch_day: date
+) -> tuple[int, int]:
+    """Launch: every reservation becomes active, from `launch_day` if it started earlier
+    and from its own start date if later; one that ended before `launch_day` lapses (ends:
+    it never rode). Returns (riders started, reservations lapsed). Run under the route's
+    lock, which adding a reservation takes too (M3)."""
+    reserved = (RouteAssignment.route_id == route_id, _RESERVED)
+    lapsed = await session.scalars(
+        update(RouteAssignment)
+        .where(*reserved, RouteAssignment.end_date < launch_day)
+        .values(status=AssignmentStatus.ENDED)
+        .returning(RouteAssignment.id)
+    )
+    lapsed_count = len(lapsed.all())
+    started = await session.scalars(
+        update(RouteAssignment)
+        .where(*reserved)
+        .values(
+            status=AssignmentStatus.ACTIVE,
+            start_date=func.greatest(RouteAssignment.start_date, literal(launch_day, Date)),
+        )
+        .returning(RouteAssignment.id)
+    )
+    return len(started.all()), lapsed_count
 
 
 async def serves_area(session: AsyncSession, area_id: uuid.UUID) -> bool:
@@ -220,8 +268,8 @@ def _peaks(
 
 def next_launch_day(today: date) -> date:
     """The earliest day a forming route can launch: today if it's the 1st, else the 1st of
-    next month (individual riders start on the 1st). Launch progress counts riders reserved
-    from then or earlier, as GZ-024's launch does."""
+    next month (individual riders start on the 1st). Launch progress counts the riders a
+    launch that day would start (`_reserved_for`)."""
     return today if today.day == 1 else _first_of_next_month(today)
 
 

@@ -1,11 +1,12 @@
 """Route business rules (GZ-021). Any active staff member creates, lists, reads and edits
-routes; only admins set prices (GZ-022). Status and deletion (GZ-024) have their own
-endpoints. Every change is audited.
+routes and moves them through their statuses (GZ-024); only admins set prices (GZ-022) and
+delete routes. Every change is audited.
 
 A route refers to a live corridor and, for corporate routes, a live active company: it
 share-locks them while it is created or moved, and deactivating or deleting them takes an
 update lock, so the two never cross. Seats are checked under the route's own row lock, the
-lock M3 takes to add a rider.
+lock M3 takes to add a rider: a launch counts its reservations, and a delete or a return
+to draft looks for riders, with none joining meanwhile.
 """
 
 import uuid
@@ -34,8 +35,10 @@ from gize_api.routes.models import (
     ROUTE_AREAS_AUDIT,
     ROUTE_AUDIT,
     ROUTE_CODE_UNIQUE,
+    ROUTE_LAUNCH_AUDIT,
     Route,
     RouteArea,
+    RouteStatus,
     RouteType,
 )
 from gize_api.routes.repository import SeatCounts
@@ -50,9 +53,24 @@ from gize_api.routes.schemas import (
     RoutePage,
     RoutePricesSet,
     RouteRead,
+    RouteStatusSet,
     RouteUpdate,
     times_in_order,
 )
+
+DRAFT, FORMING, ACTIVE, PAUSED = (
+    RouteStatus.DRAFT,
+    RouteStatus.FORMING,
+    RouteStatus.ACTIVE,
+    RouteStatus.PAUSED,
+)
+# The moves each kind of route may make (owner decisions, GZ-025): prepaid individuals'
+# routes form first; a corporate route starts from the company's agreement.
+_MOVES = {
+    "individual": {(DRAFT, FORMING), (FORMING, DRAFT), (FORMING, ACTIVE), (ACTIVE, PAUSED),
+                   (PAUSED, ACTIVE)},
+    "corporate": {(DRAFT, ACTIVE), (ACTIVE, PAUSED), (PAUSED, ACTIVE)},
+}  # fmt: skip
 
 
 async def create(
@@ -267,6 +285,102 @@ async def set_areas(
             after={"served_area_ids": list(areas.area_ids)},
         )
         return await _read_with_counts(session, row)
+
+
+async def set_status(
+    session: AsyncSession, caller: CurrentStaff, route_id: uuid.UUID, change: RouteStatusSet
+) -> RouteRead:
+    """Move the route; the status it already has changes and records nothing (so a retried
+    launch is harmless, whatever its date)."""
+    async with session.begin():
+        row = await _live(session, route_id, for_update=True)
+        if change.status is row.status:
+            return await _read_with_counts(session, row)
+        move = (row.status, change.status)
+        kind = "corporate" if row.route_type is RouteType.CORPORATE else "individual"
+        if move not in _MOVES[kind]:
+            raise AppError(ErrorCode.INVALID_STATUS_CHANGE)
+        launch_date = change.launch_date
+        launching = move == (FORMING, ACTIVE)
+        if launching != (launch_date is not None):
+            raise invalid_field("body", "launch_date")  # a launch, and only a launch, has one
+        if launch_date is not None and launch_date < schedule.addis_today():
+            raise invalid_field("body", "launch_date")
+        if change.status is FORMING and None in (row.price_round_trip, row.price_one_way):
+            raise AppError(ErrorCode.ROUTE_NOT_READY)
+        if move == (FORMING, DRAFT) and await repository.has_reservations(session, row.id):
+            raise AppError(ErrorCode.ROUTE_HAS_RIDERS)
+        if kind == "corporate" and change.status is ACTIVE:
+            await _company_still_active(session, row)
+
+        before = audit.snapshot(ROUTE_AUDIT, row)
+        started = lapsed = 0
+        if launch_date is not None:
+            minimum = row.launch_minimum or 0  # set on every individual route (a table check)
+            if await repository.reserved_for(session, row.id, launch_date) < minimum:
+                raise AppError(ErrorCode.NOT_ENOUGH_RIDERS)
+            started, lapsed = await repository.start_reserved(session, row.id, launch_date)
+        row.status = change.status
+        await session.flush()
+        await session.refresh(row, ["updated_at"])
+        if launch_date is not None:
+            audit.record(
+                session,
+                actor_id=caller.id,
+                action="route.launched",
+                entity=ROUTE_LAUNCH_AUDIT,
+                entity_id=row.id,
+                before={"status": FORMING, "launch_date": None, "riders_started": None,
+                        "lapsed": None},
+                after={"status": ACTIVE, "launch_date": launch_date, "riders_started": started,
+                       "lapsed": lapsed},
+            )  # fmt: skip
+        else:
+            audit.record(
+                session,
+                actor_id=caller.id,
+                action="route.status_changed",
+                entity=ROUTE_AUDIT,
+                entity_id=row.id,
+                before=before,
+                after=audit.snapshot(ROUTE_AUDIT, row),
+            )
+        return await _read_with_counts(session, row)
+
+
+async def delete(session: AsyncSession, caller: CurrentStaff, route_id: uuid.UUID) -> None:
+    """Soft delete (admins: the route's require_role): its code is free again; history and
+    riders' past seats keep it. Refused while anyone is reserved or rides today or later."""
+    async with session.begin():
+        row = await _live(session, route_id, for_update=True)
+        if await repository.has_riders(session, row.id, schedule.addis_today()):
+            raise AppError(ErrorCode.ROUTE_HAS_RIDERS)
+        before = audit.snapshot(ROUTE_AUDIT, row)
+        row.deleted_at = func.now()  # the database's clock, like every other timestamp
+        await session.flush()
+        await session.refresh(row, ["deleted_at"])
+        audit.record(
+            session,
+            actor_id=caller.id,
+            action="route.deleted",
+            entity=ROUTE_AUDIT,
+            entity_id=row.id,
+            before=before,
+            after=audit.snapshot(ROUTE_AUDIT, row),
+        )
+
+
+async def _company_still_active(session: AsyncSession, row: Route) -> None:
+    """A corporate route runs only for an active company. The share lock makes a company
+    deactivation (which takes an update lock, then looks for running routes) wait for this
+    change, or this change wait for it and see the company inactive."""
+    company = (
+        None
+        if row.company_id is None
+        else await get_live_company(session, row.company_id, lock="share")
+    )
+    if company is None or not company.is_active:
+        raise AppError(ErrorCode.ROUTE_NOT_READY)
 
 
 def _new[T](change: T | None, current: T) -> T:

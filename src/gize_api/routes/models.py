@@ -202,6 +202,14 @@ class Route(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     )
 
 
+# A launch (GZ-024) also records the day riders start and how many: their seats aren't
+# audited one by one.
+ROUTE_LAUNCH_AUDIT = AuditedEntity(
+    type="route",
+    fields=("status", "launch_date", "riders_started", "lapsed"),
+    visible=frozenset({"status", "launch_date", "riders_started", "lapsed"}),
+)
+
 MAX_SERVED_AREAS = 20
 
 # The served areas are recorded as one ordered list on the route.

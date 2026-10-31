@@ -1,4 +1,4 @@
-"""Local schedule times ("HH:MM", Addis Ababa) and today's date there."""
+"""Local schedule times ("HH:MM", Addis Ababa), days ("YYYY-MM-DD") and today's date there."""
 
 from datetime import UTC, date, datetime, time, tzinfo
 
@@ -6,11 +6,15 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from gize_api.core import schedule
-from gize_api.core.schedule import LocalTime
+from gize_api.core.schedule import LocalDate, LocalTime
 
 
 class Timetable(BaseModel):
     at: LocalTime
+
+
+class Launch(BaseModel):
+    on: LocalDate
 
 
 @pytest.mark.parametrize(
@@ -26,6 +30,35 @@ def test_times_are_hh_mm(typed: str, parsed: time) -> None:
 def test_other_text_is_refused(typed: object) -> None:
     with pytest.raises(ValidationError):
         Timetable.model_validate({"at": typed})
+
+
+def test_days_are_yyyy_mm_dd() -> None:
+    launch = Launch.model_validate({"on": "2026-12-01"})
+    assert launch.on == date(2026, 12, 1)
+    assert launch.model_dump(mode="json") == {"on": "2026-12-01"}
+    assert Launch.model_validate({"on": date(2026, 12, 1)}).on == date(2026, 12, 1)
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "2026-12-01T00:00:00",  # pydantic alone takes a midnight timestamp
+        "2026-12-01Z",
+        "2026/12/01",
+        "2026-1-01",
+        "\uff12\uff10\uff12\uff16-12-01",  # full-width digits
+        "2026-02-30",  # no such day
+        "2026-13-01",
+        "",
+        1796083200,  # pydantic alone takes a Unix time at midnight
+        datetime(2026, 12, 1, tzinfo=UTC),
+        None,
+    ],
+    ids=repr,
+)
+def test_other_days_are_refused(typed: object) -> None:
+    with pytest.raises(ValidationError):
+        Launch.model_validate({"on": typed})
 
 
 def test_today_is_addis_ababas(monkeypatch: pytest.MonkeyPatch) -> None:
