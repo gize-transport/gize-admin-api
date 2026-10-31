@@ -6,6 +6,7 @@ as the API), as the first active admin. It runs on real, committed rows.
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -18,12 +19,15 @@ from gize_api.cli import sample_data
 from gize_api.cli.sample_data import SampleDataRefusedError, load_sample_data
 from gize_api.core.audit import AuditEntry
 from gize_api.core.config import ConfigError, Environment
+from gize_api.core.errors import AppError, ErrorCode
 from gize_api.route_requests.models import RouteRequest
 from gize_api.routes.models import Route
 from gize_api.staff.models import StaffRole
-from tests.factories import AreaFactory, StaffFactory
+from tests.factories import AreaFactory, CompanyFactory, RouteRequestFactory, StaffFactory
 from tests.staff.support import signed_in
 from tests.support import UNREACHABLE_DATABASE_URL, DatabaseUrls, SettingsFactory
+
+DELETED = datetime(2026, 10, 29, 6, 30, tzinfo=UTC)
 
 
 async def _admin(sessions: async_sessionmaker[AsyncSession], **values: object) -> uuid.UUID:
@@ -95,16 +99,22 @@ async def test_everything_is_audited_as_the_first_admin(
     assert actors == {first}
 
 
+@pytest.mark.parametrize("typed_in", ["a deleted area", "a company", "a route request"])
 async def test_a_database_with_data_is_refused(
-    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    committed_sessionmaker: async_sessionmaker[AsyncSession], typed_in: str
 ) -> None:
-    """Even a deleted area: sample data never mixes with anything typed in."""
+    """Even deleted rows: sample data never mixes with anything typed in. (Corridors and
+    routes need areas, so areas cover them.)"""
     await _admin(committed_sessionmaker)
     async with committed_sessionmaker() as session, session.begin():
-        await AreaFactory().create(session, name="Typed in")
+        if typed_in == "a deleted area":
+            await AreaFactory().create(session, name="Typed in", deleted_at=DELETED)
+        elif typed_in == "a company":
+            await CompanyFactory().create(session)
+        else:
+            await RouteRequestFactory().create(session)
     with pytest.raises(SampleDataRefusedError, match="already has data"):
         await load_sample_data(committed_sessionmaker)
-    assert await _count(committed_sessionmaker, Area) == 1
     assert await _count(committed_sessionmaker, Route) == 0
 
 
@@ -226,3 +236,39 @@ async def test_wrong_database_credentials_say_so(
     err = capsys.readouterr().err
     assert "check DATABASE_URL" in err
     assert "wrong" not in err
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["db.abcdefghijklmnop.supabase.co", "aws-0-eu-central-1.pooler.supabase.com", "10.0.0.5"],
+)
+async def test_the_command_refuses_a_database_elsewhere(
+    monkeypatch: pytest.MonkeyPatch,
+    make_settings: SettingsFactory,
+    capsys: pytest.CaptureFixture[str],
+    host: str,
+) -> None:
+    """APP_ENV=local with a pasted cloud URL: refused before connecting."""
+    url = f"postgresql+asyncpg://gize_app:secret@{host}:5432/postgres?ssl=verify-full"
+    settings = make_settings(app_env=Environment.LOCAL, database_url=url)
+    monkeypatch.setattr(sample_data, "load_settings", lambda: settings)
+    connected: list[object] = []
+    monkeypatch.setattr(sample_data, "create_engine", connected.append)
+    assert await _main() == 2
+    assert "a database on this machine" in capsys.readouterr().err
+    assert connected == []
+
+
+async def test_a_refused_step_says_how_to_recover(
+    local_settings: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two runs at once both pass the emptiness check; the second's first area is taken."""
+
+    async def taken(sessions: object) -> None:
+        raise AppError(ErrorCode.AREA_NAME_TAKEN)
+
+    monkeypatch.setattr(sample_data, "load_sample_data", taken)
+    assert await _main() == 1
+    err = capsys.readouterr().err
+    assert "AREA_NAME_TAKEN" in err
+    assert "rebuild the local database" in err

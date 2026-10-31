@@ -206,7 +206,7 @@ Status: done · Depends on: GZ-024
 ### GZ-068 · Local sample data for the frontend
 Status: done · Depends on: GZ-067
 - Asked by the owner (2026-10-31): the frontend works against the API on the same Mac before staging, and needs data to show.
-- Built: `python -m gize_api.cli.sample_data`, `APP_ENV=local` only (exit 2 otherwise), refuses a database with any areas, companies, routes or route requests (even deleted). It loads through the services as the first active admin, so rules and audit entries are the API's: 9 areas, 4 corridors, 3 companies (one inactive), 8 routes in every status reachable without riders, 6 route requests. Each step commits on its own; a failed run means rebuilding the local database (README). It loads no riders or seats: rider-less seats would block M3's migrations, so riders are added in M3 through its own flows. README: "Sample data" and "Running the API for the frontend".
+- Built: `python -m gize_api.cli.sample_data`, only with `APP_ENV=local` and a `DATABASE_URL` on this machine (exit 2 otherwise, before connecting), refuses a database with any areas, companies, routes or route requests (even deleted). It loads through the services as the first active admin, so rules and audit entries are the API's: 9 areas, 4 corridors, 3 companies (one inactive), 8 routes in every status reachable without riders, 6 route requests. Each step commits on its own; a failed run means rebuilding the local database (README). It loads no riders or seats: rider-less seats would block M3's migrations, so riders are added in M3 through its own flows. Its phones look like real mobiles (the API accepts nothing else): GZ-030's fake sender must stay the local default. README: "Sample data" and "Running the API for the frontend".
 
 ---
 

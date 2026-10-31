@@ -2,18 +2,23 @@
 
     python -m gize_api.cli.sample_data
 
-Local only: it refuses unless APP_ENV=local, and refuses a database that already has
-areas, companies, routes or route requests (even deleted ones), so it never mixes with
-data someone typed in. Everything goes through the services, as the API would: the same
-rules, and audit entries naming the first active admin (run first_admin first).
+Local only: it refuses unless APP_ENV=local and DATABASE_URL names this machine
+(localhost, 127.0.0.1 or ::1), and refuses a database that already has areas, companies,
+routes or route requests (even deleted ones), so it never mixes with data someone typed
+in. Everything goes through the services, as the API would: the same rules, and audit
+entries naming the first active admin (run first_admin first).
 
 Riders come with M3: until then no route has riders, so public and student routes stop at
-`forming` and route requests are for new areas (some matched to forming routes).
+`forming` and route requests are for new areas (recorded first, as riders asked before any
+route served them; two are then matched to forming routes). The phones look like real
+Ethiopian mobiles (the API accepts nothing else): never connect a database with sample
+data to a real SMS gateway.
 
 Each step commits on its own. If one fails, the database keeps the steps before it: rebuild
 the local database (README, "Sample data") and run the command again.
 
-Exit codes: 0 done, 1 refused or a dependency failed, 2 usage or settings.
+Exit codes: 0 done, 1 refused or a dependency failed, 2 usage or settings (including not
+local).
 """
 
 import argparse
@@ -26,6 +31,7 @@ from dataclasses import dataclass
 
 from fastapi import Response
 from sqlalchemy import exists, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.areas import service as areas
@@ -41,6 +47,7 @@ from gize_api.core.db import (
     is_database_misconfigured,
     is_database_unavailable,
 )
+from gize_api.core.errors import AppError
 from gize_api.core.idempotency import IdempotencyKey, IdempotentRequest
 from gize_api.core.logging import configure_logging
 from gize_api.core.security import CurrentStaff
@@ -62,6 +69,7 @@ from gize_api.staff.models import Staff, StaffRole
 
 AREAS = ("Ayat", "Bole", "CMC", "Gerji", "Kazanchis", "Megenagna", "Mexico", "Piassa", "Sarbet")
 CORRIDORS = (("CMC", "Mexico"), ("Ayat", "Kazanchis"), ("Gerji", "Piassa"), ("Sarbet", "Bole"))
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 SCHOOL = "Sample Academy"
 TIMES = {
     "morning_time": "06:30",
@@ -161,6 +169,36 @@ async def _load(loader: _Loader) -> None:
                 change = RouteStatusSet.model_validate({"status": status})
                 await routes.set_status(session, caller, route_id, change)
 
+    # Route requests first: riders asked before any route served them.
+    async def request(n: int, **values: object) -> uuid.UUID:
+        body = {
+            "kind": "new_areas",
+            "rider_type": "adult",
+            "rider_name": f"Sample Rider {n}",
+            "contact_name": f"Sample Rider {n}",
+            "contact_phone": f"09120000{n:02d}",
+            **values,
+        }
+        return await loader.create(route_requests.create, RouteRequestCreate.model_validate(body))
+
+    async def settled(request_id: uuid.UUID, **change: object) -> None:
+        async with sessions() as session:
+            status = RouteRequestStatusSet.model_validate(change)
+            await route_requests.set_status(session, caller, request_id, status)
+
+    await request(1, from_area_name="Lebu", to_area_id=area["Bole"])
+    await request(2, from_area_name="Lebu", to_area_id=area["Bole"])
+    await request(
+        3, from_area_name="Jemo", to_area_id=area["Mexico"],
+        preferred_morning_time="06:45", preferred_return_time="17:45",
+    )  # fmt: skip
+    matched = await request(4, from_area_id=area["Ayat"], to_area_id=area["Kazanchis"])
+    student = await request(
+        5, from_area_id=area["Gerji"], to_area_id=area["Piassa"], rider_type="student",
+        school_name=SCHOOL, contact_name="Sample Parent 5",
+    )  # fmt: skip
+    far = await request(6, from_area_name="Summit", to_area_id=area["Piassa"])
+
     # Public and student routes: not priced (can't form), priced (can), forming.
     await route("CMC-MEX-01", "CMC", "Mexico", route_type="public")
     await priced(await route("CMC-MEX-02", "CMC", "Mexico", route_type="public"), 2400, 1400)
@@ -185,37 +223,9 @@ async def _load(loader: _Loader) -> None:
     paused = await route("EXB-02", "CMC", "Mexico", route_type="corporate", company_id=bank)
     await moved(paused, "active", "paused")
 
-    # Route requests: new areas, open; two matched to forming routes; one declined.
-    async def request(n: int, **values: object) -> uuid.UUID:
-        body = {
-            "kind": "new_areas",
-            "rider_type": "adult",
-            "rider_name": f"Sample Rider {n}",
-            "contact_name": f"Sample Rider {n}",
-            "contact_phone": f"09120000{n:02d}",
-            **values,
-        }
-        return await loader.create(route_requests.create, RouteRequestCreate.model_validate(body))
-
-    async def settled(request_id: uuid.UUID, **change: object) -> None:
-        async with sessions() as session:
-            status = RouteRequestStatusSet.model_validate(change)
-            await route_requests.set_status(session, caller, request_id, status)
-
-    await request(1, from_area_name="Lebu", to_area_id=area["Bole"])
-    await request(2, from_area_name="Lebu", to_area_id=area["Bole"])
-    await request(
-        3, from_area_name="Jemo", to_area_id=area["Mexico"],
-        preferred_morning_time="06:45", preferred_return_time="17:45",
-    )  # fmt: skip
-    matched = await request(4, from_area_id=area["Ayat"], to_area_id=area["Kazanchis"])
+    # Two requests matched to the forming routes made for them; one declined.
     await settled(matched, status="matched", matched_route_id=ayat)
-    student = await request(
-        5, from_area_id=area["Gerji"], to_area_id=area["Piassa"], rider_type="student",
-        school_name=SCHOOL, contact_name="Sample Parent 5",
-    )  # fmt: skip
     await settled(student, status="matched", matched_route_id=school)
-    far = await request(6, from_area_name="Summit", to_area_id=area["Piassa"])
     await settled(far, status="declined", decline_reason="Too far from any corridor for now.")
 
 
@@ -246,14 +256,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"sample_data: {exc}", file=sys.stderr)  # noqa: T201 - CLI
         return 2
-    if settings.app_env is not Environment.LOCAL:
-        print("sample_data: runs only with APP_ENV=local", file=sys.stderr)  # noqa: T201 - CLI
+    host = make_url(settings.database_url.get_secret_value()).host
+    if settings.app_env is not Environment.LOCAL or host not in LOCAL_HOSTS:
+        print(  # noqa: T201 - CLI
+            "sample_data: runs only with APP_ENV=local and a database on this machine",
+            file=sys.stderr,
+        )
         return 2
     configure_logging(settings.log_level)
     try:
         asyncio.run(_run(settings))
     except SampleDataRefusedError as exc:
         print(f"sample_data: refused: {exc}", file=sys.stderr)  # noqa: T201 - CLI
+        return 1
+    except AppError as exc:  # a step refused (another run at once, say): steps before it stay
+        print(  # noqa: T201 - CLI
+            f"sample_data: a step was refused ({exc.code.value}): rebuild the local database "
+            "and run it again (README, Sample data)",
+            file=sys.stderr,
+        )
         return 1
     except Exception as exc:
         problem = _database_problem(exc)

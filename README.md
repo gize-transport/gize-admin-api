@@ -395,9 +395,9 @@ For working on the admin frontend locally. `python -m gize_api.cli.sample_data` 
 - 8 routes: a draft without prices, a priced draft, three forming routes (one with a served area, one a copy, one a student route), and corporate routes in draft, active and paused;
 - 6 route requests: new areas, two of them matched to forming routes and one declined.
 
-Riders come with M3, so no route has riders yet and public routes stop at forming. All names, phones and emails are fictional.
+Riders come with M3, so no route has riders yet and public routes stop at forming. All names and emails are fictional. The phones look like real Ethiopian mobiles, because the API accepts nothing else, so never connect a database holding sample data to a real SMS gateway.
 
-It refuses unless `APP_ENV=local`, and refuses a database that has any areas, companies, routes or route requests, even deleted ones. Make yourself admin first (above). Each step commits on its own, so if a run fails partway, rebuild the local database and run it again:
+It refuses unless `APP_ENV=local` and `DATABASE_URL` points at this machine (`localhost`, `127.0.0.1` or `::1`), and refuses a database that has any areas, companies, routes or route requests, even deleted ones. Make yourself admin first (above). Each step commits on its own, so if a run fails partway, rebuild the local database and run it again:
 
 ```bash
 docker compose rm -sf postgres && docker volume rm gize-admin-api_postgres-data   # deletes local data
