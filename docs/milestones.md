@@ -203,6 +203,11 @@ Status: done · Depends on: GZ-024
 - Asked by the frontend (2026-10-31): the UI must not work out the status rules itself. What does a route still need before it can start forming, and when can it launch for a given month?
 - Built: every route (list, read and every write's response) has `status_changes`: the moves its type allows from its status, each with `ready`, `blocked_by` (`RouteBlocker`: `PRICES_MISSING`, `COMPANY_INACTIVE`, `ROUTE_HAS_RIDERS`, `NOT_ENOUGH_RIDERS`) and, for a launch, the earliest `launch_date` it is judged for. Same checks as `PUT /status`; a test walks every listed change through `PUT /status`. `GET /v1/routes/{route_id}/launch-months` (`routes_launch_months`, staff): every 1st a launch may name (12, or 13 on the 1st), riders reserved for each, `ready` only on a forming route at its minimum; one query. Whether anyone holds a seat comes from the existing reserved-count query, so a page still takes four. Both are snapshots: a change can still be refused if something moves meanwhile. No migration.
 
+### GZ-068 · Local sample data for the frontend
+Status: done · Depends on: GZ-067
+- Asked by the owner (2026-10-31): the frontend works against the API on the same Mac before staging, and needs data to show.
+- Built: `python -m gize_api.cli.sample_data`, `APP_ENV=local` only (exit 2 otherwise), refuses a database with any areas, companies, routes or route requests (even deleted). It loads through the services as the first active admin, so rules and audit entries are the API's: 9 areas, 4 corridors, 3 companies (one inactive), 8 routes in every status reachable without riders, 6 route requests. Each step commits on its own; a failed run means rebuilding the local database (README). It loads no riders or seats: rider-less seats would block M3's migrations, so riders are added in M3 through its own flows. README: "Sample data" and "Running the API for the frontend".
+
 ---
 
 ## M3 – Riders and registration

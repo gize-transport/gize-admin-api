@@ -30,6 +30,7 @@ uv run pytest                         # tests + coverage gate
 | Start / stop local services | `docker compose up -d --wait` / `docker compose down` |
 | Run the API locally | `uv run --env-file .env uvicorn --factory gize_api.main:create_app --reload` |
 | Run the background worker locally | `uv run --env-file .env python -m gize_api.worker` |
+| Fill an empty local database with sample data | `uv run --env-file .env python -m gize_api.cli.sample_data` |
 | Tests with coverage (85% overall) | `uv run pytest` |
 | Services coverage gate (90%), after tests | `uv run python -m scripts.check_service_coverage` |
 | Lint, format check, types | `uv run ruff check . && uv run ruff format --check . && uv run mypy` |
@@ -385,6 +386,38 @@ Exit codes:
 - `0`: done.
 - `1`: refused, another staff change in progress, or Supabase or the database unavailable. If the database dropped mid-run, the change may or may not have been saved; running the command again is safe, since it refuses once an admin exists.
 - `2`: wrong arguments or settings.
+
+## Sample data
+
+For working on the admin frontend locally. `python -m gize_api.cli.sample_data` fills an empty local database through the services, so the same rules apply and the audit log records each change, with the first active admin as the actor. It contains:
+- 9 areas and 4 corridors;
+- 3 companies, one of them inactive;
+- 8 routes: a draft without prices, a priced draft, three forming routes (one with a served area, one a copy, one a student route), and corporate routes in draft, active and paused;
+- 6 route requests: new areas, two of them matched to forming routes and one declined.
+
+Riders come with M3, so no route has riders yet and public routes stop at forming. All names, phones and emails are fictional.
+
+It refuses unless `APP_ENV=local`, and refuses a database that has any areas, companies, routes or route requests, even deleted ones. Make yourself admin first (above). Each step commits on its own, so if a run fails partway, rebuild the local database and run it again:
+
+```bash
+docker compose rm -sf postgres && docker volume rm gize-admin-api_postgres-data   # deletes local data
+docker compose up -d --wait
+uv run --env-file .env python -m gize_api.core.bootstrap --create-supabase-roles
+uv run --env-file .env alembic upgrade head
+uv run --env-file .env python -m gize_api.cli.first_admin --user-id <UID> --name "Full Name"
+uv run --env-file .env python -m gize_api.cli.sample_data
+```
+
+## Running the API for the frontend
+
+On the developer's machine, after the first-time setup, first admin and sample data:
+
+1. `docker compose up -d --wait` starts Postgres and Redis.
+2. `uv run --env-file .env uvicorn --factory gize_api.main:create_app --reload` starts the API at `http://localhost:8000`. The interactive docs are at `/docs`, and the contract at `/openapi.json`, which matches the committed `openapi.json`.
+3. The frontend signs in to the **same Supabase project** as `SUPABASE_URL`, using that project's publishable key, and sends `Authorization: Bearer <access token>`.
+4. `CORS_ALLOWED_ORIGINS` must list the frontend's origin (`http://localhost:3000` in `.env.example`).
+
+A signed-in user who isn't staff gets `403`. Admins add more staff with `POST /v1/staff`.
 
 ## Health checks
 
