@@ -68,6 +68,16 @@ async def get_live_route(
     return await session.scalar(select(Route).options(*_WITH_PLACES).where(*live))
 
 
+async def refer_to_live_route(session: AsyncSession, route_id: uuid.UUID) -> Route | None:
+    """The live route, share-locked (FOR SHARE) for something new that refers to it (a route
+    request, GZ-027): the route's delete, which takes its row lock, waits for it, or it
+    waits for the delete and finds the route gone. Loaded without its places."""
+    live = (Route.id == route_id, Route.not_deleted())
+    if await session.scalar(select(Route.id).where(*live).with_for_update(read=True)) is None:
+        return None
+    return await session.scalar(select(Route).where(*live))
+
+
 async def code_taken(session: AsyncSession, code: str, *, except_id: uuid.UUID | None) -> bool:
     statement = exists().where(Route.code == code, Route.not_deleted())
     if except_id is not None:

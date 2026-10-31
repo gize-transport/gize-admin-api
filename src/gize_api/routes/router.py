@@ -220,14 +220,19 @@ async def set_status(
     summary="Delete a route (admins only)",
     status_code=204,
     response_class=Response,
-    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.ROUTE_HAS_RIDERS),
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND, ErrorCode.ROUTE_HAS_REQUESTS, ErrorCode.ROUTE_HAS_RIDERS
+    ),
 )
 async def delete(
     route_id: uuid.UUID,
     caller: CurrentStaff = Depends(require_admin),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
-    """Soft delete: hidden from lists, its code free again; history keeps it. 409
-    ROUTE_HAS_RIDERS while anyone is reserved or rides today or later."""
+    """Soft delete: hidden from lists, its code free again; history keeps it.
+
+    - 409 ROUTE_HAS_RIDERS: anyone is reserved or rides today or later.
+    - 409 ROUTE_HAS_REQUESTS: an open route request asks for it or was matched to it.
+    """
     await service.delete(session, caller, route_id)
     return Response(status_code=204)

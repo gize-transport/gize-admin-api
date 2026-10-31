@@ -228,7 +228,7 @@ The list of neighbourhoods and landmarks everyone picks from (GZ-026), so "Ayat"
 - Names are trimmed and kept as typed. They're unique ignoring case among areas that aren't deleted (`409 AREA_NAME_TAKEN`). Two people adding the same name at once get one area and one `409`: the database's index decides.
 - Deleted areas answer `404`, like unknown ones.
 - Every change is audited (`area.created`, `area.renamed`, `area.deleted`), by value: areas hold no personal data.
-- Deleting an area a live corridor uses, or a live route serves, is refused (`409 AREA_IN_USE`). Requests and riders add their checks in later tickets.
+- Deleting an area a live corridor uses, a live route serves, or an open route request names is refused (`409 AREA_IN_USE`). Riders add their check in M3.
 
 ## Corridors
 
@@ -278,7 +278,7 @@ A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run l
 | `PATCH /v1/routes/{route_id}` (`routes_update`) | Change code, corridor, school or company, times, seats, launch minimum. |
 | `PUT /v1/routes/{route_id}/areas` (`routes_set_areas`) | The areas the route passes between A and B, in order: `{area_ids}`, the whole list (empty clears). Not A or B themselves, each once, at most 20. Shown on every route as `served_areas`. A route serving areas can't change corridor until they're cleared. |
 | `PUT /v1/routes/{route_id}/status` (`routes_set_status`) | `{status, launch_date?}`: move the route (see **Status** below). The status it already has changes nothing, so a retried launch is harmless. |
-| `DELETE /v1/routes/{route_id}` (`routes_delete`) | **Admins.** Soft delete: hidden from lists, its code free again. `409 ROUTE_HAS_RIDERS` while anyone is reserved or rides today or later. Audited as `route.deleted`. |
+| `DELETE /v1/routes/{route_id}` (`routes_delete`) | **Admins.** Soft delete: hidden from lists, its code free again. `409 ROUTE_HAS_RIDERS` while anyone is reserved or rides today or later; `409 ROUTE_HAS_REQUESTS` while an open route request asks for it or was matched to it. Audited as `route.deleted`. |
 | `PUT /v1/routes/{route_id}/prices` (`routes_set_prices`) | **Admins.** `{round_trip, one_way, saturday?}`, whole birr a month (1–100,000). No Saturday price means no Saturday add-on; only public routes have one (`422` on `saturday` otherwise). Corporate routes have no prices (`409 ROUTE_HAS_NO_PRICES`). Audited as `route.prices_changed`. |
 
 - **Types** (fixed at creation, owner decision):
@@ -302,6 +302,31 @@ A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run l
 - **Prices** can't be changed by staff through any endpoint. A test walks every route write in the contract, naming each price field on its own, requires every call to be refused, and checks no route gained or lost a price. A malformed prices body is a `422` before the route is looked at.
 - **Audit:** `route.created`, `route.updated`, `route.prices_changed`, `route.areas_changed` (the served areas, before and after), `route.status_changed`, `route.launched` (with the launch date, riders started and reservations lapsed), `route.deleted`, by value (routes hold no personal data).
 - **"Today"** is Addis Ababa's date (UTC+3 all year, `core/schedule.py`).
+
+## Route requests
+
+Unmet demand from individual riders (GZ-027): there is no waitlist. Staff record requests from phone calls; the public app will too (M5). Company demand is handled with the company directly.
+
+| Endpoint | Who | What it does |
+| --- | --- | --- |
+| `POST /v1/route-requests` (`route_requests_create`) | staff | Record a request, `new`. Requires `Idempotency-Key`. |
+| `GET /v1/route-requests` (`route_requests_list`) | staff | Oldest first (the order free seats are offered in); filters `status`, `kind`, `open`, `route_id` (asked for or matched to). |
+| `GET /v1/route-requests/summary` (`route_requests_summary`) | staff | Where the demand is: open requests per area pair and per route, next to free seats next month. |
+| `GET /v1/route-requests/{request_id}` (`route_requests_get`) | staff | One request. |
+| `PATCH /v1/route-requests/{request_id}` (`route_requests_update`) | staff | Correct who and when: rider and contact names, phone, school, preferred times, notes. |
+| `PUT /v1/route-requests/{request_id}/status` (`route_requests_set_status`) | staff | Match, fulfil or decline. |
+| `DELETE /v1/route-requests/{request_id}` (`route_requests_delete`) | admin | Soft delete, for a mistaken record. `204`. |
+
+- **Two kinds:**
+  - `new_areas`: from A to B, each a listed area (`from_area_id`, `to_area_id`) or one not listed yet (`from_area_name`, `to_area_name`), A and B different.
+  - `route`: a specific running route (`active` or `paused`), usually full.
+- **Who:** `rider_type` `adult` or `student`; `rider_name` is who will ride (a student's own name), `contact_name` and `contact_phone` who to call (a parent for a student). A student names their school; a `route` request's route must fit the rider: public for adults, student of the same school (ignoring case) for students. A route or area that doesn't exist or doesn't fit is a `422` on its field.
+- **One open request** per phone, kind, route or area pair (names ignoring case) and rider (`409 ROUTE_REQUEST_EXISTS`); siblings are separate requests. A partial unique index enforces it, so two at once record one.
+- **Status:** `new` → `matched` (`matched_route_id`: a live route for this rider, any status, since a van to come may still be a draft) → `fulfilled`; `new` → `fulfilled`; `new` or `matched` → `declined` (`decline_reason`). A matched request may be matched to another route. `fulfilled` and `declined` are final (`409 INVALID_STATUS_CHANGE`); the status a request has changes nothing. Open means `new` or `matched`.
+- **What a request asks for doesn't change**: to ask for something else, decline it and record a new one.
+- **Summary:** area pairs count open `new_areas` requests not matched yet (a name not listed yet counts ignoring case and shows as first recorded); routes count each open request once, against the route it was matched to, else the one it asks for. Busiest first, at most 100 of each, with `*_truncated` when there were more.
+- **What open requests name stays:** an area or route an open request names can't be deleted (`409 AREA_IN_USE`, `409 ROUTE_HAS_REQUESTS`). Requests share-lock them while being recorded or matched.
+- **Personal data:** rider and contact names, phone, school, notes and the decline reason are shown as `[redacted]` in the audit log (`route_request.created`, `.updated`, `.status_changed`, `.deleted`); kind, areas, routes, times and status by value. Phones never go in URLs, so the list has no phone filter.
 
 ## Audit log
 

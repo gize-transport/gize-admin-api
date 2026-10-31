@@ -101,6 +101,8 @@ Login rate limits for Supabase Auth are configured in the Supabase dashboard (Au
 
 Staff changes (invites, role and status changes, the first-admin command) all take one transaction-level advisory lock (`staff.repository.lock_staff_changes`), so rules that span rows, such as "at least one active admin", are checked with nothing changing underneath. A service that must call an outside service before writing (a staff invite calls Supabase) does it between two transactions: a short read block that also `peek`s the idempotency key, the call, then the write block that claims the key.
 
+Row locks are taken in one order, so two changes never wait on each other: places (areas, corridors, companies), then routes, then route requests and route assignments. A change that needs a route's lock and a request's takes the route's first (GZ-027 `set_status`; GZ-040's freed seats lock the route, then requests). Within a table, a row lock comes before the joined load (lock-then-load).
+
 ## Data model (MVP – refine in the plan for each ticket)
 
 All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC, timestamptz) on every table. Soft delete via `deleted_at` on business tables; default queries exclude deleted rows. Money as integer whole birr. Phones stored E.164 (`+2519…` / `+2517…`).
@@ -118,7 +120,7 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 | `guardians` | id, full_name, phone |
 | `riders` | id, rider_type (`adult`/`student`/`corporate`), full_name, phone (adults and company riders), guardian_id (students), company_id (company riders), school_name (exact match with the route's, until a schools list exists), grade_level, home_area_id, destination_area_id, status, deleted_at |
 | `route_assignments` | id, route_id, start_date, end_date (null while ongoing), status (`reserved` on a forming route / `active` / `ended`) (GZ-021); rider_id, plan, saturday_addon (M3) – individual riders start on the 1st and end on a month's last day, company riders any day; seats are counted per day, enforced with a row lock on `routes`; never deleted (ended instead) |
-| `route_requests` | id, kind (`new_areas`/`route`), from_area_id, to_area_id (or free-text areas not listed yet), route_id (kind `route`), rider_type (`adult`/`student`), school_name, preferred_morning_time, preferred_return_time, contact_name, contact_phone, notes, source (`staff`/`app`), status (`new`/`matched`/`fulfilled`/`declined`; open = `new` or `matched`), matched_route_id, decline_reason, created_at, deleted_at (admin) – seat offers (M4) add their own columns |
+| `route_requests` | id, kind (`new_areas`/`route`), from_area_id or from_area_name, to_area_id or to_area_name (a name for an area not listed yet), route_id (kind `route`), rider_type (`adult`/`student`), rider_name, school_name, preferred_morning_time, preferred_return_time, contact_name, contact_phone, notes, source (`staff`/`app`), status (`new`/`matched`/`fulfilled`/`declined`; open = `new` or `matched`), matched_route_id, decline_reason, created_at, deleted_at (admin) – seat offers (M4) add their own columns |
 | `phone_verifications` | id, phone, code_hash, attempts, expires_at, verified_at |
 | `drivers` | id, full_name, phone, is_owner, status (`applied`/`approved`/`rejected`/`inactive`) |
 | `vehicles` | id, driver_id, plate, vehicle_type, seats, inspection_status, inspected_at, inspection_notes |

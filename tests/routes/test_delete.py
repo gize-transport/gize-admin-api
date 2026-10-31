@@ -143,6 +143,9 @@ def test_delete_is_in_the_contract(make_settings: SettingsFactory) -> None:
     schema = create_app(make_settings()).openapi()
     operation = schema["paths"][f"{ROUTES}/{{route_id}}"]["delete"]
     assert operation["operationId"] == "routes_delete"
-    assert operation["responses"]["409"]["x-error-codes"] == ["ROUTE_HAS_RIDERS"]
+    assert operation["responses"]["409"]["x-error-codes"] == [
+        "ROUTE_HAS_REQUESTS",
+        "ROUTE_HAS_RIDERS",
+    ]
     assert operation["responses"]["404"]["x-error-codes"] == ["NOT_FOUND"]
     assert "204" in operation["responses"]

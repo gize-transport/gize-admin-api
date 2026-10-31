@@ -23,6 +23,7 @@ from gize_api.areas.models import Area
 from gize_api.companies.models import Company
 from gize_api.core.models import Base
 from gize_api.corridors.models import Corridor
+from gize_api.route_requests.models import RequestKind, RiderType, RouteRequest
 from gize_api.routes.models import AssignmentStatus, Route, RouteAssignment, RouteType
 from gize_api.staff.models import Staff, StaffRole
 
@@ -123,3 +124,21 @@ class RouteAssignmentFactory(Factory[RouteAssignment]):
 
     def defaults(self, sequence: int) -> dict[str, object]:
         return {"start_date": date(2026, 12, 1), "status": AssignmentStatus.RESERVED}
+
+
+class RouteRequestFactory(Factory[RouteRequest]):
+    """An open (`new`) request from an adult for two areas not listed yet, unless told
+    otherwise. A `route` request needs `route_id`; a student one `school_name`."""
+
+    model = RouteRequest
+
+    def defaults(self, sequence: int) -> dict[str, object]:
+        return {
+            "kind": RequestKind.NEW_AREAS,
+            "from_area_name": f"From {sequence}",
+            "to_area_name": f"To {sequence}",
+            "rider_type": RiderType.ADULT,
+            "rider_name": f"Rider {sequence}",
+            "contact_name": f"Contact {sequence}",
+            "contact_phone": f"+2519{sequence:08d}",
+        }
