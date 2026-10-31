@@ -191,9 +191,10 @@ Status: in review · Depends on: GZ-024
 - For GZ-040: lock the route, then its requests (the order above). For the owner: a route PATCH may change a student route's school while open requests name it (only riders block it today); should it be refused, as riders do?
 
 ### GZ-028 · Add a van
-Status: todo · Depends on: GZ-024
+Status: in review · Depends on: GZ-024
 - Copy a route: corridor, type, school or company, times, prices (unchanged: staff may copy, not change, them), areas served; new code, own seats and launch minimum, `copied_from_route_id`. An individual route's copy starts `forming` if the original meets the forming requirements, otherwise `draft`; a corporate copy starts `draft`. Idempotency-Key.
 - From GZ-024's review: a route may be deleted after being copied, so a copy's `copied_from_route_id` can name a deleted route (a 404 if followed); show it as such rather than failing.
+- Built: `POST /v1/routes/{route_id}/copies` (`routes_copy`, staff, Idempotency-Key; `RouteCopy {code, seats, launch_minimum?}`: prices can't be named, the price walk covers it). The original is share-locked (`refer_to_live_route`), so its areas and prices are copied whole; a corporate original's company is share-locked and must be active (`409 ROUTE_NOT_READY`). Audit `route.copied` (and `route.areas_changed` for the copied areas). Copies of copies work; a deleted original stays named. No migration.
 
 ---
 

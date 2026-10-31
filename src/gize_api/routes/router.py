@@ -14,6 +14,7 @@ from gize_api.core.security import CurrentStaff, current_staff, require_role, st
 from gize_api.routes import service
 from gize_api.routes.schemas import (
     RouteAreasSet,
+    RouteCopy,
     RouteCreate,
     RouteListParams,
     RoutePage,
@@ -65,6 +66,51 @@ async def create(
     this code. A corridor or company that doesn't exist (or a company that isn't active) is
     a 422 on its field."""
     response = await service.create(session, caller, route, idempotent)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post(
+    "/{route_id}/copies",
+    operation_id="routes_copy",
+    summary="Add a van: copy a route",
+    status_code=201,
+    response_model=RouteRead,
+    responses={
+        201: {
+            "description": "Created",
+            "headers": {
+                "Location": {"description": "The new route.", "schema": {"type": "string"}}
+            },
+        },
+        **problem_responses(
+            ErrorCode.NOT_FOUND,
+            ErrorCode.ROUTE_CODE_TAKEN,
+            ErrorCode.ROUTE_NOT_READY,
+            ErrorCode.IDEMPOTENCY_IN_PROGRESS,
+            ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+            ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+        ),
+    },
+)
+async def copy(
+    route_id: uuid.UUID,
+    van: RouteCopy,
+    caller: CurrentStaff = Depends(current_staff),  # noqa: B008
+    idempotent: IdempotentRequest = Depends(idempotent_request),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Response:
+    """A new route like this one, for when it's full: corridor, type, school or company,
+    times, prices (copied, never changed here) and served areas, with its own code, seats
+    and launch minimum (public and student routes only; a 422 on `launch_minimum`
+    otherwise). It starts `forming` when the original has both prices (corporate: `draft`),
+    else `draft`, and names the original in `copied_from_route_id`. Requires
+    `Idempotency-Key`.
+
+    - 409 ROUTE_CODE_TAKEN: a live route has this code.
+    - 409 ROUTE_NOT_READY: a corporate route whose company isn't active.
+    """
+    response = await service.copy(session, caller, route_id, van, idempotent)
     response.headers["Cache-Control"] = "no-store"
     return response
 

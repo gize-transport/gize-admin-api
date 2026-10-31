@@ -50,6 +50,7 @@ from gize_api.routes.schemas import (
     MonthSeats,
     Prices,
     RouteAreasSet,
+    RouteCopy,
     RouteCreate,
     RouteListParams,
     RoutePage,
@@ -115,6 +116,86 @@ async def create(
             before=None,
             after=audit.snapshot(ROUTE_AUDIT, row),
         )
+        payload = _read(row, SeatCounts()).model_dump(mode="json")
+        location = f"/v1/routes/{row.id}"
+        await record(session, claimed, status=201, body=payload, headers={"Location": location})
+    return JSONResponse(payload, status_code=201, headers={"Location": location})
+
+
+async def copy(
+    session: AsyncSession,
+    caller: CurrentStaff,
+    route_id: uuid.UUID,
+    van: RouteCopy,
+    idempotent: IdempotentRequest,
+) -> Response:
+    """Add a van: a new route like this one (GZ-028). 201 with a Location, or the stored
+    response for a retry. The original is share-locked, so its served areas and prices are
+    copied whole, as they are before or after any change to them."""
+    async with session.begin():
+        claimed = await claim(session, scope=f"staff:{caller.id}", request=idempotent)
+        if claimed.stored is not None:
+            return replay_response(claimed.stored)
+        if await repository.refer_to_live_route(session, route_id) is None:
+            raise AppError(ErrorCode.NOT_FOUND)
+        original = await _live(session, route_id)  # now with its places
+        corporate = original.route_type is RouteType.CORPORATE
+        if (van.launch_minimum is None) != corporate:
+            raise invalid_field("body", "launch_minimum")  # individual routes only, required
+        company = None
+        if original.company_id is not None:
+            company = await get_live_company(session, original.company_id, lock="share")
+            if company is None or not company.is_active:
+                raise AppError(ErrorCode.ROUTE_NOT_READY)
+        if await repository.code_taken(session, van.code, except_id=None):
+            raise AppError(ErrorCode.ROUTE_CODE_TAKEN)
+        priced = None not in (original.price_round_trip, original.price_one_way)
+        row = Route(
+            code=van.code,
+            corridor=original.corridor,
+            route_type=original.route_type,
+            school_name=original.school_name,
+            company=company,
+            morning_time=original.morning_time,
+            morning_arrival_time=original.morning_arrival_time,
+            return_time=original.return_time,
+            return_arrival_time=original.return_arrival_time,
+            seats=van.seats,
+            launch_minimum=van.launch_minimum,
+            price_round_trip=original.price_round_trip,
+            price_one_way=original.price_one_way,
+            price_saturday=original.price_saturday,
+            # Ready to collect reservations if the original could form; corporate routes
+            # start from the company's agreement.
+            status=FORMING if priced and not corporate else DRAFT,
+            copied_from_route_id=original.id,
+            route_areas=[
+                RouteArea(area=served.area, position=served.position)
+                for served in original.route_areas
+            ],
+        )
+        session.add(row)
+        await _flush(session)
+        await session.refresh(row, ["created_at", "updated_at"])
+        audit.record(
+            session,
+            actor_id=caller.id,
+            action="route.copied",
+            entity=ROUTE_AUDIT,
+            entity_id=row.id,
+            before=None,
+            after=audit.snapshot(ROUTE_AUDIT, row),
+        )
+        if row.route_areas:
+            audit.record(
+                session,
+                actor_id=caller.id,
+                action="route.areas_changed",
+                entity=ROUTE_AREAS_AUDIT,
+                entity_id=row.id,
+                before={"served_area_ids": []},
+                after={"served_area_ids": [served.area_id for served in row.route_areas]},
+            )
         payload = _read(row, SeatCounts()).model_dump(mode="json")
         location = f"/v1/routes/{row.id}"
         await record(session, claimed, status=201, body=payload, headers={"Location": location})
