@@ -10,6 +10,7 @@ to draft looks for riders, with none joining meanwhile.
 """
 
 import uuid
+from datetime import date
 from typing import NoReturn
 
 from fastapi.responses import JSONResponse, Response
@@ -304,12 +305,13 @@ async def set_status(
         launching = move == (FORMING, ACTIVE)
         if launching != (launch_date is not None):
             raise invalid_field("body", "launch_date")  # a launch, and only a launch, has one
-        if launch_date is not None and launch_date < schedule.addis_today():
+        today = schedule.addis_today()
+        if launch_date is not None and not today <= launch_date <= _latest_launch(today):
             raise invalid_field("body", "launch_date")
         if change.status is FORMING and None in (row.price_round_trip, row.price_one_way):
             raise AppError(ErrorCode.ROUTE_NOT_READY)
-        if move == (FORMING, DRAFT) and await repository.has_reservations(session, row.id):
-            raise AppError(ErrorCode.ROUTE_HAS_RIDERS)
+        if move == (FORMING, DRAFT) and await repository.has_riders(session, row.id, today):
+            raise AppError(ErrorCode.ROUTE_HAS_RIDERS)  # the same rule as a delete's
         if kind == "corporate" and change.status is ACTIVE:
             await _company_still_active(session, row)
 
@@ -368,6 +370,12 @@ async def delete(session: AsyncSession, caller: CurrentStaff, route_id: uuid.UUI
             before=before,
             after=audit.snapshot(ROUTE_AUDIT, row),
         )
+
+
+def _latest_launch(today: date) -> date:
+    """A launch at most a year ahead (a bound on the input: a mistyped year would move every
+    reservation decades on)."""
+    return date(today.year + 1, today.month, 1)
 
 
 async def _company_still_active(session: AsyncSession, row: Route) -> None:

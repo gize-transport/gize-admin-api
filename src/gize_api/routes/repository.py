@@ -154,12 +154,6 @@ async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) ->
     return bool(await session.scalar(select(statement)))
 
 
-async def has_reservations(session: AsyncSession, route_id: uuid.UUID) -> bool:
-    """Someone is reserved on the route, for any month."""
-    statement = exists().where(RouteAssignment.route_id == route_id, _RESERVED)
-    return bool(await session.scalar(select(statement)))
-
-
 async def reserved_for(session: AsyncSession, route_id: uuid.UUID, launch_day: date) -> int:
     """Riders a launch on `launch_day` would start (`_reserved_for`)."""
     statement = select(func.count()).where(

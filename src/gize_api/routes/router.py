@@ -199,8 +199,8 @@ async def set_status(
     → `draft`. Corporate routes: `draft` → `active` ⇄ `paused`. The status a route already
     has changes nothing.
 
-    Launching (`forming` → `active`) takes `launch_date`, the 1st of a month not before
-    today (a 422 on `launch_date` otherwise, or when another move sends one). Riders
+    Launching (`forming` → `active`) takes `launch_date`, the 1st of a month from today to
+    a year ahead (a 422 on `launch_date` otherwise, or when another move sends one). Riders
     reserved for that month or earlier must reach the launch minimum; they all start that
     day, and later reservations from their own date.
 
@@ -208,7 +208,7 @@ async def set_status(
     - 409 ROUTE_NOT_READY: forming without round-trip and one-way prices; a corporate
       route starting while its company isn't active.
     - 409 NOT_ENOUGH_RIDERS: fewer riders reserved for the launch month than the minimum.
-    - 409 ROUTE_HAS_RIDERS: back to draft while someone is reserved.
+    - 409 ROUTE_HAS_RIDERS: back to draft while someone is reserved (today or later).
     """
     response.headers["Cache-Control"] = "no-store"
     return await service.set_status(session, caller, route_id, change)

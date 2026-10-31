@@ -179,8 +179,9 @@ Status: in review · Depends on: GZ-022, GZ-023
 - Admin soft delete, refused while a rider is reserved or active (`ROUTE_HAS_RIDERS`).
 - From GZ-021's review: a status change locks the route, then share-locks a corporate route's company and requires it active (a deactivation racing an activation must not both commit); launch progress and the launch count use one rule (`routes.repository.next_launch_day`: riders reserved from that day or earlier).
 - After this ticket: report to the owner (routes working end to end; launching is tested with reservations made by test factories, since sign-ups come in M3) before GZ-027.
-- Built: `PUT /v1/routes/{route_id}/status` (`routes_set_status`, staff; `RouteStatusSet`, `launch_date` a strict `"YYYY-MM-DD"`: `core/schedule.LocalDate`), `DELETE /v1/routes/{route_id}` (`routes_delete`, admins), `ROUTE_NOT_READY` (also a corporate route whose company isn't active), `NOT_ENOUGH_RIDERS`, `INVALID_STATUS_CHANGE`, `ROUTE_HAS_RIDERS` for forming → draft and delete; audit `route.status_changed`, `route.launched` (launch date, riders started, lapsed), `route.deleted`. One rule for launch counting and progress (`routes.repository._reserved_for`): reserved from the launch day or earlier and not ended before it; a reservation that ended before the launch day lapses (ends) at the launch. No migration.
-- For M3: reservations are expected to end (status `ended`) when a rider cancels before a launch; the lapse rule only covers one left `reserved` with an end date before the launch day.
+- Built: `PUT /v1/routes/{route_id}/status` (`routes_set_status`, staff; `RouteStatusSet`, `launch_date` a strict `"YYYY-MM-DD"`: `core/schedule.LocalDate`), `DELETE /v1/routes/{route_id}` (`routes_delete`, admins), `ROUTE_NOT_READY` (also a corporate route whose company isn't active), `NOT_ENOUGH_RIDERS`, `INVALID_STATUS_CHANGE`, `ROUTE_HAS_RIDERS` for forming → draft and delete (one rule: reserved or riding today or later); `launch_date` at most a year ahead (a bound on the input); audit `route.status_changed`, `route.launched` (launch date, riders started, lapsed), `route.deleted`. One rule for launch counting and progress (`routes.repository._reserved_for`): reserved from the launch day or earlier and not ended before it; a reservation that ended before the launch day lapses (ends) at the launch. No migration.
+- For M3: reservations are expected to end (status `ended`) when a rider cancels before a launch; the lapse rule only covers one left `reserved` with an end date before the launch day. Any change to an assignment (a cancellation, an end date), not only an insert, takes the route's lock first (`get_live_route(for_update=True)`): a launch counts reservations, then starts them, under that lock, and taking the assignment's row lock first would deadlock against it.
+- For the owner (GZ-024 report): a launch dated a later month makes the route `active` at once, with riders starting on the launch day. Should it stay `forming` until then instead?
 
 ### GZ-027 · Route requests (staff-recorded)
 Status: todo · Depends on: GZ-024
@@ -190,6 +191,7 @@ Status: todo · Depends on: GZ-024
 ### GZ-028 · Add a van
 Status: todo · Depends on: GZ-024
 - Copy a route: corridor, type, school or company, times, prices (unchanged: staff may copy, not change, them), areas served; new code, own seats and launch minimum, `copied_from_route_id`. An individual route's copy starts `forming` if the original meets the forming requirements, otherwise `draft`; a corporate copy starts `draft`. Idempotency-Key.
+- From GZ-024's review: a route may be deleted after being copied, so a copy's `copied_from_route_id` can name a deleted route (a 404 if followed); show it as such rather than failing.
 
 ---
 

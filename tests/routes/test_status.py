@@ -99,10 +99,13 @@ async def test_a_forming_route_goes_back_to_draft_while_nobody_is_reserved(
     empty = await add_route(db_session, status="forming", **PRICED)
     left = await add_route(db_session, status="forming", **PRICED)
     await add_seat(db_session, left, status=ENDED)  # someone who reserved, then cancelled
+    gone = await add_route(db_session, status="forming", **PRICED)
+    # Still marked reserved, but for October only: the same rule as a delete's lets it go.
+    await add_seat(db_session, gone, start_date=date(2026, 10, 1), end_date=date(2026, 10, 31))
     held = await add_route(db_session, status="forming", **PRICED)
     await add_seat(db_session, held, start_date=date(2027, 3, 1))  # even far ahead
     draft = {"status": "draft"}
-    for route in (empty, left):
+    for route in (empty, left, gone):
         response = await api.put(status_path(route), json=draft, headers=signed_in(member_id))
         assert response.json()["status"] == "draft"
     refused = await api.put(status_path(held), json=draft, headers=signed_in(member_id))
@@ -181,6 +184,8 @@ async def test_a_route_launches_today_on_the_1st(
     [
         ("2026-12-02", "not the 1st"),
         ("2026-11-01", "before today"),
+        ("2027-12-01", "more than a year ahead"),
+        ("9999-12-01", "a mistyped year"),
         ("2026-12", "not a date"),
         (None, "null"),
         ("left out", "missing"),
@@ -198,6 +203,27 @@ async def test_a_launch_date_is_a_coming_1st(
     response = await api.put(status_path(route), json=body, headers=signed_in(member_id))
     assert response.status_code == 422, why
     assert [e["field"] for e in response.json()["errors"]] == ["/launch_date"], why
+
+
+async def test_a_launch_may_be_a_year_ahead(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    member_id = (await add_staff(db_session)).id
+    route = await add_route(db_session, status="forming", launch_minimum=1, **PRICED)
+    await add_seat(db_session, route, start_date=DECEMBER)
+    response = await api.put(
+        status_path(route), json=_launch(date(2027, 11, 1)), headers=signed_in(member_id)
+    )
+    assert response.json()["status"] == "active"
+    assert [start for start, _, _ in await _seats(db_session, route)] == [date(2027, 11, 1)]
+
+
+async def test_a_bad_status_is_one_error(api: httpx.AsyncClient, db_session: AsyncSession) -> None:
+    member_id = (await add_staff(db_session)).id
+    route = await add_route(db_session, status="forming", **PRICED)
+    body = {"status": "closed", "launch_date": "2026-12-01"}
+    response = await api.put(status_path(route), json=body, headers=signed_in(member_id))
+    assert [e["field"] for e in response.json()["errors"]] == ["/status"]
 
 
 async def test_a_launch_date_is_only_for_a_launch(

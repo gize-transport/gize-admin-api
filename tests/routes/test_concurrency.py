@@ -268,18 +268,25 @@ async def _assignment_statuses(
 
 
 async def test_two_launches_at_once_launch_once(
-    committed_api: httpx.AsyncClient, committed_sessionmaker: async_sessionmaker[AsyncSession]
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
 ) -> None:
+    """Both wait on the route's lock, then run one after the other: the second finds the
+    route active and changes nothing."""
     member_id, route_id = await _forming_route(committed_sessionmaker, reserved=2)
     launch = {"status": "active", "launch_date": "2026-12-01"}
-    responses = await asyncio.gather(
-        *(
-            committed_api.put(
-                f"/v1/routes/{route_id}/status", json=launch, headers=signed_in(member_id)
+    async with _holding(database, "routes", route_id):
+        requests = [
+            asyncio.create_task(
+                committed_api.put(
+                    f"/v1/routes/{route_id}/status", json=launch, headers=signed_in(member_id)
+                )
             )
             for _ in range(2)
-        )
-    )
+        ]
+        await wait_for_lock_waiters(database, 2)
+    responses = await asyncio.gather(*requests)
     assert [r.status_code for r in responses] == [200, 200]
     assert await _assignment_statuses(committed_sessionmaker, route_id) == [
         (date(2026, 12, 1), "active"),
@@ -344,8 +351,8 @@ async def test_a_route_start_waiting_on_a_company_deactivation_is_refused(
     database: DatabaseUrls,
 ) -> None:
     """A corporate route starting while its company is being deactivated: one of the two
-    is refused, never both done (the other order: the first test of this file's GZ-021
-    company tests)."""
+    is refused, never both done. The other order, a deactivation waiting on a route that
+    starts: test_a_company_deactivation_waiting_on_a_route_launch_is_refused."""
     async with committed_sessionmaker() as session:
         member = await add_staff(session)
         async with session.begin():

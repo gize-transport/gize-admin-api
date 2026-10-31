@@ -1128,7 +1128,7 @@
       },
       "RouteStatusSet": {
         "additionalProperties": false,
-        "description": "The status to move the route to. Launching a forming route (`active`) needs a\n`launch_date`: the 1st of a month, not before today; no other move takes one.",
+        "description": "The status to move the route to. Launching a forming route (`active`) needs a\n`launch_date`: the 1st of a month, from today to a year ahead; no other move takes one.",
         "properties": {
           "launch_date": {
             "anyOf": [
@@ -5193,7 +5193,7 @@
     },
     "/v1/routes/{route_id}/status": {
       "put": {
-        "description": "Public and student routes: `draft` → `forming` → `active` ⇄ `paused`, and `forming`\n→ `draft`. Corporate routes: `draft` → `active` ⇄ `paused`. The status a route already\nhas changes nothing.\n\nLaunching (`forming` → `active`) takes `launch_date`, the 1st of a month not before\ntoday (a 422 on `launch_date` otherwise, or when another move sends one). Riders\nreserved for that month or earlier must reach the launch minimum; they all start that\nday, and later reservations from their own date.\n\n- 409 INVALID_STATUS_CHANGE: any other move.\n- 409 ROUTE_NOT_READY: forming without round-trip and one-way prices; a corporate\n  route starting while its company isn't active.\n- 409 NOT_ENOUGH_RIDERS: fewer riders reserved for the launch month than the minimum.\n- 409 ROUTE_HAS_RIDERS: back to draft while someone is reserved.",
+        "description": "Public and student routes: `draft` → `forming` → `active` ⇄ `paused`, and `forming`\n→ `draft`. Corporate routes: `draft` → `active` ⇄ `paused`. The status a route already\nhas changes nothing.\n\nLaunching (`forming` → `active`) takes `launch_date`, the 1st of a month from today to\na year ahead (a 422 on `launch_date` otherwise, or when another move sends one). Riders\nreserved for that month or earlier must reach the launch minimum; they all start that\nday, and later reservations from their own date.\n\n- 409 INVALID_STATUS_CHANGE: any other move.\n- 409 ROUTE_NOT_READY: forming without round-trip and one-way prices; a corporate\n  route starting while its company isn't active.\n- 409 NOT_ENOUGH_RIDERS: fewer riders reserved for the launch month than the minimum.\n- 409 ROUTE_HAS_RIDERS: back to draft while someone is reserved (today or later).",
         "operationId": "routes_set_status",
         "parameters": [
           {

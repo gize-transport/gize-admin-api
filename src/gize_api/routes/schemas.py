@@ -139,7 +139,7 @@ class RouteAreasSet(BaseModel):
 
 class RouteStatusSet(BaseModel):
     """The status to move the route to. Launching a forming route (`active`) needs a
-    `launch_date`: the 1st of a month, not before today; no other move takes one."""
+    `launch_date`: the 1st of a month, from today to a year ahead; no other move takes one."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -152,9 +152,9 @@ class RouteStatusSet(BaseModel):
     @field_validator("launch_date")
     @classmethod
     def _launches_on_the_1st(cls, value: date | None, info: ValidationInfo) -> date | None:
-        if value is None:
+        if value is None or "status" not in info.data:  # a bad status has its own error
             return value
-        if info.data.get("status") is not RouteStatus.ACTIVE:
+        if info.data["status"] is not RouteStatus.ACTIVE:
             raise ValueError("a launch date comes only with status active")
         if value.day != 1:
             raise ValueError("routes launch on the 1st of a month")
