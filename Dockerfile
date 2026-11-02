@@ -34,7 +34,9 @@ WORKDIR /app
 COPY alembic.ini ./
 COPY migrations ./migrations
 # Supabase's public root CA, for DATABASE_SSL_ROOT_CERT (ssl=verify-full); not a secret.
-COPY --chmod=0444 docker/certs/supabase-root-2021-ca.crt /app/certs/supabase-root-2021-ca.crt
+# Owned by root, so the app can read it but not change it. No --chmod: some builders
+# (Render's) apply it to the directory COPY creates as well, which the app then can't enter.
+COPY docker/certs/supabase-root-2021-ca.crt /app/certs/supabase-root-2021-ca.crt
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 USER 10001:10001
 EXPOSE 8000

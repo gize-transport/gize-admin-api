@@ -50,7 +50,10 @@ def test_the_ca_is_supabases_root_and_nothing_else() -> None:
 
 
 def test_the_image_carries_the_ca_where_staging_looks_for_it() -> None:
-    assert f"COPY --chmod=0444 {CA_PATH} {CA_IN_IMAGE}" in DOCKERFILE
+    # Plain COPY: owned by root and readable. `--chmod` on it once reached the directory on
+    # Render's builder and left the app unable to open the file.
+    assert f"\nCOPY {CA_PATH} {CA_IN_IMAGE}\n" in DOCKERFILE
+    assert f"test -r {CA_IN_IMAGE} && ! test -w {CA_IN_IMAGE}" in CI  # CI reads it as uid 10001
     assert _env_vars()["DATABASE_SSL_ROOT_CERT"] == f"value: {CA_IN_IMAGE}"
     assert f"DATABASE_SSL_ROOT_CERT: {CA_PATH}" in DEPLOY  # migrations verify it too
 
