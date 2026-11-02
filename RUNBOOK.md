@@ -48,7 +48,7 @@ Do the steps in order; each one assumes the ones before it.
    ```bash
    uv run --env-file .env.staging alembic upgrade head
    ```
-6. **Render:**
+6. **Render** (copy each secret with `grep '^NAME=' .env.staging | cut -d= -f2- | tr -d '\n' | pbcopy`, so nothing extra is pasted):
    - **New → Blueprint**, pick `gize-transport/gize-admin-api` and accept `render.yaml`.
    - When it asks, paste `DATABASE_URL` and `SUPABASE_SECRET_KEY` from `.env.staging`.
    - It creates `gize-api-staging` and `gize-redis-staging` and builds the first deploy.
