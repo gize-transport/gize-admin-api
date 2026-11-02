@@ -211,6 +211,12 @@ jobs:
         run: docker run --rm --entrypoint python gize-admin-api:ci -c "import gize_api.main"
       - name: Migrations ship in the image
         run: docker run --rm --entrypoint alembic gize-admin-api:ci heads
+      - name: The app user can read the database CA, and not change it
+        run: |
+          docker run --rm --entrypoint sh gize-admin-api:ci -c \
+            'test -r /app/certs/supabase-root-2021-ca.crt && ! test -w /app/certs/supabase-root-2021-ca.crt && ! test -w /app/certs'
+          docker run --rm --entrypoint python gize-admin-api:ci -c \
+            "from pathlib import Path; assert Path('/app/certs/supabase-root-2021-ca.crt').is_file()"
 
   contract:
     name: API contract (up to date, no breaking changes)
