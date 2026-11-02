@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gize_api.main import create_app
 from gize_api.staff.models import StaffRole
 from tests.staff.support import add_admin, add_staff, with_key
+from tests.staff.test_auth import UNGUARDED_ROUTES
 from tests.support import SettingsFactory
 
 Access = Literal["admin", "staff", "public"]
@@ -87,12 +88,30 @@ def _served(settings_factory: SettingsFactory) -> set[tuple[str, str]]:
     return {
         (method, context.path or repr(context.original_route))
         for context in iter_route_contexts(app.routes)
-        for method in (context.methods or {"*"}) - {"HEAD"}
+        for method in _methods(context.methods)
     }
+
+
+def _methods(methods: set[str] | None) -> set[str]:
+    """HEAD is listed only where it comes without a GET."""
+    if not methods:
+        return {"*"}
+    return methods - {"HEAD"} if "GET" in methods else methods
 
 
 def test_every_endpoint_has_its_access_written_down(make_settings: SettingsFactory) -> None:
     assert _served(make_settings) == set(ACCESS)
+
+
+def test_a_head_only_route_would_be_listed() -> None:
+    assert _methods({"HEAD"}) == {"HEAD"}
+    assert _methods({"GET", "HEAD"}) == {"GET"}
+
+
+def test_public_endpoints_are_the_ones_the_guard_test_allows() -> None:
+    """One list of public endpoints, kept in step with tests/staff/test_auth.py."""
+    public = {endpoint for endpoint, access in ACCESS.items() if access == PUBLIC}
+    assert public <= UNGUARDED_ROUTES
 
 
 def _concrete(path: str) -> str:
@@ -125,8 +144,7 @@ async def test_each_endpoint_lets_in_only_whom_it_should(
     gone = (await add_admin(db_session, is_active=False)).id
 
     if access == PUBLIC:
-        for caller in (None, member):
-            assert (await status(caller))[0] not in (401, 403), caller
+        assert (await status(None))[0] not in (401, 403)
         return
     assert await status(None) == (401, "UNAUTHENTICATED")
     for outsider in (uuid.uuid4(), gone):  # signed in, but not (or no longer) staff
@@ -135,5 +153,18 @@ async def test_each_endpoint_lets_in_only_whom_it_should(
     if access == ADMIN:
         assert member_status == (403, "FORBIDDEN")
     else:
-        assert member_status[0] not in (401, 403), member_status
-    assert (await status(admin))[0] not in (401, 403)
+        assert _let_in(method, path, member_status[0]), member_status
+    assert _let_in(method, path, (await status(admin))[0])
+
+
+# Let in, then failing for a reason of this test app's, not of access: no Supabase admin
+# client, so an invite can't be sent.
+UNAVAILABLE_HERE = {("POST", "/v1/staff")}
+
+
+def _let_in(method: str, path: str, status: int) -> bool:
+    """Past the access checks: an answer, or the endpoint's own refusal (a 404 for the
+    made-up ID, a 422 for the empty body), never a 401, a 403 or a server error."""
+    if (method, path) in UNAVAILABLE_HERE:
+        return status == 503
+    return status not in (401, 403) and status < 500
