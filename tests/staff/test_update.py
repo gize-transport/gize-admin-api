@@ -214,11 +214,24 @@ async def test_a_name_with_a_role_and_status_is_three_entries(
     body = {"full_name": "New Name", "role": "admin", "is_active": True}
     response = await api.patch(_member(member), json=body, headers=signed_in(admin.id))
     assert response.status_code == 200
-    assert sorted(action for action, _, _ in await _changes(db_session, member.id)) == [
-        "staff.reactivated",
-        "staff.renamed",
-        "staff.role_changed",
+    assert sorted(await _changes(db_session, member.id)) == [
+        ("staff.reactivated", {"is_active": False}, {"is_active": True}),
+        ("staff.renamed", {"full_name": REDACTED}, {"full_name": REDACTED}),
+        ("staff.role_changed", {"role": "staff"}, {"role": "admin"}),
     ]
+
+
+async def test_a_refused_change_leaves_the_name_too(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """One request, one transaction: the last admin stepping down is refused, and the name
+    sent with it isn't kept either."""
+    admin = await add_admin(db_session, full_name="Your Name")
+    body = {"full_name": "Getnet Endaylalu", "role": "staff"}
+    response = await api.patch(_member(admin), json=body, headers=signed_in(admin.id))
+    assert (response.status_code, response.json()["code"]) == (409, "LAST_ACTIVE_ADMIN")
+    assert (await _reread(db_session, admin.id)).full_name == "Your Name"
+    assert await _changes(db_session, admin.id) == []
 
 
 async def test_the_same_name_records_nothing_but_another_case_does(
