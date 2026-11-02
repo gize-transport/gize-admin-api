@@ -8,6 +8,8 @@ import hashlib
 import re
 from pathlib import Path
 
+from gize_api.core.config import database_ssl_mode, is_database_url
+
 ROOT = Path(__file__).resolve().parent.parent
 BLUEPRINT = (ROOT / "render.yaml").read_text()
 DEPLOY = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
@@ -101,6 +103,20 @@ def test_it_deploys_only_main_after_ci_passed_on_it() -> None:
     assert "ref: ${{ github.event.workflow_run.head_sha }}" in DEPLOY
 
 
+def test_it_deploys_only_mains_current_tip() -> None:
+    """CI runs finish in any order and can be re-run: an older commit must not replace a
+    newer one. Every step after the check depends on it."""
+    steps = DEPLOY.split("\n    steps:\n", 1)[1]
+    first, *later = re.split(r"\n      - ", "\n" + steps)[1:]
+    assert first.startswith("name: Check this commit is still main's tip")
+    assert 'repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha' in first
+    assert later
+    for step in later:
+        assert "if: steps.tip.outputs.current == 'true'" in step, step.splitlines()[0]
+    repository = "github.event.workflow_run.head_repository.full_name == github.repository"
+    assert repository in DEPLOY
+
+
 def test_it_migrates_before_it_deploys_one_at_a_time() -> None:
     migrate = DEPLOY.index("alembic upgrade head")
     deploy = DEPLOY.index("DEPLOY_HOOK_URL}&ref=${COMMIT}")
@@ -128,3 +144,26 @@ def test_actions_and_tools_match_ci() -> None:
         assert re.findall(pattern, DEPLOY, re.MULTILINE) == re.findall(pattern, CI, re.MULTILINE), (
             name
         )
+
+
+# The local staging file
+
+
+def test_the_staging_template_urls_are_ones_the_settings_accept() -> None:
+    template = (ROOT / ".env.staging.example").read_text()
+    urls = dict(re.findall(r"^([A-Z_]+_URL)=(postgresql://\S+)$", template, re.MULTILINE))
+    assert set(urls) == {"BOOTSTRAP_ADMIN_DATABASE_URL", "DATABASE_URL", "MIGRATOR_DATABASE_URL"}
+    for name, url in urls.items():
+        filled = re.sub(r"<[a-z-]+>", "Placeholder1", url)
+        assert is_database_url(filled), name
+        assert database_ssl_mode(filled) == "verify-full", name
+    assert f"DATABASE_SSL_ROOT_CERT={CA_PATH}" in template
+
+
+def test_the_filled_in_staging_file_is_never_committed() -> None:
+    ignored = (ROOT / ".gitignore").read_text().splitlines()
+    assert ".env.*" in ignored
+    assert [line for line in ignored if line.startswith("!.env")] == [
+        "!.env.example",
+        "!.env.staging.example",
+    ]

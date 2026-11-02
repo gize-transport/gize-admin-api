@@ -34,28 +34,51 @@ defaults:
 jobs:
   deploy:
     name: Migrate and deploy staging
-    # A push to main whose CI passed: never a pull request's run, never a failed one.
+    # A push to main in this repository whose CI passed: never a pull request's run (even
+    # from a fork's branch named main), never a failed one.
     if: >-
       github.event.workflow_run.conclusion == 'success'
       && github.event.workflow_run.event == 'push'
       && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # CI runs for different pushes finish in any order, and an old run can be re-run:
+      # deploy only main's current tip, so an older commit never replaces a newer one.
+      # The newer commit's own run deploys it.
+      - name: Check this commit is still main's tip
+        id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          tip="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [ "${tip}" = "${COMMIT}" ]; then
+            echo "current=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "current=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::${COMMIT} is no longer main's tip (${tip}): not deploying it."
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.tip.outputs.current == 'true'
         with:
           ref: ${{ github.event.workflow_run.head_sha }}  # the commit CI passed
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        if: steps.tip.outputs.current == 'true'
         with:
           python-version: ${{ env.UV_PYTHON }}
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        if: steps.tip.outputs.current == 'true'
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        if: steps.tip.outputs.current == 'true'
         run: uv sync --locked --no-dev
       - name: Check the deploy secrets are set
+        if: steps.tip.outputs.current == 'true'
         env:
           MIGRATOR_DATABASE_URL: ${{ secrets.STAGING_MIGRATOR_DATABASE_URL }}
           DEPLOY_HOOK_URL: ${{ secrets.RENDER_STAGING_DEPLOY_HOOK_URL }}
@@ -67,12 +90,14 @@ jobs:
             fi
           done
       - name: Migrate (alembic upgrade head, as gize_migrator)
+        if: steps.tip.outputs.current == 'true'
         env:
           APP_ENV: staging  # requires ssl=verify-full, against the image's Supabase CA
           MIGRATOR_DATABASE_URL: ${{ secrets.STAGING_MIGRATOR_DATABASE_URL }}
           DATABASE_SSL_ROOT_CERT: docker/certs/supabase-root-2021-ca.crt
         run: uv run --no-dev alembic upgrade head
       - name: Deploy this commit (Render deploy hook)
+        if: steps.tip.outputs.current == 'true'
         env:
           DEPLOY_HOOK_URL: ${{ secrets.RENDER_STAGING_DEPLOY_HOOK_URL }}
           COMMIT: ${{ github.event.workflow_run.head_sha }}

@@ -72,7 +72,7 @@ Merging to `main` deploys, with nothing to do by hand:
 3. It calls the deploy hook with that commit.
 4. Render builds the image and switches over once `/health/ready` passes. If the check fails, Render keeps the old version running.
 
-Deploys run one at a time, in merge order, and never cancel each other.
+Deploys run one at a time and never cancel each other. A run deploys its commit only while that commit is still the tip of `main`. CI runs can finish out of order, and an old run can be re-run, so an older commit never replaces a newer one: the newer commit's own run deploys it. A skipped run shows a notice saying so.
 
 Migrations are expand/contract (engineering standards), so the version still running works with the new schema. A migration that would break the running version is a bug in that migration, not a deploy problem.
 
@@ -105,13 +105,26 @@ After any leak, rotate first and investigate second. A leaked `SUPABASE_SECRET_K
 
 ## Backups and restoring
 
-Supabase's free plan takes **no automatic backups**, so staging data can't be restored. Before a risky migration on staging, take a copy from your machine with Postgres 17 client tools:
+Supabase's free plan takes **no automatic backups**, so staging data can't be restored unless you took a copy. Before a risky migration on staging, take one from your machine with Postgres 17 client tools.
+
+Run it as `gize_migrator`, which owns everything in `gize`. The bootstrap gives `postgres` no access to the schema, and `pg_dump` uses libpq's TLS options rather than the app's `?ssl=`. So build the URL from `MIGRATOR_DATABASE_URL` in `.env.staging`, replacing `?ssl=verify-full` with the libpq form:
 
 ```bash
-pg_dump --schema=gize --format=custom --file=staging-$(date +%F).dump "<the postgres session-pooler URL>"
+pg_dump --schema=gize --format=custom --file=staging-$(date +%F).dump \
+  "postgresql://gize_migrator.pahktmbnbyulqkhdruci:<password>@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=verify-full&sslrootcert=docker/certs/supabase-root-2021-ca.crt"
 ```
 
-To restore it into the `gize` schema, run `pg_restore --clean --if-exists --schema=gize --dbname="<URL>" <file>`, then re-run the bootstrap to reset the grants. For production, choose a paid plan with daily backups or point-in-time recovery before launch.
+**To restore,** stop deploys first: don't merge anything meanwhile. Then run, with the same URL:
+
+```bash
+pg_restore --clean --if-exists --single-transaction --dbname="<same URL>" staging-<date>.dump
+```
+
+The copy carries the tables' grants to `gize_app` and the Alembic version, so afterwards check two things:
+- `uv run --env-file .env.staging alembic current` names the migration the copy was taken at;
+- `/health/ready` answers.
+
+Practise this on your local database before you rely on it. For production, choose a paid plan with daily backups or point-in-time recovery before launch.
 
 ## What the signals mean
 
