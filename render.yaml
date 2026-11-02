@@ -1,0 +1,49 @@
+# Render Blueprint for staging (GZ-062): the API and its Redis, created once from the
+# dashboard (New → Blueprint) and kept in step with this file. Hosting config only: the
+# app reads plain environment variables and depends on nothing Render-specific.
+#
+# Free plan, so: no worker yet (it only purges idempotency keys until M3 sends SMS), no
+# pre-deploy step (migrations run in .github/workflows/deploy-staging.yml, which then calls
+# the deploy hook: Render never deploys on its own), and the API sleeps when idle.
+# Secrets are `sync: false`: Render asks for them once, in the dashboard; never here.
+# tests/test_deploy_config.py checks this file.
+projects:
+  - name: gize
+    environments:
+      - name: staging
+        services:
+          - type: web
+            name: gize-api-staging
+            runtime: docker
+            plan: free
+            region: frankfurt  # nearest to the Supabase project (eu-west-1, Ireland)
+            dockerfilePath: ./Dockerfile
+            dockerContext: .
+            healthCheckPath: /health/ready  # database and Redis, so a broken deploy stays out
+            autoDeployTrigger: "off"
+            envVars:
+              - key: APP_ENV
+                value: staging
+              - key: PORT  # where Render sends traffic: the image's uvicorn port
+                value: "8000"
+              - key: LOG_LEVEL
+                value: INFO
+              - key: SUPABASE_URL
+                value: https://pahktmbnbyulqkhdruci.supabase.co
+              - key: SUPABASE_SECRET_KEY
+                sync: false
+              - key: DATABASE_URL  # gize_app on the session pooler, ?ssl=verify-full
+                sync: false
+              - key: DATABASE_SSL_ROOT_CERT
+                value: /app/certs/supabase-root-2021-ca.crt
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: gize-redis-staging
+                  property: connectionString
+          - type: keyvalue
+            name: gize-redis-staging
+            plan: free
+            region: frankfurt
+            maxmemoryPolicy: noeviction  # never drop queued jobs or limits silently
+            ipAllowList: []  # Render's private network only

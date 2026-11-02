@@ -1,0 +1,82 @@
+# Deploys main to staging once CI has passed on it (GZ-062): migrations first, as
+# gize_migrator, then Render's deploy hook for that exact commit. Migrations are
+# expand/contract, so the version still running keeps working while they apply; Render
+# switches over only when the new version passes /health/ready, and keeps the old one if
+# it doesn't. Render never deploys on its own (render.yaml: autoDeployTrigger off).
+# Secrets: STAGING_MIGRATOR_DATABASE_URL, RENDER_STAGING_DEPLOY_HOOK_URL (RUNBOOK.md).
+# Third-party actions are pinned to commit SHAs, as in ci.yml.
+name: Deploy staging
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # One deploy at a time, in merge order; a newer one waits rather than cancelling a
+  # migration halfway.
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  # Keep in step with ci.yml (checked by tests/test_deploy_config.py).
+  UV_PYTHON: "3.12.16"
+  UV_VERSION: "0.11.30"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deploy:
+    name: Migrate and deploy staging
+    # A push to main whose CI passed: never a pull request's run, never a failed one.
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}  # the commit CI passed
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.UV_PYTHON }}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        run: uv sync --locked --no-dev
+      - name: Check the deploy secrets are set
+        env:
+          MIGRATOR_DATABASE_URL: ${{ secrets.STAGING_MIGRATOR_DATABASE_URL }}
+          DEPLOY_HOOK_URL: ${{ secrets.RENDER_STAGING_DEPLOY_HOOK_URL }}
+        run: |
+          for name in MIGRATOR_DATABASE_URL DEPLOY_HOOK_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is not set: see RUNBOOK.md, Staging secrets"
+              exit 1
+            fi
+          done
+      - name: Migrate (alembic upgrade head, as gize_migrator)
+        env:
+          APP_ENV: staging  # requires ssl=verify-full, against the image's Supabase CA
+          MIGRATOR_DATABASE_URL: ${{ secrets.STAGING_MIGRATOR_DATABASE_URL }}
+          DATABASE_SSL_ROOT_CERT: docker/certs/supabase-root-2021-ca.crt
+        run: uv run --no-dev alembic upgrade head
+      - name: Deploy this commit (Render deploy hook)
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.RENDER_STAGING_DEPLOY_HOOK_URL }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          curl --fail --silent --show-error --max-time 30 --output /dev/null \
+            --request POST "${DEPLOY_HOOK_URL}&ref=${COMMIT}"
+          echo "Deploy of ${COMMIT} started; Render switches over once /health/ready passes."

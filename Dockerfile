@@ -33,6 +33,8 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 COPY alembic.ini ./
 COPY migrations ./migrations
+# Supabase's public root CA, for DATABASE_SSL_ROOT_CERT (ssl=verify-full); not a secret.
+COPY --chmod=0444 docker/certs/supabase-root-2021-ca.crt /app/certs/supabase-root-2021-ca.crt
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 USER 10001:10001
 EXPOSE 8000
