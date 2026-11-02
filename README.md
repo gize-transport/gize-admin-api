@@ -457,6 +457,8 @@ There is no branch protection on our plan, so CLAUDE.md's merge rules are the pr
 
 **Coverage ratchet.** `.coverage-baseline` holds `main`'s total coverage. CI fails when coverage drops and also when it rises without the baseline being raised, so a later PR cannot quietly give the gain back. When coverage improves, run `uv run python -m scripts.check_coverage_baseline --update` and commit the file. Lowering it is a hand edit the PR must justify.
 
+**Deploying.** `.github/workflows/deploy-staging.yml` is not a PR check: after CI passes on `main`, it migrates the staging database and deploys that commit to Render (`render.yaml`). Setup, rollback, secrets and backups are in [RUNBOOK.md](RUNBOOK.md); `tests/test_deploy_config.py` guards both files.
+
 **If gitleaks finds a real secret** that already reached `main`: rotate the secret first (it is compromised whatever happens to the history), then add the finding's fingerprint (printed by gitleaks) to `.gitleaksignore` with a comment naming the rotation, in its own PR.
 
 ## API contract

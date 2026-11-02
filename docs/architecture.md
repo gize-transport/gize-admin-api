@@ -150,8 +150,8 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 | Environment | Database | Redis | Notes |
 | --- | --- | --- | --- |
 | Local | Postgres in Docker | Redis in Docker | Fake SMS sender, Sentry/OTel off |
-| Staging | Second free Supabase project | Managed or container Redis | Real integrations in test mode |
-| Production | Main Supabase project | Managed Redis | Host TBD |
+| Staging | Supabase project `pahktmbnbyulqkhdruci` (free; local development signs in through its Auth too) | Render Key Value (free) | Render free web service, Frankfurt (owner decision, GZ-062); `render.yaml`, RUNBOOK.md. Real integrations in test mode |
+| Production | Its own new Supabase project | Managed Redis | Host TBD (paid plan) |
 
 All configuration via environment variables loaded by `core/config.py`; app refuses to start if a required secret is missing. `.env.example` lists every variable with a dummy value. Connect through Supabase's session-mode connection pooler, port 5432 (the direct database host is IPv6-only); transaction mode is not supported. Production verifies the database certificate (`ssl=verify-full`, `DATABASE_SSL_ROOT_CERT`).
 
