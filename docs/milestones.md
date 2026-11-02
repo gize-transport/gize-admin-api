@@ -281,8 +281,10 @@ Status: todo · Depends on: GZ-052, GZ-021
 ## M6 – Release readiness
 
 ### GZ-060 · Authorization matrix test
-Status: todo · Depends on: M1–M5
+Status: done (first pass, brought forward before staging) · Depends on: M1–M5
 - One test enumerates every registered route and asserts: auth required unless on the explicit public list; staff vs admin permissions match `product-brief.md`.
+- Owner decision (2026-11-02): run it before the staging deploy (GZ-062), so nothing reaches the internet unchecked; M3–M5 endpoints are added to the matrix in their own PRs (the first test fails until they are).
+- Built: `tests/test_authorization.py`. `ACCESS` names every endpoint served outside local and staging with `admin`, `staff` or `public`; a test requires it to match the app exactly. Each endpoint is then called with no token (401 `UNAUTHENTICATED`), as a signed-in non-staff user and a deactivated admin (403 `FORBIDDEN`), as staff (403 on admin endpoints, never 401/403 otherwise) and as an admin. Mutation-checked: loosening a delete, tightening a status move and opening the audit log each fail it.
 
 ### GZ-061 · OpenAPI completeness pass
 Status: todo · Depends on: GZ-060
