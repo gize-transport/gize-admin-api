@@ -226,12 +226,12 @@ async def test_a_refused_change_leaves_the_name_too(
 ) -> None:
     """One request, one transaction: the last admin stepping down is refused, and the name
     sent with it isn't kept either."""
-    admin = await add_admin(db_session, full_name="Your Name")
+    admin_id = (await add_admin(db_session, full_name="Your Name")).id  # before the refusal
     body = {"full_name": "Getnet Endaylalu", "role": "staff"}
-    response = await api.patch(_member(admin), json=body, headers=signed_in(admin.id))
+    response = await api.patch(_member(admin_id), json=body, headers=signed_in(admin_id))
     assert (response.status_code, response.json()["code"]) == (409, "LAST_ACTIVE_ADMIN")
-    assert (await _reread(db_session, admin.id)).full_name == "Your Name"
-    assert await _changes(db_session, admin.id) == []
+    assert (await _reread(db_session, admin_id)).full_name == "Your Name"
+    assert await _changes(db_session, admin_id) == []
 
 
 async def test_the_same_name_records_nothing_but_another_case_does(
