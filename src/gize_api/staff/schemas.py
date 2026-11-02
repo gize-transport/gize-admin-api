@@ -84,7 +84,9 @@ class StaffInvite(BaseModel):
 
 class StaffUpdate(PartialUpdate):
     """What to change: leave a field out to keep it, and send at least one. Deactivating
-    someone locks them out on their next request; `is_active: true` reactivates them."""
+    someone locks them out on their next request; `is_active: true` reactivates them. A
+    name is trimmed, as in an invite. The email can't change: it is their sign-in."""
 
+    full_name: FullName | None = None
     role: StaffRole | None = None
     is_active: StrictBool | None = None

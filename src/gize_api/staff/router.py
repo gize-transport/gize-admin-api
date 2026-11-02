@@ -145,7 +145,7 @@ async def get_member(
 @router.patch(
     "/{staff_id}",
     operation_id="staff_update",
-    summary="Change a staff member's role or status (admins only)",
+    summary="Change a staff member's name, role or status (admins only)",
     responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.LAST_ACTIVE_ADMIN),
 )
 async def update(
@@ -155,8 +155,9 @@ async def update(
     caller: CurrentStaff = Depends(require_admin),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> StaffRead:
-    """Promote, demote, deactivate or reactivate. No Idempotency-Key: setting a value that
-    is already there changes nothing.
+    """Correct a name, promote, demote, deactivate or reactivate. The email can't change
+    (it is the person's sign-in). No Idempotency-Key: setting a value that is already there
+    changes nothing.
 
     - 409 LAST_ACTIVE_ADMIN: the change would leave no active admin.
     """

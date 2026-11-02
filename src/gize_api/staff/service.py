@@ -157,8 +157,9 @@ async def invite(
 async def update(
     session: AsyncSession, caller: CurrentStaff, staff_id: uuid.UUID, changes: StaffUpdate
 ) -> StaffRead:
-    """Change a member's role and/or status. Setting what is already there changes and
-    records nothing, so a retry is harmless."""
+    """Change a member's name, role and/or status. Setting what is already there changes
+    and records nothing, so a retry is harmless. A name isn't access: it is never a
+    security event, and the audit log keeps only that it changed."""
     async with session.begin():
         await lock_staff_changes(session)
         await _require_active_admin(session, caller)
@@ -177,11 +178,23 @@ async def update(
         ):
             raise AppError(ErrorCode.LAST_ACTIVE_ADMIN)
 
+        before_name = audit.snapshot(STAFF_AUDIT, staff)
+        if changes.full_name is not None:
+            staff.full_name = changes.full_name
         before = audit.snapshot(STAFF_AUDIT, staff)
         staff.role = role
         role_changed = audit.snapshot(STAFF_AUDIT, staff)
         staff.is_active = is_active
-        # Two entries when both change: each action says what happened.
+        # One entry per kind of change: each action says what happened.
+        audit.record(
+            session,
+            actor_id=caller.id,
+            action="staff.renamed",
+            entity=STAFF_AUDIT,
+            entity_id=staff.id,
+            before=before_name,
+            after=before,
+        )
         audit.record(
             session,
             actor_id=caller.id,
