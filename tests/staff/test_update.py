@@ -1,4 +1,6 @@
-"""GZ-013: PATCH /v1/staff/{staff_id}, an admin changes a role or deactivates someone.
+"""GZ-013: PATCH /v1/staff/{staff_id}, an admin changes a role or deactivates someone;
+GZ-069: or corrects their name (owner decision, 2026-11-02). Emails stay as they are: an
+email is the person's sign-in in Supabase.
 
 There is always at least one active admin: no change may remove the last one. Parallel
 requests are in test_concurrency.py.
@@ -12,10 +14,11 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gize_api.core.audit import REDACTED
 from gize_api.core.db import get_session
 from gize_api.main import GizeAPI
 from gize_api.staff import service
-from gize_api.staff.models import Staff, StaffRole
+from gize_api.staff.models import FULL_NAME_MAX_LENGTH, Staff, StaffRole
 from gize_api.staff.repository import get_staff
 from tests.staff.support import STAFF, add_admin, add_staff, audit_entries, signed_in
 
@@ -166,6 +169,104 @@ async def test_a_change_to_what_is_already_there_records_nothing(
     assert security_events == []
 
 
+# Names (GZ-069)
+
+
+async def test_an_admin_corrects_a_members_name(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    security_events: list[tuple[str, dict[str, Any]]],
+) -> None:
+    """Trimmed like an invite's; audited without the names (personal data, redacted)."""
+    admin = await add_admin(db_session)
+    member = await add_staff(db_session, full_name="Abebe Kebed")
+    response = await api.patch(
+        _member(member), json={"full_name": "  Abebe Kebede "}, headers=signed_in(admin.id)
+    )
+    assert response.status_code == 200
+    assert response.json()["full_name"] == "Abebe Kebede"
+    assert (await _reread(db_session, member.id)).full_name == "Abebe Kebede"
+    assert await _changes(db_session, member.id) == [
+        ("staff.renamed", {"full_name": REDACTED}, {"full_name": REDACTED})
+    ]
+    (entry,) = await audit_entries(db_session, member.id)
+    assert entry.actor_staff_id == admin.id
+    assert security_events == []  # not a security event, and names are never logged
+
+
+async def test_an_admin_corrects_their_own_name(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """The first admin's name comes from a command line, where a placeholder can slip in."""
+    admin = await add_admin(db_session, full_name="Your Name")
+    response = await api.patch(
+        _member(admin), json={"full_name": "Getnet Endaylalu"}, headers=signed_in(admin.id)
+    )
+    assert (response.status_code, response.json()["full_name"]) == (200, "Getnet Endaylalu")
+    assert (await _reread(db_session, admin.id)).role is StaffRole.ADMIN
+
+
+async def test_a_name_with_a_role_and_status_is_three_entries(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    admin = await add_admin(db_session)
+    member = await add_staff(db_session, is_active=False, full_name="Old Name")
+    body = {"full_name": "New Name", "role": "admin", "is_active": True}
+    response = await api.patch(_member(member), json=body, headers=signed_in(admin.id))
+    assert response.status_code == 200
+    assert sorted(action for action, _, _ in await _changes(db_session, member.id)) == [
+        "staff.reactivated",
+        "staff.renamed",
+        "staff.role_changed",
+    ]
+
+
+async def test_the_same_name_records_nothing_but_another_case_does(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    admin = await add_admin(db_session)
+    member = await add_staff(db_session, full_name="Abebe Kebede")
+    for name in ("Abebe Kebede", " Abebe Kebede"):
+        await api.patch(_member(member), json={"full_name": name}, headers=signed_in(admin.id))
+    assert await _changes(db_session, member.id) == []
+    await api.patch(
+        _member(member), json={"full_name": "ABEBE Kebede"}, headers=signed_in(admin.id)
+    )
+    assert [action for action, _, _ in await _changes(db_session, member.id)] == ["staff.renamed"]
+
+
+async def test_a_deactivated_member_and_the_last_admin_can_be_renamed(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """A name isn't access: LAST_ACTIVE_ADMIN never applies to it."""
+    admin = await add_admin(db_session)
+    gone = await add_staff(db_session, is_active=False)
+    for staff in (gone, admin):
+        response = await api.patch(
+            _member(staff), json={"full_name": "Corrected"}, headers=signed_in(admin.id)
+        )
+        assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", "   ", "x" * (FULL_NAME_MAX_LENGTH + 1), "Abebe\x00Kebede", "Abebe\nKebede", 42],
+    ids=["empty", "blank", "too long", "nul", "newline", "not text"],
+)
+async def test_an_invalid_name_is_refused_on_its_field(
+    api: httpx.AsyncClient, db_session: AsyncSession, name: object
+) -> None:
+    admin = await add_admin(db_session)
+    member = await add_staff(db_session)
+    response = await api.patch(
+        _member(member), json={"full_name": name}, headers=signed_in(admin.id)
+    )
+    assert response.status_code == 422
+    errors = response.json()["errors"]
+    assert [(error["location"], error["field"]) for error in errors] == [("body", "/full_name")]
+    assert await _changes(db_session, member.id) == []
+
+
 @pytest.mark.parametrize("body", [{"role": "staff"}, {"is_active": False}])
 async def test_the_last_active_admin_cannot_step_down(
     api: httpx.AsyncClient, db_session: AsyncSession, body: dict[str, object]
@@ -251,8 +352,8 @@ async def test_an_unknown_member_is_404(api: httpx.AsyncClient, db_session: Asyn
         {"is_active": "yes"},
         {"is_active": 0},
         {"role": "staff", "surprise": 1},
-        {"full_name": "New Name"},  # names and emails are not changed here
-        {"email": "new@example.com"},
+        {"email": "new@example.com"},  # the sign-in: never changed here
+        {"full_name": None},
         [],
     ],
 )

@@ -280,6 +280,11 @@ Status: todo · Depends on: GZ-052, GZ-021
 
 ## M6 – Release readiness
 
+### GZ-069 · Admins correct staff names
+Status: done · Depends on: GZ-013
+- Found setting up staging (2026-11-02): the first admin's name came from the command line as a placeholder ("Your Name"), and nothing could change it. Owner decision: admins may correct any staff member's name, their own included; emails stay fixed (the Supabase sign-in).
+- Built: `full_name` on `StaffUpdate` (`PATCH /v1/staff/{staff_id}`, admins), the same rules as an invite's name; audit `staff.renamed` (names redacted), one entry per kind of change; never a security event or a log line; `LAST_ACTIVE_ADMIN` never applies to a name. Contract: one optional request field (minor).
+
 ### GZ-060 · Authorization matrix test
 Status: done (first pass, brought forward before staging) · Depends on: M1–M5
 - One test enumerates every registered route and asserts: auth required unless on the explicit public list; staff vs admin permissions match `product-brief.md`.

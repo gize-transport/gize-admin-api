@@ -198,7 +198,7 @@ Admins manage staff under `/v1/staff` (GZ-013). Every route is for **active admi
 | `POST /v1/staff` (`staff_invite`) | Body `{email, full_name, role}`. Supabase emails them an invitation; they are active staff in that role at once and can sign in when they have accepted. `201` with `Location`. Requires `Idempotency-Key`; 20 invites an hour per admin (refusals and replays don't count). |
 | `GET /v1/staff` (`staff_list`) | Newest first, cursor-paginated, filtered by `role` and `is_active`. Deactivated members are listed; `first_signed_in_at` is null while an invitation is pending. |
 | `GET /v1/staff/{staff_id}` (`staff_get`) | One member, or `404`. |
-| `PATCH /v1/staff/{staff_id}` (`staff_update`) | Body `{role?, is_active?}`, at least one, never `null`. Promote, demote, deactivate (locks them out on their next request) or reactivate. No key needed: setting what is already there changes nothing. |
+| `PATCH /v1/staff/{staff_id}` (`staff_update`) | Body `{full_name?, role?, is_active?}`, at least one, never `null`. Correct a name (trimmed; audited as `staff.renamed` without the names), promote, demote, deactivate (locks them out on their next request) or reactivate. The email can't change: it is the person's sign-in. No key needed: setting what is already there changes nothing. |
 
 - **Emails** are stored trimmed and lower-case. An email already on staff, active or not, is `409 STAFF_EMAIL_TAKEN`: reactivate the person instead.
 - **Existing sign-in accounts:** an email that already has a confirmed Supabase account is `409 AUTH_ACCOUNT_EXISTS` (owner decision, GZ-013). Turning an existing account into staff is deliberate work for an operator, not a side effect of an invite.
