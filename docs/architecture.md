@@ -68,6 +68,7 @@ src/gize_api/
   health/router.py        # /health/live, /health/ready
   staff/  areas/  companies/  routes/  route_requests/  riders/  drivers/  verification/   # domain slices
   audit_log/              # GET /v1/audit-log (admins); the writer is core/audit.py
+  catalogue/              # /v1/public: areas and public routes for the rider app (reads only)
   integrations/sms.py     # SmsSender protocol + FakeSmsSender + real gateway adapter later
   sms/                    # send_once: de-duplicated, inline sending (free plan: no worker)
   integrations/supabase_auth.py  # Supabase Auth admin API (secret key; read users, invites later)
@@ -96,7 +97,7 @@ Dockerfile                # multi-stage, non-root user, healthcheck
            ...
    ```
    Re-read anything the decision depends on inside the service's own block: `current_staff` read the caller moments earlier, in a block that is already closed.
-5. Public endpoints (registration, route requests, phone verification) are unauthenticated, rate-limited per IP and per phone, and require a verified phone token from the OTP flow.
+5. Public endpoints (registration, route requests, phone verification) are unauthenticated, rate-limited per IP and per phone, and require a verified phone token from the OTP flow. The public catalogue (`/v1/public/*`, GZ-036) is the exception: reads only, nothing personal, limited per IP and failing open.
 
 Login rate limits for Supabase Auth are configured in the Supabase dashboard (Auth → Rate limits), not in this API.
 

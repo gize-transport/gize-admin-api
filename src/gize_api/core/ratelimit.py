@@ -99,6 +99,9 @@ SMS = Policy("sms", (Limit("10/hour", "ip"), Limit("3/hour", "phone")), fail_ope
 # Checking a code (GZ-031): five attempts per code already, and IDs are unguessable; this
 # bounds one caller trying many verifications.
 VERIFICATION_CHECK = Policy("verification_check", (Limit("30/hour", "ip"),), fail_open=False)
+# The rider app's catalogue (GZ-036): reads only, nothing personal, so it fails open;
+# browsing shouldn't stop with Redis.
+PUBLIC_READ = Policy("public_read", (Limit("60/minute", "ip"),), fail_open=True)
 
 
 @dataclass(frozen=True)

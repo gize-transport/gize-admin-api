@@ -132,6 +132,42 @@ def live_routes(
     return statement
 
 
+# Routes an individual rider can join or ask for (GZ-036, GZ-032): reserve on a forming
+# one, request a seat on a running one. Priced: forming needs prices, so all of these have.
+_OPEN_TO_RIDERS = (RouteStatus.FORMING, RouteStatus.ACTIVE, RouteStatus.PAUSED)
+
+
+def serves_trip(from_area_id: uuid.UUID, to_area_id: uuid.UUID) -> ColumnElement[bool]:
+    """The route takes a rider from `from_area_id` to `to_area_id`: boarding at A or an
+    area it serves, getting off at B (the morning run; the evening run is the way back)."""
+    ends_at_b = select(Corridor.id).where(Corridor.destination_area_id == to_area_id)
+    starts_at_a = select(Corridor.id).where(Corridor.origin_area_id == from_area_id)
+    boards_on_the_way = exists().where(
+        RouteArea.route_id == Route.id, RouteArea.area_id == from_area_id
+    )
+    return and_(
+        Route.corridor_id.in_(ends_at_b),
+        or_(Route.corridor_id.in_(starts_at_a), boards_on_the_way),
+    )
+
+
+def public_routes(*, from_area_id: uuid.UUID, to_area_id: uuid.UUID) -> Select[Route]:
+    """Live public routes riders can join or ask for, serving the trip, with their places,
+    unordered: `paginate` orders and bounds."""
+    return (
+        select(Route)
+        .options(*_WITH_PLACES)
+        .where(
+            Route.not_deleted(),
+            Route.route_type == RouteType.PUBLIC,
+            Route.status.in_(_OPEN_TO_RIDERS),
+            Route.price_round_trip.is_not(None),
+            Route.price_one_way.is_not(None),
+            serves_trip(from_area_id, to_area_id),
+        )
+    )
+
+
 async def seat_counts(
     session: AsyncSession, route_ids: list[uuid.UUID], today: date
 ) -> dict[uuid.UUID, SeatCounts]:

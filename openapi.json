@@ -865,6 +865,195 @@
         "title": "Problem",
         "type": "object"
       },
+      "PublicAreaPage": {
+        "description": "A page of areas (a named schema: generated clients keep the name).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AreaRef"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "PublicAreaPage",
+        "type": "object"
+      },
+      "PublicPrices": {
+        "additionalProperties": false,
+        "description": "Whole birr a month. Saturday: an add-on, when the route offers one.",
+        "properties": {
+          "one_way": {
+            "title": "One Way",
+            "type": "integer"
+          },
+          "round_trip": {
+            "title": "Round Trip",
+            "type": "integer"
+          },
+          "saturday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saturday"
+          }
+        },
+        "required": [
+          "round_trip",
+          "one_way",
+          "saturday"
+        ],
+        "title": "PublicPrices",
+        "type": "object"
+      },
+      "PublicRoute": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 20,
+            "title": "Code",
+            "type": "string"
+          },
+          "destination_area": {
+            "$ref": "#/components/schemas/AreaRef",
+            "description": "B: where the morning run ends."
+          },
+          "full": {
+            "description": "No free seat this month or next.",
+            "title": "Full",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "morning_arrival_time": {
+            "anyOf": [
+              {
+                "description": "Local Addis Ababa time, HH:MM.",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Arrives at B (null only on routes made before arrival times existed).",
+            "title": "Morning Arrival Time"
+          },
+          "morning_time": {
+            "description": "Leaves A.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "title": "Morning Time",
+            "type": "string"
+          },
+          "origin_area": {
+            "$ref": "#/components/schemas/AreaRef",
+            "description": "A: where the morning run starts."
+          },
+          "prices": {
+            "$ref": "#/components/schemas/PublicPrices"
+          },
+          "return_arrival_time": {
+            "anyOf": [
+              {
+                "description": "Local Addis Ababa time, HH:MM.",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Arrives at A (null only on routes made before arrival times existed).",
+            "title": "Return Arrival Time"
+          },
+          "return_time": {
+            "description": "Leaves B.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "title": "Return Time",
+            "type": "string"
+          },
+          "served_areas": {
+            "description": "Areas passed between A and B, in order.",
+            "items": {
+              "$ref": "#/components/schemas/AreaRef"
+            },
+            "title": "Served Areas",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RouteStatus",
+            "description": "`forming`: a sign-up reserves a seat until it launches (unless full). `active` or `paused`: a sign-up becomes a request for a seat."
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "origin_area",
+          "destination_area",
+          "served_areas",
+          "morning_time",
+          "morning_arrival_time",
+          "return_time",
+          "return_arrival_time",
+          "prices",
+          "status",
+          "full"
+        ],
+        "title": "PublicRoute",
+        "type": "object"
+      },
+      "PublicRoutePage": {
+        "description": "A page of public routes (a named schema: generated clients keep the name).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublicRoute"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "PublicRoutePage",
+        "type": "object"
+      },
       "RequestKind": {
         "enum": [
           "new_areas",
@@ -4954,6 +5143,244 @@
         "summary": "Change a corridor's areas",
         "tags": [
           "corridors"
+        ]
+      }
+    },
+    "/v1/public/areas": {
+      "get": {
+        "description": "Oldest first. `q` finds names starting with it, ignoring case. 60 reads a minute\nper caller, shared with `/v1/public/routes`.",
+        "operationId": "public_areas_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicAreaPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid Cursor, Validation Failed",
+            "x-error-codes": [
+              "INVALID_CURSOR",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          }
+        },
+        "summary": "Areas to choose from",
+        "tags": [
+          "public"
+        ]
+      }
+    },
+    "/v1/public/routes": {
+      "get": {
+        "description": "Public routes taking a rider from `from_area_id` (A, or an area the route serves) to\n`to_area_id` (B), oldest first: `forming` ones take reservations, `active` and `paused`\nones requests. Unknown areas list none. 60 reads a minute per caller, shared with\n`/v1/public/areas`.",
+        "operationId": "public_routes_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_area_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "From Area Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_area_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "To Area Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicRoutePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid Cursor, Validation Failed",
+            "x-error-codes": [
+              "INVALID_CURSOR",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          }
+        },
+        "summary": "Public routes for a trip",
+        "tags": [
+          "public"
         ]
       }
     },
