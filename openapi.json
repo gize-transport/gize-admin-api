@@ -671,6 +671,9 @@
           "ROUTE_REQUEST_EXISTS",
           "ROUTE_HAS_REQUESTS",
           "ROUTE_HAS_PRICES",
+          "SMS_UNAVAILABLE",
+          "VERIFICATION_CODE_INVALID",
+          "VERIFICATION_EXPIRED",
           "INTERNAL_ERROR",
           "SERVICE_UNAVAILABLE"
         ],
@@ -752,6 +755,28 @@
           "next_month"
         ],
         "title": "MonthSeats",
+        "type": "object"
+      },
+      "PhoneVerified": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "verified_phone_token": {
+            "description": "Present it when signing up, within 30 minutes; it works once.",
+            "maxLength": 2000,
+            "title": "Verified Phone Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verified_phone_token",
+          "expires_at"
+        ],
+        "title": "PhoneVerified",
         "type": "object"
       },
       "Prices": {
@@ -2313,6 +2338,69 @@
         ],
         "title": "ValidationReason",
         "type": "string"
+      },
+      "VerificationCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "The six digits from the SMS (ASCII digits only).",
+            "maxLength": 6,
+            "minLength": 6,
+            "pattern": "^[0-9]{6}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "verification_id": {
+            "format": "uuid",
+            "title": "Verification Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verification_id",
+          "code"
+        ],
+        "title": "VerificationCheck",
+        "type": "object"
+      },
+      "VerificationRequest": {
+        "additionalProperties": false,
+        "description": "The phone to verify, typed any usual way (`0911 23 45 67`); an Ethiopian mobile.",
+        "properties": {
+          "phone": {
+            "description": "An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…",
+            "maxLength": 20,
+            "title": "Phone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone"
+        ],
+        "title": "VerificationRequest",
+        "type": "object"
+      },
+      "VerificationSent": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "description": "The code works until then (10 minutes).",
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "verification_id": {
+            "format": "uuid",
+            "title": "Verification Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verification_id",
+          "expires_at"
+        ],
+        "title": "VerificationSent",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -8346,6 +8434,268 @@
         "summary": "Change a staff member's name, role or status (admins only)",
         "tags": [
           "staff"
+        ]
+      }
+    },
+    "/v1/verification/request": {
+      "post": {
+        "description": "Sends a six-digit code by SMS, valid 10 minutes, then answers with the verification\nto check it against. Requires `Idempotency-Key`: a retry with it never sends a second\nSMS, except after a 503 SMS_UNAVAILABLE (nothing went out; the retry tries again).\n\n- 429 RATE_LIMITED: 3 codes an hour per phone, 10 per caller.\n- 503 SMS_UNAVAILABLE: the SMS couldn't be sent (Retry-After).\n- 503 SERVICE_UNAVAILABLE: verification is switched off, or the limits can't be checked.",
+        "operationId": "verification_request",
+        "parameters": [
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerificationSent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Request In Progress",
+            "x-error-codes": [
+              "IDEMPOTENCY_IN_PROGRESS"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Idempotency Key Mismatch, Validation Failed",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "SMS Unavailable, Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE",
+              "SMS_UNAVAILABLE"
+            ]
+          }
+        },
+        "summary": "Send a code to a phone",
+        "tags": [
+          "verification"
+        ]
+      }
+    },
+    "/v1/verification/verify": {
+      "post": {
+        "description": "The right code answers a token proving the phone, valid 30 minutes and good for one\nsign-up.\n\n- 422 VERIFICATION_CODE_INVALID: wrong code (five tries per code).\n- 410 VERIFICATION_EXPIRED: expired, already used, out of tries, or unknown: ask for a\n  new code.\n- 429 RATE_LIMITED: 30 checks an hour per caller.",
+        "operationId": "verification_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerificationCheck"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhoneVerified"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "410": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Verification Expired",
+            "x-error-codes": [
+              "VERIFICATION_EXPIRED"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Validation Failed, Verification Code Invalid",
+            "x-error-codes": [
+              "VALIDATION_FAILED",
+              "VERIFICATION_CODE_INVALID"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "summary": "Check a code; get a verified-phone token",
+        "tags": [
+          "verification"
         ]
       }
     }

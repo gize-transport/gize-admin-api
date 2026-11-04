@@ -76,6 +76,9 @@ class ErrorCode(StrEnum):
     ROUTE_REQUEST_EXISTS = "ROUTE_REQUEST_EXISTS"
     ROUTE_HAS_REQUESTS = "ROUTE_HAS_REQUESTS"
     ROUTE_HAS_PRICES = "ROUTE_HAS_PRICES"
+    SMS_UNAVAILABLE = "SMS_UNAVAILABLE"
+    VERIFICATION_CODE_INVALID = "VERIFICATION_CODE_INVALID"
+    VERIFICATION_EXPIRED = "VERIFICATION_EXPIRED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -135,6 +138,9 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.ROUTE_REQUEST_EXISTS: ErrorSpec(409, "Route Request Exists"),
     ErrorCode.ROUTE_HAS_REQUESTS: ErrorSpec(409, "Route Has Requests"),
     ErrorCode.ROUTE_HAS_PRICES: ErrorSpec(409, "Route Has Prices"),
+    ErrorCode.SMS_UNAVAILABLE: ErrorSpec(503, "SMS Unavailable"),
+    ErrorCode.VERIFICATION_CODE_INVALID: ErrorSpec(422, "Verification Code Invalid"),
+    ErrorCode.VERIFICATION_EXPIRED: ErrorSpec(410, "Verification Expired"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

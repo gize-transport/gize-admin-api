@@ -254,6 +254,14 @@ async def record(
     session.sync_session.info.get(_PENDING, set()).discard((claimed.scope, claimed.key))
 
 
+async def release(session: AsyncSession, *, scope: str, key: IdempotencyKey) -> None:
+    """Forget a recorded key, so a retry with it runs again. For a request whose outside
+    call failed after its write committed (an SMS that didn't go out, GZ-031): the stored
+    response would otherwise replay a success that never happened."""
+    table = cast(Table, IdempotencyRecord.__table__)
+    await session.execute(delete(table).where(table.c.scope == scope, table.c.key == key))
+
+
 def replay_response(stored: StoredResponse) -> Response:
     headers = {**stored.headers, "Idempotent-Replayed": "true"}
     if stored.status == 204:

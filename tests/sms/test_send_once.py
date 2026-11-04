@@ -41,7 +41,7 @@ async def _send(
     telemetry: Telemetry | None = None,
 ) -> SmsDelivery:
     return await send_once(
-        sessions,  # type: ignore[arg-type]
+        sessions,
         sender,
         key=key,
         purpose=SmsPurpose.PHONE_VERIFICATION,

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # creates Auth users. Only the first-admin command (GZ-014) and staff invites (GZ-013)
     # use it; never sent to clients. The legacy service_role JWT is not accepted.
     supabase_secret_key: SecretStr | None = None
+    # Signs "verified phone" tokens and keys the stored code hashes (GZ-031): at least 32
+    # characters of randomness, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+    # Unset: phone verification answers 503 (nothing is sent).
+    verified_phone_token_key: SecretStr | None = Field(default=None, min_length=32)
     # CA certificate (PEM) that the database's certificate must chain to (ssl=verify-full);
     # Supabase's is downloaded from the project's database settings. Unset: system CAs.
     database_ssl_root_cert: FilePath | None = None

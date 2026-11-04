@@ -26,6 +26,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Ports nothing listens on: calls fail fast and nothing real is touched.
 UNREACHABLE_REDIS_URL = "redis://127.0.0.1:1/0"
+# Signs verified-phone tokens in tests (GZ-031): 32 bytes, as the setting requires.
+TEST_VERIFIED_PHONE_TOKEN_KEY = "test-verified-phone-key-0123456789abcdef"  # noqa: S105
 TEST_SUPABASE_URL = "https://abcdefghijklmnopqrst.supabase.co"
 UNREACHABLE_DATABASE_URL = "postgresql://gize_app:unused@127.0.0.1:1/gize?ssl=verify-full"
 
@@ -49,6 +51,7 @@ SETTINGS_ENV_VARS = (
     "CLIENT_IP_HEADER",
     "SUPABASE_URL",
     "SUPABASE_SECRET_KEY",
+    "VERIFIED_PHONE_TOKEN_KEY",
 )
 
 SettingsFactory = Callable[..., Settings]

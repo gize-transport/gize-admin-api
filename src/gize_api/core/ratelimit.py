@@ -96,6 +96,9 @@ PUBLIC_SIGNUP = Policy(
     "public_signup", (Limit("5/hour", "ip"), Limit("3/day", "phone")), fail_open=False
 )
 SMS = Policy("sms", (Limit("10/hour", "ip"), Limit("3/hour", "phone")), fail_open=False)
+# Checking a code (GZ-031): five attempts per code already, and IDs are unguessable; this
+# bounds one caller trying many verifications.
+VERIFICATION_CHECK = Policy("verification_check", (Limit("30/hour", "ip"),), fail_open=False)
 
 
 @dataclass(frozen=True)

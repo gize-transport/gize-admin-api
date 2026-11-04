@@ -51,6 +51,7 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `APP_ENV` | yes | `local`, `test`, `staging` or `production`. Docs (`/docs`, `/redoc`, `/openapi.json`) are served only in `local` and `staging`. |
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL (with `rediss`, the server's certificate and host name are checked). |
 | `SUPABASE_URL` | yes | The Supabase project URL, `https://<project-ref>.supabase.co` (Project Settings → API). Sign-in tokens are verified against its public signing keys and must name its Auth service as issuer. |
+| `VERIFIED_PHONE_TOKEN_KEY` | for phone verification (without it, `/v1/verification/*` answer `503`) | **Secret.** Signs verified-phone tokens and keys the stored code hashes (GZ-031); at least 32 characters of randomness, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Rotating it voids codes and tokens in flight (they last 10 and 30 minutes). |
 | `SUPABASE_SECRET_KEY` | for the first-admin command and staff invites (without it, invites answer `503`) | **Secret.** The project's secret API key, `sb_secret_...` (Project Settings → API Keys → Secret keys). It can read and create users: keep it in `.env` or the host's secret store, never in chat, code or the frontend. The legacy `service_role` JWT is refused. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, or Cloudflare's authenticated origin pulls): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. |
@@ -429,6 +430,23 @@ There's no provider yet. Code sends an SMS through `sms.service.send_once(sessio
   - **Locally:** a fake that prints each message to the API's terminal with the number masked, so you can read a sign-up code.
   - **In tests:** a fake that keeps the messages.
   - **On staging and production:** none yet, so every send fails as `unavailable` until a provider is configured.
+
+## Phone verification
+
+The public app's first step (GZ-031). Both endpoints are public, with no sign-in, and rate limited per caller. They fail closed with `503` when Redis is down, because each SMS costs money.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/verification/request` (`verification_request`) | Body `{phone}`, typed any usual way. Sends a 6-digit code by SMS, valid 10 minutes. Answers `201 {verification_id, expires_at}`. Requires `Idempotency-Key`: a retry never sends a second SMS, except after `503 SMS_UNAVAILABLE`, when nothing went out and the retry tries again. Limits: 3 an hour per phone, 10 per caller. |
+| `POST /v1/verification/verify` (`verification_verify`) | Body `{verification_id, code}`. The right code answers `200 {verified_phone_token, expires_at}`: a token proving the phone, valid 30 minutes, for one sign-up (GZ-032). A wrong code is `422 VERIFICATION_CODE_INVALID`, with five tries per code. Expired, used, out of tries or unknown are all `410 VERIFICATION_EXPIRED`, one answer so nothing tells a guesser which IDs exist. Limit: 30 an hour per caller. |
+
+**How it's stored:** codes only as an HMAC keyed by `VERIFIED_PHONE_TOKEN_KEY`; checking one locks its row, so parallel guesses can't exceed five.
+
+**Where you see the code:**
+- **Locally:** in the API's terminal (the fake SMS sender).
+- **On staging:** no SMS provider yet, so requests answer `503 SMS_UNAVAILABLE`.
+
+**Before public sign-up goes live:** the per-caller limits need a trustworthy client IP (`CLIENT_IP_HEADER`). Behind Render without one, every caller shares one address and one limit.
 
 ## Health checks
 
