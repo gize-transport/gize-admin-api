@@ -459,6 +459,21 @@ What the rider app reads before a sign-up (GZ-036). Public, with no sign-in. Bot
 
 `forming` routes take reservations. `active` and `paused` routes take requests for a seat (GZ-032). Student routes join with GZ-033.
 
+## Riders
+
+Staff manage riders (GZ-034); admins delete them. Phones never go in URLs.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/riders` (`riders_create`) | Record an adult who called in: name, phone, home and destination areas, plan, Saturday add-on. Requires `Idempotency-Key`. `409 RIDER_EXISTS` when a live adult has the phone. |
+| `GET /v1/riders` (`riders_list`) | Newest first, paginated. Filters: `q` (name starts with), `rider_type`, `seat` (`reserved`, `active` or `none`), `route_id`. Phones are masked (`+2519****4567`). |
+| `POST /v1/riders/lookup` (`riders_lookup`) | Body `{phone}`: the live riders with that phone. A POST so the number stays out of URLs and logs. |
+| `GET /v1/riders/{rider_id}` (`riders_get`) | One rider, phone in full, with the seat they hold (route, status, dates) and their open requests. |
+| `PATCH /v1/riders/{rider_id}` (`riders_update`) | Change any field. A rider holding a seat must still fit its route: boarding at A or an area it serves, going to B, Saturday only where the route offers it (`422` on the field). |
+| `DELETE /v1/riders/{rider_id}` (`riders_delete`) | Admins only, soft. `409 RIDER_HAS_SEAT` while they hold a seat: end it first (GZ-035). |
+
+Every change is in the audit log, with names and phones redacted.
+
 ## Adult sign-up
 
 The public app's sign-up (GZ-032). No sign-in: the phone verified with GZ-031 instead. Limits are 5 an hour per caller and 3 a day per phone, failing closed (`503`) without Redis.

@@ -23,6 +23,8 @@ from gize_api.areas.models import Area
 from gize_api.companies.models import Company
 from gize_api.core.models import Base
 from gize_api.corridors.models import Corridor
+from gize_api.riders.models import Rider, RiderPlan, RiderSource
+from gize_api.riders.models import RiderType as RiderKind
 from gize_api.route_requests.models import RequestKind, RiderType, RouteRequest
 from gize_api.routes.models import AssignmentStatus, Route, RouteAssignment, RouteType
 from gize_api.staff.models import Staff, StaffRole
@@ -142,3 +144,25 @@ class RouteRequestFactory(Factory[RouteRequest]):
             "contact_name": f"Contact {sequence}",
             "contact_phone": f"+2519{sequence:08d}",
         }
+
+
+class RiderFactory(Factory[Rider]):
+    """Adults recorded by staff, between two new areas unless `home_area_id` and
+    `destination_area_id` are given."""
+
+    model = Rider
+
+    def defaults(self, sequence: int) -> dict[str, object]:
+        return {
+            "rider_type": RiderKind.ADULT,
+            "full_name": f"Rider {sequence}",
+            "phone": f"+2519{sequence:08d}",
+            "plan": RiderPlan.ROUND_TRIP,
+            "source": RiderSource.STAFF,
+        }
+
+    async def create(self, session: AsyncSession, **overrides: object) -> Rider:
+        for end in ("home_area_id", "destination_area_id"):
+            if end not in overrides:
+                overrides[end] = (await AreaFactory().create(session)).id
+        return await super().create(session, **overrides)
