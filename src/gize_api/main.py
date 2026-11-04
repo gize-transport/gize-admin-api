@@ -36,10 +36,12 @@ from gize_api.core.telemetry import Telemetry, configure_telemetry
 from gize_api.corridors.router import router as corridor_routes
 from gize_api.health.readiness import Readiness
 from gize_api.health.router import router as health_router
+from gize_api.integrations.sms import sms_sender_for
 from gize_api.integrations.supabase_auth import SupabaseAuthAdmin
 from gize_api.route_requests.router import router as route_request_routes
 from gize_api.routes.router import router as route_routes
 from gize_api.staff.router import router as staff_routes
+from gize_api.verification.router import router as verification_routes
 
 MAX_BODY_BYTES = 1024 * 1024
 
@@ -137,6 +139,7 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     app.include_router(company_routes)
     app.include_router(route_routes)
     app.include_router(route_request_routes)
+    app.include_router(verification_routes)
     return app
 
 
@@ -163,6 +166,7 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             app.state.readiness = readiness
             app.state.rate_limiter = RateLimiter.for_settings(settings, telemetry=telemetry)
             app.state.token_verifier = TokenVerifier.for_settings(settings, telemetry=telemetry)
+            app.state.sms_sender = sms_sender_for(settings)  # GZ-030: a fake until a provider
             # Staff invites need SUPABASE_SECRET_KEY; without it they answer 503.
             app.state.auth_admin = (
                 None
@@ -186,6 +190,7 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             auth_admin: SupabaseAuthAdmin | None = app.state.auth_admin
             del app.state.redis, app.state.engine, app.state.sessionmaker, app.state.readiness
             del app.state.rate_limiter, app.state.token_verifier, app.state.auth_admin
+            del app.state.sms_sender
             try:
                 await rate_limiter.aclose()
             except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged

@@ -27,7 +27,8 @@ import dataclasses
 import ssl
 import traceback
 import weakref
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from types import FrameType
 from typing import Any, Literal
@@ -190,6 +191,18 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
     async with sessionmaker() as session:
         yield session
+
+
+def borrowed(session: AsyncSession) -> Callable[[], AbstractAsyncContextManager[AsyncSession]]:
+    """`session` where a session factory is expected, never closed by it: lets a service
+    that opens several transactions in turn (`sms.service.send_once`) run on a request's
+    session."""
+
+    @asynccontextmanager
+    async def lend() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    return lend
 
 
 def is_database_unavailable(exc: BaseException) -> bool:

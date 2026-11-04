@@ -27,12 +27,14 @@ import asyncio
 import re
 import time
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 
 import structlog
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.contact import MOBILE_E164_PATTERN
 from gize_api.core.db import OpenTransactionError, database_transaction_open
@@ -59,8 +61,11 @@ class SmsDelivery:
     first_attempt: bool
 
 
+Sessions = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+
+
 async def send_once(
-    sessions: async_sessionmaker[AsyncSession],
+    sessions: Sessions,  # a sessionmaker, or core.db.borrowed(request session)
     sender: SmsSender,
     *,
     key: str,
@@ -112,7 +117,7 @@ async def send_once(
 
 
 async def _fail(
-    sessions: async_sessionmaker[AsyncSession],
+    sessions: Sessions,
     telemetry: Telemetry | None,
     message_id: uuid.UUID,
     purpose: SmsPurpose,
@@ -132,7 +137,7 @@ def _measure(
 
 
 async def _settle(
-    sessions: async_sessionmaker[AsyncSession],
+    sessions: Sessions,
     message_id: uuid.UUID,
     status: SmsStatus,
     *,

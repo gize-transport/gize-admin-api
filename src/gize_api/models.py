@@ -13,6 +13,7 @@ from gize_api.route_requests import models as route_request_models  # gize.route
 from gize_api.routes import models as route_models  # gize.routes, gize.route_assignments
 from gize_api.sms import models as sms_models  # gize.sms_messages
 from gize_api.staff import models as staff_models  # gize.staff
+from gize_api.verification import models as verification_models  # gize.phone_verifications
 
 __all__ = [
     "Base",
@@ -25,4 +26,5 @@ __all__ = [
     "route_request_models",
     "sms_models",
     "staff_models",
+    "verification_models",
 ]

@@ -21,11 +21,13 @@ from gize_api.core.config import Settings
 from gize_api.core.db import GizeSession, create_engine, create_sessionmaker, get_session
 from gize_api.core.ratelimit import RateLimiter
 from gize_api.core.rls import row_level_security_statements
+from gize_api.integrations.sms import FakeSmsSender
 from gize_api.main import GizeAPI, create_app
 from tests.supabase import FakeSupabase
 from tests.support import (
     SETTINGS_ENV_VARS,
     TEST_SUPABASE_URL,
+    TEST_VERIFIED_PHONE_TOKEN_KEY,
     UNREACHABLE_DATABASE_URL,
     UNREACHABLE_REDIS_URL,
     DatabaseUrls,
@@ -70,6 +72,7 @@ def make_settings() -> SettingsFactory:
             "log_level": "INFO",
             # Production refuses to start without Sentry/OTLP; tests opt in explicitly.
             "observability_required": False,
+            "verified_phone_token_key": TEST_VERIFIED_PHONE_TOKEN_KEY,
         }
         values.update(overrides)
         return Settings(**values)
@@ -236,6 +239,7 @@ async def api_app(
     """
     app = app_with_db_session
     app.state.token_verifier = fake_verifier()
+    app.state.sms_sender = FakeSmsSender()  # read what was sent with the `sms` fixture
     app.state.rate_limiter = RateLimiter.for_settings(
         make_settings(redis_url=test_redis_url),
         telemetry=None,
@@ -245,6 +249,13 @@ async def api_app(
         yield app
     finally:
         await app.state.rate_limiter.aclose()
+
+
+@pytest.fixture
+def sms(api_app: GizeAPI) -> FakeSmsSender:
+    """The SMS `api` sent (GZ-030's fake): `sms.sent` lists (phone, text)."""
+    sender: FakeSmsSender = api_app.state.sms_sender
+    return sender
 
 
 @pytest.fixture
@@ -336,6 +347,7 @@ async def committed_api(
         key_prefix=f"gize-test-{uuid.uuid4()}",
     )
     app.state.auth_admin = fake_supabase.client(make_settings)
+    app.state.sms_sender = FakeSmsSender()
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:

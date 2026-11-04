@@ -279,17 +279,24 @@ def _calls(dependant: Dependant) -> Iterator[object]:
 # Everything else needs active staff and the STAFF limit. Each public route is listed in
 # its PR; methods are listed one by one, so a public POST does not exempt a later GET.
 UNGUARDED_ROUTES = frozenset(
-    (method, path)
-    for method in ("GET", "HEAD")
-    for path in (
-        "/health/live",
-        "/health/ready",
-        # Interactive docs: local and staging only (Settings.docs_enabled).
-        "/openapi.json",
-        "/docs",
-        "/docs/oauth2-redirect",
-        "/redoc",
-    )
+    {
+        *(
+            (method, path)
+            for method in ("GET", "HEAD")
+            for path in (
+                "/health/live",
+                "/health/ready",
+                # Interactive docs: local and staging only (Settings.docs_enabled).
+                "/openapi.json",
+                "/docs",
+                "/docs/oauth2-redirect",
+                "/redoc",
+            )
+        ),
+        # Phone verification (GZ-031): public, with limits of their own (failing closed).
+        ("POST", "/v1/verification/request"),
+        ("POST", "/v1/verification/verify"),
+    }
 )
 
 

@@ -557,3 +557,31 @@ def test_the_supabase_secret_key_must_be_a_secret_key(
         load_settings()
     secret = value.strip().removeprefix("sb_secret_")  # the hint names the prefix itself
     assert not secret or secret not in str(exc_info.value)
+
+
+# The verified-phone signing key (GZ-031)
+
+
+def test_the_verified_phone_key_is_optional(clean_env: pytest.MonkeyPatch) -> None:
+    """Unset: phone verification answers 503 instead of the API refusing to start."""
+    _set(clean_env)
+    assert load_settings().verified_phone_token_key is None
+
+
+def test_a_short_verified_phone_key_is_refused_without_echoing_it(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    _set(clean_env, VERIFIED_PHONE_TOKEN_KEY="too-short-s3cret")  # noqa: S106 - a test value
+    with pytest.raises(ConfigError) as exc_info:
+        load_settings()
+    assert "verified_phone_token_key" in str(exc_info.value)
+    assert "too-short-s3cret" not in str(exc_info.value)
+
+
+def test_a_long_enough_verified_phone_key_is_kept_secret(clean_env: pytest.MonkeyPatch) -> None:
+    key = "k" * 32
+    _set(clean_env, VERIFIED_PHONE_TOKEN_KEY=key)
+    settings = load_settings()
+    assert settings.verified_phone_token_key is not None
+    assert settings.verified_phone_token_key.get_secret_value() == key
+    assert key not in repr(settings)
