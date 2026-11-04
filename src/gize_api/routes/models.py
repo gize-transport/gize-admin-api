@@ -10,8 +10,8 @@ Its type is fixed at creation (owner decision):
 
 A `RouteAssignment` holds a seat on every day from `start_date` to `end_date` (open-ended
 while `end_date` is null), unless `ended`. Seats are counted per day, so company riders
-swapping mid-month take one seat. M3 adds the rider, plan and
-Saturday add-on. Assignments are never deleted: they end.
+swapping mid-month take one seat. The rider holding it (GZ-032) keeps their plan and
+Saturday add-on on their own row. Assignments are never deleted: they end.
 """
 
 import uuid
@@ -242,9 +242,20 @@ class RouteAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("status IN ('reserved', 'active', 'ended')", name="status"),
         CheckConstraint("end_date IS NULL OR end_date >= start_date", name="dates"),
         Index("ix_route_assignments_route_id_start_date", "route_id", "start_date"),
+        # A rider holds one seat at a time (GZ-032; GZ-035 moves riders by ending one).
+        Index(
+            "uq_route_assignments_rider_id_held",
+            "rider_id",
+            unique=True,
+            postgresql_where=text("status <> 'ended'"),
+        ),
     )
 
     route_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("gize.routes.id", ondelete="RESTRICT"))
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[AssignmentStatus] = mapped_column(_string_enum(AssignmentStatus))
+    # Who holds the seat (GZ-032); null only on seats made before riders existed.
+    rider_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("gize.riders.id", ondelete="RESTRICT")
+    )

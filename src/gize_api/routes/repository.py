@@ -152,6 +152,14 @@ def serves_trip(from_area_id: uuid.UUID, to_area_id: uuid.UUID) -> ColumnElement
     )
 
 
+async def serves(
+    session: AsyncSession, route_id: uuid.UUID, from_area_id: uuid.UUID, to_area_id: uuid.UUID
+) -> bool:
+    """The route takes a rider on this trip (`serves_trip`)."""
+    statement = select(Route.id).where(Route.id == route_id, serves_trip(from_area_id, to_area_id))
+    return await session.scalar(statement) is not None
+
+
 def public_routes(*, from_area_id: uuid.UUID, to_area_id: uuid.UUID) -> Select[Route]:
     """Live public routes riders can join or ask for, serving the trip, with their places,
     unordered: `paginate` orders and bounds."""

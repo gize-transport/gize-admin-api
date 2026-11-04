@@ -79,6 +79,9 @@ class ErrorCode(StrEnum):
     SMS_UNAVAILABLE = "SMS_UNAVAILABLE"
     VERIFICATION_CODE_INVALID = "VERIFICATION_CODE_INVALID"
     VERIFICATION_EXPIRED = "VERIFICATION_EXPIRED"
+    PHONE_NOT_VERIFIED = "PHONE_NOT_VERIFIED"
+    RIDER_EXISTS = "RIDER_EXISTS"
+    ROUTE_FULL = "ROUTE_FULL"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -141,6 +144,9 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.SMS_UNAVAILABLE: ErrorSpec(503, "SMS Unavailable"),
     ErrorCode.VERIFICATION_CODE_INVALID: ErrorSpec(422, "Verification Code Invalid"),
     ErrorCode.VERIFICATION_EXPIRED: ErrorSpec(410, "Verification Expired"),
+    ErrorCode.PHONE_NOT_VERIFIED: ErrorSpec(401, "Phone Not Verified"),
+    ErrorCode.RIDER_EXISTS: ErrorSpec(409, "Rider Exists"),
+    ErrorCode.ROUTE_FULL: ErrorSpec(409, "Route Full"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

@@ -29,6 +29,8 @@ from gize_api.route_requests.models import (
     OPEN_STATUSES,
     ROUTE_REQUEST_AUDIT,
     ROUTE_REQUEST_OPEN_UNIQUE,
+    RequestKind,
+    RequestSource,
     RequestStatus,
     RiderType,
     RouteRequest,
@@ -121,6 +123,40 @@ async def create(
         location = f"/v1/route-requests/{row.id}"
         await record(session, claimed, status=201, body=payload, headers={"Location": location})
     return JSONResponse(payload, status_code=201, headers={"Location": location})
+
+
+async def add_from_app(
+    session: AsyncSession,
+    *,
+    rider_id: uuid.UUID,
+    rider_name: str,
+    phone: str,
+    route: Route | None,
+    from_area_id: uuid.UUID,
+    to_area_id: uuid.UUID,
+) -> RouteRequest:
+    """An adult's request from the public app (GZ-032), in the caller's transaction: for
+    `route` (running and fitting the rider: the caller checks, under the route's lock), or,
+    without one, for the two areas. Not audited: the audit log records staff changes; the
+    row says `source = app`. 409 ROUTE_REQUEST_EXISTS for the same open request."""
+    kind = RequestKind.NEW_AREAS if route is None else RequestKind.ROUTE
+    row = RouteRequest(
+        kind=kind,
+        from_area_id=from_area_id if route is None else None,
+        to_area_id=to_area_id if route is None else None,
+        route_id=None if route is None else route.id,
+        rider_type=RiderType.ADULT,
+        rider_name=rider_name,
+        contact_name=rider_name,
+        contact_phone=phone,
+        source=RequestSource.APP,
+        rider_id=rider_id,
+    )
+    if await repository.open_request_exists(session, _asked(row), except_id=None):
+        raise AppError(ErrorCode.ROUTE_REQUEST_EXISTS)
+    session.add(row)
+    await _flush(session)
+    return row
 
 
 async def list_requests(session: AsyncSession, params: RouteRequestListParams) -> RouteRequestPage:

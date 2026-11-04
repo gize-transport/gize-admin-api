@@ -178,6 +178,7 @@ class RouteRequest(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         Index("ix_route_requests_matched_route_id", "matched_route_id"),
         Index("ix_route_requests_from_area_id", "from_area_id"),  # "area in use"
         Index("ix_route_requests_to_area_id", "to_area_id"),
+        Index("ix_route_requests_rider_id", "rider_id"),
     )
 
     kind: Mapped[RequestKind] = mapped_column(_string_enum(RequestKind))
@@ -193,6 +194,10 @@ class RouteRequest(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         ForeignKey("gize.routes.id", ondelete="RESTRICT")
     )
     rider_type: Mapped[RiderType] = mapped_column(_string_enum(RiderType))
+    # The rider who asked from the public app (GZ-032); none for staff-recorded requests.
+    rider_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("gize.riders.id", ondelete="RESTRICT")
+    )
     rider_name: Mapped[str] = mapped_column(String(SHORT_TEXT_MAX_LENGTH))
     school_name: Mapped[str | None] = mapped_column(String(SHORT_TEXT_MAX_LENGTH))
     preferred_morning_time: Mapped[time | None] = mapped_column(Time)

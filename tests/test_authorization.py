@@ -5,8 +5,8 @@ docs/product-brief.md ("Roles and permissions"):
 
 - admins only: prices, every delete, staff accounts and roles, the audit log;
 - active staff (staff or admin): everything else;
-- anyone: the health checks and the public app's phone verification and catalogue
-  (sign-up routes join this list in their own PRs).
+- anyone: the health checks and the public app's phone verification, catalogue and
+  sign-ups.
 
 Each endpoint is then called for real: with no token (401), as someone who isn't staff or
 is deactivated (403), as staff and as an admin. A new endpoint fails the first test until
@@ -41,6 +41,7 @@ ACCESS: dict[tuple[str, str], Access] = {
     ("POST", "/v1/verification/verify"): PUBLIC,
     ("GET", "/v1/public/areas"): PUBLIC,
     ("GET", "/v1/public/routes"): PUBLIC,
+    ("POST", "/v1/registrations/adult"): PUBLIC,
     # Staff accounts: admins, except who you are.
     ("GET", "/v1/staff/me"): STAFF,
     ("GET", "/v1/staff"): ADMIN,
