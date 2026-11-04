@@ -42,9 +42,10 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
   - Staff invites (each sends an email): 20/hour per admin, on top of the staff limit.
   - Public registration and route requests (one shared `PUBLIC_SIGNUP` budget): 5/hour per IP and 3/day per phone.
   - Phone verification SMS: 3/hour per phone and 10/hour per IP (each SMS costs money). Code entry: 5 attempts per code, then the code is invalidated.
+  - Public catalogue reads (`/v1/public/*`, GZ-036): 60/minute per IP.
   - Expensive endpoints (exports, bulk actions): per-endpoint limits stated in the ticket plan.
 - Return **429** with `Retry-After` and a problem+json body.
-- **If Redis is unavailable:** staff endpoints fail **open** (allow, log a warning, raise an alert); OTP, SMS and public registration endpoints fail **closed** (503).
+- **If Redis is unavailable:** staff endpoints and the public catalogue (reads only, nothing personal) fail **open** (allow, log a warning, raise an alert); OTP, SMS and public registration endpoints fail **closed** (503).
 - Staff login limits are configured in Supabase Auth settings (documented in the README setup steps).
 
 ## Observability
