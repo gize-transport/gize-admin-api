@@ -455,7 +455,7 @@ What the rider app reads before a sign-up (GZ-036). Public, with no sign-in. Bot
 | Endpoint | What it does |
 | --- | --- |
 | `GET /v1/public/areas` (`public_areas_list`) | Live areas, `{id, name}`, oldest first. `q` finds names starting with it, ignoring case. Paginated. |
-| `GET /v1/public/routes?from_area_id=&to_area_id=` (`public_routes_list`) | Public routes a rider could take: boarding at A or an area the route serves, getting off at B. Only `forming`, `active` and `paused` routes with prices. Each has its code, A and B, areas served, the four times, prices, status and `full` (no free seat this month or next). No seat counts or launch progress: those are for staff. Paginated, oldest first. |
+| `GET /v1/public/routes?from_area_id=&to_area_id=` (`public_routes_list`) | Public routes a rider could take: boarding at A or an area the route serves, getting off at B. Only `forming`, `active` and `paused` routes with prices. Each has its code, A and B, areas served, the four times, prices, status and `full` (no free seat from the next 1st, the earliest a new rider could start). No seat counts or launch progress: those are for staff. Paginated, oldest first. |
 
 `forming` routes take reservations. `active` and `paused` routes take requests for a seat (GZ-032). Student routes join with GZ-033.
 

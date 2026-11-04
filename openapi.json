@@ -939,7 +939,7 @@
             "description": "B: where the morning run ends."
           },
           "full": {
-            "description": "No free seat this month or next.",
+            "description": "No free seat from the next 1st (today, on the 1st): the earliest a new rider could start. On a running route, a seat freed later goes to the oldest request.",
             "title": "Full",
             "type": "boolean"
           },

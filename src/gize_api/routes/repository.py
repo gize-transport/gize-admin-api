@@ -36,14 +36,15 @@ from gize_api.routes.models import (
 )
 
 # The corridor (with both areas) and company in the same query; inner joins where required.
-_WITH_PLACES = (
+# Public routes (GZ-036) have no company: they leave it out.
+_WITH_PUBLIC_PLACES = (
     joinedload(Route.corridor, innerjoin=True).joinedload(Corridor.origin_area, innerjoin=True),
     joinedload(Route.corridor, innerjoin=True).joinedload(
         Corridor.destination_area, innerjoin=True
     ),
-    joinedload(Route.company),
     selectinload(Route.route_areas).joinedload(RouteArea.area, innerjoin=True),
 )
+_WITH_PLACES = (*_WITH_PUBLIC_PLACES, joinedload(Route.company))
 _HOLDS_A_SEAT = RouteAssignment.status != AssignmentStatus.ENDED
 _RESERVED = RouteAssignment.status == AssignmentStatus.RESERVED
 
@@ -156,7 +157,7 @@ def public_routes(*, from_area_id: uuid.UUID, to_area_id: uuid.UUID) -> Select[R
     unordered: `paginate` orders and bounds."""
     return (
         select(Route)
-        .options(*_WITH_PLACES)
+        .options(*_WITH_PUBLIC_PLACES)
         .where(
             Route.not_deleted(),
             Route.route_type == RouteType.PUBLIC,

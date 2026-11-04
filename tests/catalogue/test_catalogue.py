@@ -17,6 +17,7 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gize_api.core import schedule
 from gize_api.core.db import get_session
 from gize_api.main import GizeAPI
 from gize_api.routes.models import AssignmentStatus, RouteArea, RouteStatus, RouteType
@@ -239,28 +240,47 @@ async def test_only_routes_a_rider_can_join_or_ask_for_are_listed(
     assert await _codes(api, trip.bole, trip.mexico) == ["PUB-FORMING", "PUB-ACTIVE", "PUB-PAUSED"]
 
 
-async def test_a_route_is_full_without_a_free_seat_this_month_or_next(
+async def test_a_route_is_full_without_a_free_seat_from_the_next_1st(
     api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip
 ) -> None:
-    """A flag, not counts: how many have signed up is for staff."""
+    """A flag, not counts (how many have signed up is for staff), judged for the earliest
+    day a new rider could start: individual riders start on the 1st."""
     full = await _route(db_session, trip, code="FULL", seats=2, launch_minimum=2)
     await _seats(db_session, full, 2)
     one_left = await _route(db_session, trip, code="ONE-LEFT", seats=2, launch_minimum=2)
     await _seats(db_session, one_left, 1)
-    running = await _route(
-        db_session, trip, code="RUNNING", seats=1, launch_minimum=1, status=RouteStatus.ACTIVE
-    )
-    async with db_session.begin():
-        await RouteAssignmentFactory().create(
-            db_session,
-            route_id=running,
-            start_date=date(2026, 11, 1),
-            end_date=date(2026, 11, 30),  # leaves at the month's end: free next month
-            status=AssignmentStatus.ACTIVE,
+    for code, end_date in (("STAYS", None), ("LEAVES", date(2026, 11, 30))):
+        running = await _route(
+            db_session, trip, code=code, seats=1, launch_minimum=1, status=RouteStatus.ACTIVE
         )
+        async with db_session.begin():
+            await RouteAssignmentFactory().create(
+                db_session,
+                route_id=running,
+                start_date=date(2026, 11, 1),
+                end_date=end_date,
+                status=AssignmentStatus.ACTIVE,
+            )
     response = await api.get(ROUTES, params=_between(trip.bole, trip.mexico))
     flags = {route["code"]: route["full"] for route in response.json()["items"]}
-    assert flags == {"FULL": True, "ONE-LEFT": False, "RUNNING": True}
+    # Leaving at the month's end: full today, a free seat from 1 December.
+    assert flags == {"FULL": True, "ONE-LEFT": False, "STAYS": True, "LEAVES": False}
+
+
+async def test_on_the_1st_a_route_is_judged_from_that_day(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    trip: Trip,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(schedule, "addis_today", lambda: date(2026, 12, 1))
+    route = await _route(db_session, trip, code="FULL", seats=1, launch_minimum=1)
+    async with db_session.begin():
+        await RouteAssignmentFactory().create(  # 1 December only: free from the 2nd
+            db_session, route_id=route, end_date=date(2026, 12, 1)
+        )
+    response = await api.get(ROUTES, params=_between(trip.bole, trip.mexico))
+    assert [route["full"] for route in response.json()["items"]] == [True]
 
 
 async def test_routes_come_in_pages(
@@ -318,7 +338,7 @@ async def test_no_sign_in_is_needed_and_staff_see_the_same(
 
 
 async def test_sixty_reads_a_minute_per_caller_across_both(
-    api: httpx.AsyncClient, trip: Trip
+    api: httpx.AsyncClient, api_app: GizeAPI, trip: Trip
 ) -> None:
     for n in range(60):
         path, params = (AREAS, {}) if n % 2 else (ROUTES, _between(trip.bole, trip.mexico))
@@ -326,6 +346,9 @@ async def test_sixty_reads_a_minute_per_caller_across_both(
     response = await api.get(AREAS)
     assert (response.status_code, response.json()["code"]) == (429, "RATE_LIMITED")
     assert "Retry-After" in response.headers
+    transport = httpx.ASGITransport(app=api_app, client=("192.0.2.7", 50000))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as other:
+        assert (await other.get(AREAS)).status_code == 200  # another caller, its own budget
 
 
 @pytest.mark.parametrize("path", [AREAS, ROUTES])

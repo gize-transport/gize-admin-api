@@ -229,9 +229,11 @@ Status: done · Depends on: GZ-009, GZ-030
 - For GZ-032: a sign-up reads the token (`read_verified_phone_token`) and spends it once, by its verification (add `consumed_at`). Before public sign-up goes live: `CLIENT_IP_HEADER` on Render (shared IP otherwise), an SMS provider, CORS for the rider app, and purging old verification rows.
 
 ### GZ-036 · Public catalogue for the rider app
-Status: in progress · Depends on: GZ-023, GZ-024
+Status: done · Depends on: GZ-023, GZ-024
 - Found while planning GZ-032 (owner decision, 2026-11-04): the rider app can't choose areas or a route without public reads, and no ticket had them. Comes before GZ-032.
-- `GET /v1/public/areas` (live areas, `id` and `name`; `q` finds names starting with it) and `GET /v1/public/routes?from_area_id=&to_area_id=` (both required, different): `public` routes that are `forming`, `active` or `paused`, have both prices, and serve the trip (boarding at A or an area served, getting off at B). Each with its code, A and B, areas served, the four times, prices, status and `full` (no free seat this month or next), never seat counts, launch progress or anything staff-only. Paginated. Public, `PUBLIC_READ` limit (60/minute per caller; fails open: read-only and cheap). Student routes join in GZ-033 (by school).
+- `GET /v1/public/areas` (live areas, `id` and `name`; `q` finds names starting with it) and `GET /v1/public/routes?from_area_id=&to_area_id=` (both required, different): `public` routes that are `forming`, `active` or `paused`, have both prices, and serve the trip (boarding at A or an area served, getting off at B). Each with its code, A and B, areas served, the four times, prices, status and `full` (no free seat from the next 1st, the earliest a new rider starts), never seat counts, launch progress or anything staff-only. Paginated. Public, `PUBLIC_READ` limit (60/minute per caller; fails open: read-only and cheap). Student routes join in GZ-033 (by school).
+- Built: `catalogue/` (`public_areas_list`, `public_routes_list`), `routes.repository.serves_trip` (GZ-032 reuses it) and `public_routes`, `ratelimit.PUBLIC_READ`; listed in both guard tests. No migration.
+- From review: `full` is judged from the next 1st (today on the 1st), the earliest a new rider starts, not "this month or next"; the limit is shown to be per caller. Before launch: mobile carriers put many phones behind one address, so watch the rate of 429s on these reads once `CLIENT_IP_HEADER` is set.
 
 ### GZ-032 · Public registration – adult rider
 Status: todo · Depends on: GZ-031, GZ-024, GZ-027

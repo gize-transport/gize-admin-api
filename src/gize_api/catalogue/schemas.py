@@ -67,7 +67,10 @@ class PublicRoute(BaseModel):
         description="`forming`: a sign-up reserves a seat until it launches (unless full). "
         "`active` or `paused`: a sign-up becomes a request for a seat."
     )
-    full: bool = Field(description="No free seat this month or next.")
+    full: bool = Field(
+        description="No free seat from the next 1st (today, on the 1st): the earliest a new "
+        "rider could start. On a running route, a seat freed later goes to the oldest request."
+    )
 
 
 class PublicRoutePage(Page[PublicRoute]):

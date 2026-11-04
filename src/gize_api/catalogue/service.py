@@ -1,5 +1,7 @@
 """The public catalogue (GZ-036): reads only."""
 
+from datetime import date
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.areas import repository as areas
@@ -33,7 +35,7 @@ async def list_areas(session: AsyncSession, params: PublicAreaListParams) -> Pub
 
 
 async def list_routes(session: AsyncSession, params: PublicRouteListParams) -> PublicRoutePage:
-    """Oldest first, with places and whether they're full (three queries per page)."""
+    """Oldest first, with places and whether they're full (four queries per page)."""
     async with session.begin():
         page = await paginate(
             session,
@@ -42,16 +44,15 @@ async def list_routes(session: AsyncSession, params: PublicRouteListParams) -> P
             created_at=Route.created_at,
             id=Route.id,
         )
-        counts = await routes.seat_counts(
-            session, [route.id for route in page.items], schedule.addis_today()
-        )
+        today = schedule.addis_today()
+        counts = await routes.seat_counts(session, [route.id for route in page.items], today)
         return PublicRoutePage(
-            items=[_read(route, counts[route.id]) for route in page.items],
+            items=[_read(route, counts[route.id], today) for route in page.items],
             next_cursor=page.next_cursor,
         )
 
 
-def _read(row: Route, counts: SeatCounts) -> PublicRoute:
+def _read(row: Route, counts: SeatCounts, today: date) -> PublicRoute:
     return PublicRoute(
         id=row.id,
         code=row.code,
@@ -71,5 +72,7 @@ def _read(row: Route, counts: SeatCounts) -> PublicRoute:
             }
         ),
         status=row.status,
-        full=max(counts.this_month, counts.next_month) >= row.seats,
+        # Judged from the next 1st, the earliest a new rider starts: today's month on the
+        # 1st, else next month's busiest day.
+        full=(counts.this_month if today.day == 1 else counts.next_month) >= row.seats,
     )
