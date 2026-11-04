@@ -419,6 +419,17 @@ On the developer's machine, after the first-time setup, first admin and sample d
 
 A signed-in user who isn't staff gets `403`. Admins add more staff with `POST /v1/staff`.
 
+## SMS
+
+There's no provider yet. Code sends an SMS through `sms.service.send_once(sessions, sender, key=…, purpose=…, to=…, text=…)`, with no transaction open:
+- **One SMS per event.** `key` names the event (for example `otp:<verification id>`). A second call with the same key sends nothing and returns the first call's outcome.
+- **No automatic retry.** A failure is recorded as `failed` (`unavailable`, `rejected`, `timeout`, or `error` for anything unexpected) and returned. The person asks again, which is a new event.
+- **Where it's recorded:** `gize.sms_messages` holds the key, purpose, phone and outcome, never the text.
+- **Which sender:**
+  - **Locally:** a fake that prints each message to the API's terminal with the number masked, so you can read a sign-up code.
+  - **In tests:** a fake that keeps the messages.
+  - **On staging and production:** none yet, so every send fails as `unavailable` until a provider is configured.
+
 ## Health checks
 
 For the load balancer or orchestrator, without auth, never cached, not in the API schema:
