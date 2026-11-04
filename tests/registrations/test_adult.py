@@ -24,7 +24,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gize_api.areas.models import Area
 from gize_api.core import schedule
 from gize_api.core.db import get_session
+from gize_api.core.ratelimit import Policy, RateLimiter
 from gize_api.main import GizeAPI
+from gize_api.registrations import service
 from gize_api.riders.models import Rider, RiderPlan, RiderSource, RiderType
 from gize_api.route_requests.models import RequestKind, RequestSource, RouteRequest
 from gize_api.route_requests.models import RiderType as RequestRiderType
@@ -236,23 +238,45 @@ async def test_without_a_route_the_two_areas_are_asked_for(
     )
 
 
-async def test_a_request_staff_already_recorded_is_409(
+async def test_a_request_staff_recorded_is_linked_to_the_rider(
     api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip
 ) -> None:
-    """The same person already asked by phone for these areas: one open request."""
+    """The same person asked by phone first: their request keeps its place in the queue."""
     async with db_session.begin():
-        await RouteRequestFactory().create(
+        recorded = await RouteRequestFactory().create(
             db_session,
             from_area_id=trip.bole,
             from_area_name=None,
-            to_area_id=trip.mexico,
+            to_area_id=trip.summit,
             to_area_name=None,
             rider_name="Abebe Kebede",
             contact_phone=PHONE,
         )
+    response = await api.post(
+        ADULT,
+        json=body(await verified(db_session), trip, destination_area_id=str(trip.summit)),
+        headers=key(),
+    )
+    assert response.status_code == 201, response.json()
+    assert response.json()["route_request_id"] == str(recorded.id)
+    (request,) = await _all(db_session, RouteRequest)
+    assert (request.rider_id, request.source) == (
+        uuid.UUID(response.json()["rider_id"]),
+        RequestSource.STAFF,
+    )
+
+
+@pytest.mark.parametrize("status", [RouteStatus.FORMING, RouteStatus.ACTIVE])
+async def test_without_a_route_while_one_would_take_them_is_422(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, status: RouteStatus
+) -> None:
+    """A forming route with a seat, or a running one to ask for: they choose it, so the
+    demand for these areas isn't counted as a route nobody runs."""
+    await add_route(db_session, trip, status=status)
     response = await api.post(ADULT, json=body(await verified(db_session), trip), headers=key())
-    assert (response.status_code, response.json()["code"]) == (409, "ROUTE_REQUEST_EXISTS")
-    assert await _all(db_session, Rider) == []
+    assert (response.status_code, response.json()["code"]) == (422, "VALIDATION_FAILED")
+    assert [error["field"] for error in response.json()["errors"]] == ["/route_id"]
+    await _nothing_made(db_session)
 
 
 # One rider per phone; the token
@@ -301,6 +325,25 @@ async def test_the_token_is_spent_by_the_sign_up(
     assert verification.consumed_at is not None
     again = await api.post(ADULT, json=body(token, trip), headers=key())  # a new key
     assert (again.status_code, again.json()["code"]) == (401, "PHONE_NOT_VERIFIED")
+
+
+async def test_retries_replay_uncounted_even_after_the_token_expires(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    trip: Trip,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost answer retried later (the app came back online) gets the answer, without
+    using up the phone's three sign-ups a day (the caller's five an hour still count it)."""
+    request, headers = body(await verified(db_session), trip), key()
+    first = await api.post(ADULT, json=request, headers=headers)
+    assert first.status_code == 201
+    monkeypatch.setattr(service, "_now", lambda: datetime(2030, 1, 1, tzinfo=UTC))
+    for _ in range(3):  # with the first, four: one more than the phone's three
+        again = await api.post(ADULT, json=request, headers=headers)
+        assert (again.status_code, again.json()) == (201, first.json())
+    fresh = await api.post(ADULT, json=request, headers=key())  # not a retry: expired
+    assert (fresh.status_code, fresh.json()["code"]) == (401, "PHONE_NOT_VERIFIED")
 
 
 async def test_a_retry_with_the_key_replays_the_answer(
@@ -400,10 +443,11 @@ async def test_a_route_the_rider_cannot_take_is_422(
     await _nothing_made(db_session)
 
 
+@pytest.mark.parametrize("status", [RouteStatus.FORMING, RouteStatus.ACTIVE])
 async def test_saturday_needs_a_route_that_offers_it(
-    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, status: RouteStatus
 ) -> None:
-    route = await add_route(db_session, trip)  # no Saturday price
+    route = await add_route(db_session, trip, status=status)  # no Saturday price
     response = await api.post(
         ADULT,
         json=body(await verified(db_session), trip, route_id=str(route), saturday=True),
@@ -509,6 +553,28 @@ async def test_without_redis_nobody_signs_up(
     token = await verified(db_session)
     async with broken_redis(api_app):
         response = await api.post(ADULT, json=body(token, trip), headers=key())
+    assert (response.status_code, response.json()["code"]) == (503, "SERVICE_UNAVAILABLE")
+    await _nothing_made(db_session)
+
+
+async def test_without_redis_at_the_phone_check_nobody_signs_up(
+    api: httpx.AsyncClient, api_app: GizeAPI, db_session: AsyncSession, trip: Trip
+) -> None:
+    """The caller is counted, then Redis fails at the phone's count: still closed."""
+    token = await verified(db_session)
+    working: RateLimiter = api_app.state.rate_limiter
+
+    class PhoneCheckBroken:
+        def __init__(self, broken: RateLimiter) -> None:
+            self.broken = broken
+
+        async def check(self, policy: Policy, **keys: str | None) -> None:
+            await (self.broken if keys.get("phone") else working).check(policy, **keys)
+
+    async with broken_redis(api_app):
+        api_app.state.rate_limiter = PhoneCheckBroken(api_app.state.rate_limiter)
+        response = await api.post(ADULT, json=body(token, trip), headers=key())
+        api_app.state.rate_limiter = api_app.state.rate_limiter.broken
     assert (response.status_code, response.json()["code"]) == (503, "SERVICE_UNAVAILABLE")
     await _nothing_made(db_session)
 

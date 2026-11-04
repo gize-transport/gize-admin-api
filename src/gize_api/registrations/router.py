@@ -46,17 +46,19 @@ async def register_adult(
     """Creates the rider (the phone is the token's) and, with a `route_id`: a reservation
     on a `forming` route with a free seat, from the next 1st; a request for an `active` or
     `paused` one (never a place directly: freed seats go to the oldest request). Without
-    one: a request for a route between the two areas. Requires `Idempotency-Key`; a retry
-    with it replays the answer.
+    one: a request for a route between the two areas, when no route takes them (forming
+    ones all full count as none). Requires `Idempotency-Key`; a retry with it replays the
+    answer, uncounted, even after the token has expired.
 
     - 401 PHONE_NOT_VERIFIED: the token is missing, invalid, expired or already used:
       verify the phone again.
     - 409 RIDER_EXISTS: this phone already has a rider: call Gize to change it.
     - 409 ROUTE_FULL: no seat left on the forming route; nothing was kept and the token
       still works (pick another route, or ask without one).
-    - 409 ROUTE_REQUEST_EXISTS: the same request is already open.
-    - 422 on `route_id`: not a route for these areas the app can sign up to; on
-      `saturday`: the route has no Saturday add-on.
+    - 409 ROUTE_REQUEST_EXISTS: the same request was recorded at the same moment. One
+      staff recorded earlier is linked to the rider instead (it keeps its place).
+    - 422 on `route_id`: not a route for these areas the app can sign up to, or none
+      chosen while one would take them; on `saturday`: the route has no Saturday add-on.
     - 429 RATE_LIMITED: 5 an hour per caller, 3 a day per phone.
     - 503 SERVICE_UNAVAILABLE: sign-up is switched off, or the limits can't be checked.
     """

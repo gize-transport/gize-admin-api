@@ -208,7 +208,9 @@ async def update(
     "/{route_id}/prices",
     operation_id="routes_set_prices",
     summary="Set a route's prices (admins only)",
-    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.ROUTE_HAS_NO_PRICES),
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND, ErrorCode.ROUTE_HAS_NO_PRICES, ErrorCode.ROUTE_HAS_RIDERS
+    ),
 )
 async def set_prices(
     route_id: uuid.UUID,
@@ -221,6 +223,8 @@ async def set_prices(
     (left out or null: none). Staff can't change prices through any endpoint.
 
     - 409 ROUTE_HAS_NO_PRICES: a corporate route (billed per company).
+    - 409 ROUTE_HAS_RIDERS: clearing the Saturday price while a rider holding a seat has
+      the add-on (GZ-032).
 
     A malformed body is a 422 before the route is looked at (so before any 404 or 409).
     """
@@ -232,7 +236,7 @@ async def set_prices(
     "/{route_id}/areas",
     operation_id="routes_set_areas",
     summary="Set the areas a route serves",
-    responses=problem_responses(ErrorCode.NOT_FOUND),
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.ROUTE_HAS_RIDERS),
 )
 async def set_areas(
     route_id: uuid.UUID,
@@ -243,7 +247,10 @@ async def set_areas(
 ) -> RouteRead:
     """The areas the route passes between A and B, where riders board or get off, in order
     (no times: a route is A to B). The whole list at once; empty clears it. Not A or B
-    themselves, each once, live areas, at most 20 (a 422 on `area_ids` otherwise)."""
+    themselves, each once, live areas, at most 20 (a 422 on `area_ids` otherwise).
+
+    - 409 ROUTE_HAS_RIDERS: the list drops an area where a rider holding a seat boards
+      (GZ-032)."""
     response.headers["Cache-Control"] = "no-store"
     return await service.set_areas(session, caller, route_id, areas)
 

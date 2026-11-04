@@ -26,6 +26,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from gize_api.core.db import LIKE_ESCAPE, escape_like
 from gize_api.corridors.models import Corridor
+from gize_api.riders.models import Rider
 from gize_api.routes.models import (
     AssignmentStatus,
     Route,
@@ -166,15 +167,31 @@ def public_routes(*, from_area_id: uuid.UUID, to_area_id: uuid.UUID) -> Select[R
     return (
         select(Route)
         .options(*_WITH_PUBLIC_PLACES)
-        .where(
-            Route.not_deleted(),
-            Route.route_type == RouteType.PUBLIC,
-            Route.status.in_(_OPEN_TO_RIDERS),
-            Route.price_round_trip.is_not(None),
-            Route.price_one_way.is_not(None),
-            serves_trip(from_area_id, to_area_id),
-        )
+        .where(*_public_open(), serves_trip(from_area_id, to_area_id))
     )
+
+
+def _public_open() -> tuple[ColumnElement[bool], ...]:
+    return (
+        Route.not_deleted(),
+        Route.route_type == RouteType.PUBLIC,
+        Route.status.in_(_OPEN_TO_RIDERS),
+        Route.price_round_trip.is_not(None),
+        Route.price_one_way.is_not(None),
+    )
+
+
+async def fitting_public_routes(
+    session: AsyncSession, from_area_id: uuid.UUID, to_area_id: uuid.UUID, *, limit: int
+) -> list[Route]:
+    """Up to `limit` of `public_routes` for the trip, without their places."""
+    statement = (
+        select(Route)
+        .where(*_public_open(), serves_trip(from_area_id, to_area_id))
+        .order_by(Route.created_at, Route.id)
+        .limit(limit)
+    )
+    return list((await session.scalars(statement)).all())
 
 
 async def seat_counts(
@@ -215,6 +232,30 @@ async def seat_counts(
         )
         for route_id in route_ids
     }
+
+
+async def boarded_in(
+    session: AsyncSession, route_id: uuid.UUID, area_ids: set[uuid.UUID], today: date
+) -> bool:
+    """A rider holding a seat today or later boards in one of these areas (their home)."""
+    statement = exists().where(
+        RouteAssignment.route_id == route_id,
+        *_holds_a_seat_from(today),
+        Rider.id == RouteAssignment.rider_id,
+        Rider.home_area_id.in_(area_ids),
+    )
+    return bool(await session.scalar(select(statement)))
+
+
+async def saturday_held(session: AsyncSession, route_id: uuid.UUID, today: date) -> bool:
+    """A rider holding a seat today or later has the Saturday add-on."""
+    statement = exists().where(
+        RouteAssignment.route_id == route_id,
+        *_holds_a_seat_from(today),
+        Rider.id == RouteAssignment.rider_id,
+        Rider.saturday_addon.is_(True),
+    )
+    return bool(await session.scalar(select(statement)))
 
 
 async def reserved_by_month(

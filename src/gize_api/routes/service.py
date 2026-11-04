@@ -330,6 +330,13 @@ async def set_prices(
             raise AppError(ErrorCode.ROUTE_HAS_NO_PRICES)  # billed per company
         if prices.saturday is not None and row.route_type is not RouteType.PUBLIC:
             raise invalid_field("body", "saturday")
+        today = schedule.addis_today()
+        if (
+            prices.saturday is None
+            and row.price_saturday is not None
+            and await repository.saturday_held(session, row.id, today)
+        ):
+            raise AppError(ErrorCode.ROUTE_HAS_RIDERS)  # riders hold the add-on
         before = audit.snapshot(ROUTE_AUDIT, row)
         row.price_round_trip = prices.round_trip
         row.price_one_way = prices.one_way
@@ -360,6 +367,11 @@ async def set_areas(
         before = [served.area_id for served in row.route_areas]
         if before == areas.area_ids:
             return await _read_with_counts(session, row)
+        dropped = set(before) - set(areas.area_ids)
+        if dropped and await repository.boarded_in(
+            session, row.id, dropped, schedule.addis_today()
+        ):
+            raise AppError(ErrorCode.ROUTE_HAS_RIDERS)  # riders board there
         served = [await _area_to_refer_to(session, area_id) for area_id in areas.area_ids]
         for old in row.route_areas:
             await session.delete(old)

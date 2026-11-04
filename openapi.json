@@ -5532,7 +5532,7 @@
     },
     "/v1/registrations/adult": {
       "post": {
-        "description": "Creates the rider (the phone is the token's) and, with a `route_id`: a reservation\non a `forming` route with a free seat, from the next 1st; a request for an `active` or\n`paused` one (never a place directly: freed seats go to the oldest request). Without\none: a request for a route between the two areas. Requires `Idempotency-Key`; a retry\nwith it replays the answer.\n\n- 401 PHONE_NOT_VERIFIED: the token is missing, invalid, expired or already used:\n  verify the phone again.\n- 409 RIDER_EXISTS: this phone already has a rider: call Gize to change it.\n- 409 ROUTE_FULL: no seat left on the forming route; nothing was kept and the token\n  still works (pick another route, or ask without one).\n- 409 ROUTE_REQUEST_EXISTS: the same request is already open.\n- 422 on `route_id`: not a route for these areas the app can sign up to; on\n  `saturday`: the route has no Saturday add-on.\n- 429 RATE_LIMITED: 5 an hour per caller, 3 a day per phone.\n- 503 SERVICE_UNAVAILABLE: sign-up is switched off, or the limits can't be checked.",
+        "description": "Creates the rider (the phone is the token's) and, with a `route_id`: a reservation\non a `forming` route with a free seat, from the next 1st; a request for an `active` or\n`paused` one (never a place directly: freed seats go to the oldest request). Without\none: a request for a route between the two areas, when no route takes them (forming\nones all full count as none). Requires `Idempotency-Key`; a retry with it replays the\nanswer, uncounted, even after the token has expired.\n\n- 401 PHONE_NOT_VERIFIED: the token is missing, invalid, expired or already used:\n  verify the phone again.\n- 409 RIDER_EXISTS: this phone already has a rider: call Gize to change it.\n- 409 ROUTE_FULL: no seat left on the forming route; nothing was kept and the token\n  still works (pick another route, or ask without one).\n- 409 ROUTE_REQUEST_EXISTS: the same request was recorded at the same moment. One\n  staff recorded earlier is linked to the rider instead (it keeps its place).\n- 422 on `route_id`: not a route for these areas the app can sign up to, or none\n  chosen while one would take them; on `saturday`: the route has no Saturday add-on.\n- 429 RATE_LIMITED: 5 an hour per caller, 3 a day per phone.\n- 503 SERVICE_UNAVAILABLE: sign-up is switched off, or the limits can't be checked.",
         "operationId": "registrations_adult",
         "parameters": [
           {
@@ -7594,7 +7594,7 @@
     },
     "/v1/routes/{route_id}/areas": {
       "put": {
-        "description": "The areas the route passes between A and B, where riders board or get off, in order\n(no times: a route is A to B). The whole list at once; empty clears it. Not A or B\nthemselves, each once, live areas, at most 20 (a 422 on `area_ids` otherwise).",
+        "description": "The areas the route passes between A and B, where riders board or get off, in order\n(no times: a route is A to B). The whole list at once; empty clears it. Not A or B\nthemselves, each once, live areas, at most 20 (a 422 on `area_ids` otherwise).\n\n- 409 ROUTE_HAS_RIDERS: the list drops an area where a rider holding a seat boards\n  (GZ-032).",
         "operationId": "routes_set_areas",
         "parameters": [
           {
@@ -7666,6 +7666,19 @@
             "description": "Not Found",
             "x-error-codes": [
               "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Route Has Riders",
+            "x-error-codes": [
+              "ROUTE_HAS_RIDERS"
             ]
           },
           "413": {
@@ -8084,7 +8097,7 @@
     },
     "/v1/routes/{route_id}/prices": {
       "put": {
-        "description": "Round trip and one-way, whole birr a month; Saturday add-on on public routes only\n(left out or null: none). Staff can't change prices through any endpoint.\n\n- 409 ROUTE_HAS_NO_PRICES: a corporate route (billed per company).\n\nA malformed body is a 422 before the route is looked at (so before any 404 or 409).",
+        "description": "Round trip and one-way, whole birr a month; Saturday add-on on public routes only\n(left out or null: none). Staff can't change prices through any endpoint.\n\n- 409 ROUTE_HAS_NO_PRICES: a corporate route (billed per company).\n- 409 ROUTE_HAS_RIDERS: clearing the Saturday price while a rider holding a seat has\n  the add-on (GZ-032).\n\nA malformed body is a 422 before the route is looked at (so before any 404 or 409).",
         "operationId": "routes_set_prices",
         "parameters": [
           {
@@ -8166,9 +8179,10 @@
                 }
               }
             },
-            "description": "Route Has No Prices",
+            "description": "Route Has No Prices, Route Has Riders",
             "x-error-codes": [
-              "ROUTE_HAS_NO_PRICES"
+              "ROUTE_HAS_NO_PRICES",
+              "ROUTE_HAS_RIDERS"
             ]
           },
           "413": {

@@ -138,7 +138,8 @@ async def add_from_app(
     """An adult's request from the public app (GZ-032), in the caller's transaction: for
     `route` (running and fitting the rider: the caller checks, under the route's lock), or,
     without one, for the two areas. Not audited: the audit log records staff changes; the
-    row says `source = app`. 409 ROUTE_REQUEST_EXISTS for the same open request."""
+    row says `source = app`. The same open request (staff recorded it from a call) is
+    linked to the rider instead: it keeps its place in the queue."""
     kind = RequestKind.NEW_AREAS if route is None else RequestKind.ROUTE
     row = RouteRequest(
         kind=kind,
@@ -152,8 +153,11 @@ async def add_from_app(
         source=RequestSource.APP,
         rider_id=rider_id,
     )
-    if await repository.open_request_exists(session, _asked(row), except_id=None):
-        raise AppError(ErrorCode.ROUTE_REQUEST_EXISTS)
+    existing = await repository.same_open_request(session, _asked(row))
+    if existing is not None:
+        existing.rider_id = rider_id
+        await session.flush()
+        return existing
     session.add(row)
     await _flush(session)
     return row

@@ -257,7 +257,10 @@ def test_prices_are_in_the_contract(make_settings: SettingsFactory) -> None:
     schema = create_app(make_settings()).openapi()
     operation = schema["paths"][f"{ROUTES}/{{route_id}}/prices"]["put"]
     assert operation["operationId"] == "routes_set_prices"
-    assert operation["responses"]["409"]["x-error-codes"] == ["ROUTE_HAS_NO_PRICES"]
+    assert operation["responses"]["409"]["x-error-codes"] == [
+        "ROUTE_HAS_NO_PRICES",
+        "ROUTE_HAS_RIDERS",  # clearing Saturday while riders have the add-on (GZ-032)
+    ]
     assert operation["responses"]["404"]["x-error-codes"] == ["NOT_FOUND"]
     body = schema["components"]["schemas"]["RoutePricesSet"]
     assert set(body["required"]) == {"round_trip", "one_way"}

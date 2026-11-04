@@ -1,9 +1,11 @@
 """Public sign-up (GZ-032): an adult registers from the rider app.
 
 1. The verified-phone token (GZ-031) is read: the phone comes from it, never the body.
-2. The per-phone limit (`PUBLIC_SIGNUP`; the route counts the caller).
-3. One transaction: claim the Idempotency-Key (scoped by a keyed hash of the phone; a
-   retry replays the answer, even though the token is spent by then), spend the token
+2. A retry of a sign-up already answered replays it (the Idempotency-Key, scoped by a
+   keyed hash of the phone): not counted again, and still after the token has expired.
+3. The token must be unexpired; the per-phone limit (`PUBLIC_SIGNUP`; the route counts
+   the caller).
+4. One transaction: claim the key (a retry racing this one replays), spend the token
    (its verification locked: one sign-up per token), lock the chosen route, share-lock
    the areas, then create the rider and either a reservation (a forming route with a free
    seat) or a route request (a running route, or no route: the two areas), and record
@@ -16,6 +18,7 @@ the rows say `source = app`.
 """
 
 import uuid
+from datetime import UTC, datetime
 from typing import NoReturn
 
 from fastapi.responses import JSONResponse, Response
@@ -27,7 +30,7 @@ from gize_api.areas.repository import get_live_area
 from gize_api.core import schedule
 from gize_api.core.db import violated_unique_constraint
 from gize_api.core.errors import AppError, ErrorCode, invalid_field
-from gize_api.core.idempotency import IdempotentRequest, claim, record, replay_response
+from gize_api.core.idempotency import IdempotentRequest, claim, peek, record, replay_response
 from gize_api.core.ratelimit import PUBLIC_SIGNUP, RateLimiter
 from gize_api.registrations.schemas import (
     AdultRegistered,
@@ -53,6 +56,7 @@ from gize_api.verification.tokens import (
 )
 
 _OPEN_TO_RIDERS = (RouteStatus.FORMING, RouteStatus.ACTIVE, RouteStatus.PAUSED)
+MAX_FITTING = 20  # routes serving one trip looked at; more would be a city of vans
 
 
 async def register_adult(
@@ -64,18 +68,34 @@ async def register_adult(
     limiter: RateLimiter,
 ) -> Response:
     """201 with what the sign-up got, or the stored answer for a retry."""
-    proved = _proved(registration.verified_phone_token, key)
+    # Signed by us, expired or not: enough to find a sign-up this retries.
+    proved = _proved(registration.verified_phone_token, key, check_expiry=False)
+    scope = phone_scope(proved.phone, key=key)
+    async with session.begin():
+        stored = await peek(session, scope=scope, request=idempotent)
+    if stored is not None:  # a retry: not counted for the phone, nor held to 30 minutes
+        return replay_response(stored)
+    if proved.expires_at <= _now():
+        raise AppError(ErrorCode.PHONE_NOT_VERIFIED)
     await limiter.check(PUBLIC_SIGNUP, phone=proved.phone)
     async with session.begin():
-        claimed = await claim(session, scope=phone_scope(proved.phone, key=key), request=idempotent)
+        claimed = await claim(session, scope=scope, request=idempotent)
         if claimed.stored is not None:
             return replay_response(claimed.stored)
         await _spend(session, proved)
         route = await _route_to_take(session, registration)
-        for field in ("home_area_id", "destination_area_id"):
-            if await get_live_area(session, getattr(registration, field), lock="share") is None:
+        # Sorted: two sign-ups naming the same areas the other way round lock alike.
+        for area_id, field in sorted(
+            (
+                (registration.home_area_id, "home_area_id"),
+                (registration.destination_area_id, "destination_area_id"),
+            )
+        ):
+            if await get_live_area(session, area_id, lock="share") is None:
                 raise invalid_field("body", field)
-        if route is not None:
+        if route is None:
+            await _no_route_takes_them(session, registration)
+        else:
             await _fits_the_trip(session, route, registration)
         rider = await _new_rider(session, registration, proved.phone)
         registered = await _seat_or_request(session, rider, route, registration, proved.phone)
@@ -84,9 +104,13 @@ async def register_adult(
     return JSONResponse(payload, status_code=201)
 
 
-def _proved(token: str, key: str) -> VerifiedPhone:
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _proved(token: str, key: str, *, check_expiry: bool) -> VerifiedPhone:
     try:
-        return read_verified_phone_token(token, key=key)
+        return read_verified_phone_token(token, key=key, check_expiry=check_expiry)
     except InvalidVerifiedPhoneTokenError:
         raise AppError(ErrorCode.PHONE_NOT_VERIFIED) from None
 
@@ -133,6 +157,22 @@ async def _fits_the_trip(
         raise invalid_field("body", "route_id")
     if registration.saturday and route.price_saturday is None:
         raise invalid_field("body", "saturday")
+
+
+async def _no_route_takes_them(session: AsyncSession, registration: AdultRegistration) -> None:
+    """Asking for the areas (`new_areas`) is for a trip no route takes the rider on: a
+    running route serving it takes requests, a forming one with a free seat reservations,
+    so they choose it (422 `route_id`). Forming routes that are all full: asking is demand
+    for another van."""
+    start = routes.next_launch_day(schedule.addis_today())
+    for route in await routes.fitting_public_routes(
+        session, registration.home_area_id, registration.destination_area_id, limit=MAX_FITTING
+    ):
+        if (
+            route.status is not RouteStatus.FORMING
+            or await routes.peak_taken_from(session, route.id, start) < route.seats
+        ):
+            raise invalid_field("body", "route_id")
 
 
 async def _new_rider(session: AsyncSession, registration: AdultRegistration, phone: str) -> Rider:
