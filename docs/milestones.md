@@ -231,7 +231,7 @@ Status: done · Depends on: GZ-009, GZ-030
 ### GZ-036 · Public catalogue for the rider app
 Status: done · Depends on: GZ-023, GZ-024
 - Found while planning GZ-032 (owner decision, 2026-11-04): the rider app can't choose areas or a route without public reads, and no ticket had them. Comes before GZ-032.
-- `GET /v1/public/areas` (live areas, `id` and `name`; `q` finds names starting with it) and `GET /v1/public/routes?from_area_id=&to_area_id=` (both required, different): `public` routes that are `forming`, `active` or `paused`, have both prices, and serve the trip (boarding at A or an area served, getting off at B). Each with its code, A and B, areas served, the four times, prices, status and `full` (no free seat from the next 1st, the earliest a new rider starts), never seat counts, launch progress or anything staff-only. Paginated. Public, `PUBLIC_READ` limit (60/minute per caller; fails open: read-only and cheap). Student routes join in GZ-033 (by school).
+- `GET /v1/public/areas` (live areas, `id` and `name`; `q` finds names starting with it) and `GET /v1/public/routes?from_area_id=&to_area_id=` (both required, different): `public` routes that are `forming`, `active` or `paused`, have both prices, and serve the trip (boarding at A or an area served, getting off at B). Each with its code, A and B, areas served, the four times, prices, status and `full` (no free seat from the next 1st, the earliest a new rider starts), never seat counts, launch progress or anything staff-only. Paginated. Public, `PUBLIC_READ` limit (60/minute per caller; fails open: read-only and cheap). Student routes would join with GZ-033 (deferred).
 - Built: `catalogue/` (`public_areas_list`, `public_routes_list`), `routes.repository.serves_trip` (GZ-032 reuses it) and `public_routes`, `ratelimit.PUBLIC_READ`; listed in both guard tests. No migration.
 - From review: `full` is judged from the next 1st (today on the 1st), the earliest a new rider starts, not "this month or next"; the limit is shown to be per caller. Before launch: mobile carriers put many phones behind one address, so watch the rate of 429s on these reads once `CLIENT_IP_HEADER` is set.
 
@@ -245,12 +245,14 @@ Status: done · Depends on: GZ-031, GZ-024, GZ-027
 - For GZ-035: the rider's home area is where they board.
 
 ### GZ-033 · Public registration – parent and student
-Status: todo · Depends on: GZ-032
+Status: deferred (owner decision, 2026-11-04: not in the MVP) · Depends on: GZ-032
 - Guardian + one or more children (school, grade level elementary/high school, home area). Students can only sign up for, or request, `student` routes of their school.
 
 ### GZ-034 · Rider management (staff)
-Status: todo · Depends on: GZ-032
-- List/search/filter riders (type, status, route), read detail, update, soft delete (admin). Guardian–child integrity enforced.
+Status: done · Depends on: GZ-032
+- List/search/filter riders (type, status, route), read detail, update, soft delete (admin). Guardian–child integrity enforced (deferred with GZ-033).
+- Owner decisions (GZ-034 plan, 2026-11-04): staff record adult riders here (company riders come with GZ-035); deleting a rider who holds a seat is refused (`409 RIDER_HAS_SEAT`: end it first); staff find a caller by phone with a POST look-up, so the phone stays out of URLs and logs.
+- Built: `/v1/riders` (staff_router): `riders_create` (Idempotency-Key; `RIDER_EXISTS`), `riders_list` (newest first; `q` name prefix, `rider_type`, `seat` reserved/active/none, `route_id`; phones masked `+2519****4567`), `riders_lookup` (`POST /v1/riders/lookup {phone}`), `riders_get` (phone in full, the seat held today or later, open requests), `riders_update` (PATCH), `riders_delete` (admins). Every list item and read has `seat` and `open_requests` without N+1 (four queries per page). A seat holder's edit must still fit its route (`routes.repository.serves`, Saturday where priced; 422 on the field), under the rider's lock, then the route's (architecture.md: riders before routes). Audit `rider.created`/`updated`/`deleted`, names and phones redacted. No migration: GZ-032's table; `Rider` gained its area relationships and `RIDER_AUDIT`.
 
 ### GZ-035 · Assign rider to route
 Status: todo · Depends on: GZ-034, GZ-023, GZ-032

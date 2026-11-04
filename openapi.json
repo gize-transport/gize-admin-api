@@ -289,6 +289,15 @@
         "title": "AreaWrite",
         "type": "object"
       },
+      "AssignmentStatus": {
+        "enum": [
+          "reserved",
+          "active",
+          "ended"
+        ],
+        "title": "AssignmentStatus",
+        "type": "string"
+      },
       "AuditEntryPage": {
         "description": "A page of the audit log (a named schema: generated clients keep the name).",
         "properties": {
@@ -803,6 +812,7 @@
           "PHONE_NOT_VERIFIED",
           "RIDER_EXISTS",
           "ROUTE_FULL",
+          "RIDER_HAS_SEAT",
           "INTERNAL_ERROR",
           "SERVICE_UNAVAILABLE"
         ],
@@ -1217,6 +1227,230 @@
         "title": "RequestStatus",
         "type": "string"
       },
+      "RiderCreate": {
+        "additionalProperties": false,
+        "description": "An adult recorded by staff (from a phone call). The phone may be typed any usual\nway (`0911 23 45 67`); it is stored `+251911234567`. Company riders come with GZ-035.",
+        "properties": {
+          "destination_area_id": {
+            "description": "Where they go.",
+            "format": "uuid",
+            "title": "Destination Area Id",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "home_area_id": {
+            "description": "Where they board.",
+            "format": "uuid",
+            "title": "Home Area Id",
+            "type": "string"
+          },
+          "phone": {
+            "description": "An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…",
+            "maxLength": 20,
+            "title": "Phone",
+            "type": "string"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/RiderPlan",
+            "description": "`morning`: A to B only; `evening`: B to A only."
+          },
+          "saturday_addon": {
+            "default": false,
+            "title": "Saturday Addon",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "full_name",
+          "phone",
+          "home_area_id",
+          "destination_area_id",
+          "plan"
+        ],
+        "title": "RiderCreate",
+        "type": "object"
+      },
+      "RiderListItem": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "destination_area": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AreaRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "full_name": {
+            "maxLength": 100,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "home_area": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AreaRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "open_requests": {
+            "description": "Their open route requests (new or matched).",
+            "title": "Open Requests",
+            "type": "integer"
+          },
+          "phone_masked": {
+            "anyOf": [
+              {
+                "maxLength": 13,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`+2519****4567`: enough to tell callers apart.",
+            "title": "Phone Masked"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiderPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rider_type": {
+            "$ref": "#/components/schemas/gize_api__riders__models__RiderType"
+          },
+          "saturday_addon": {
+            "title": "Saturday Addon",
+            "type": "boolean"
+          },
+          "seat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SeatRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/RiderSource",
+            "description": "`app`: signed up themselves; `staff`: recorded."
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "rider_type",
+          "full_name",
+          "home_area",
+          "destination_area",
+          "plan",
+          "saturday_addon",
+          "source",
+          "seat",
+          "open_requests",
+          "created_at",
+          "updated_at",
+          "phone_masked"
+        ],
+        "title": "RiderListItem",
+        "type": "object"
+      },
+      "RiderLookup": {
+        "additionalProperties": false,
+        "description": "A phone, typed any usual way: in the body, so it never reaches a URL or a log.",
+        "properties": {
+          "phone": {
+            "description": "An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…",
+            "maxLength": 20,
+            "title": "Phone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone"
+        ],
+        "title": "RiderLookup",
+        "type": "object"
+      },
+      "RiderMatches": {
+        "additionalProperties": false,
+        "description": "Live riders with this phone (at most one adult; company riders may share later).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RiderListItem"
+            },
+            "maxItems": 20,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "RiderMatches",
+        "type": "object"
+      },
+      "RiderPage": {
+        "description": "A page of riders (a named schema: generated clients keep the name).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RiderListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "RiderPage",
+        "type": "object"
+      },
       "RiderPlan": {
         "enum": [
           "round_trip",
@@ -1226,14 +1460,162 @@
         "title": "RiderPlan",
         "type": "string"
       },
-      "RiderType": {
-        "description": "Individual riders only: company riders come through their company.",
-        "enum": [
-          "adult",
-          "student"
+      "RiderRead": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "destination_area": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AreaRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "full_name": {
+            "maxLength": 100,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "home_area": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AreaRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "open_requests": {
+            "description": "Their open route requests (new or matched).",
+            "title": "Open Requests",
+            "type": "integer"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 13,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "E.164, in full.",
+            "title": "Phone"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiderPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rider_type": {
+            "$ref": "#/components/schemas/gize_api__riders__models__RiderType"
+          },
+          "saturday_addon": {
+            "title": "Saturday Addon",
+            "type": "boolean"
+          },
+          "seat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SeatRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/RiderSource",
+            "description": "`app`: signed up themselves; `staff`: recorded."
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "rider_type",
+          "full_name",
+          "home_area",
+          "destination_area",
+          "plan",
+          "saturday_addon",
+          "source",
+          "seat",
+          "open_requests",
+          "created_at",
+          "updated_at",
+          "phone"
         ],
-        "title": "RiderType",
+        "title": "RiderRead",
+        "type": "object"
+      },
+      "RiderSource": {
+        "enum": [
+          "app",
+          "staff"
+        ],
+        "title": "RiderSource",
         "type": "string"
+      },
+      "RiderUpdate": {
+        "additionalProperties": false,
+        "description": "Change any of these (leave out what stays). A rider holding a seat must still fit\nits route: boarding at A or an area it serves, going to B, Saturday only where offered\n(a 422 on the field otherwise).",
+        "minProperties": 1,
+        "properties": {
+          "destination_area_id": {
+            "format": "uuid",
+            "title": "Destination Area Id",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "home_area_id": {
+            "format": "uuid",
+            "title": "Home Area Id",
+            "type": "string"
+          },
+          "phone": {
+            "description": "An Ethiopian mobile, any usual spelling; stored as +2519… or +2517…",
+            "maxLength": 20,
+            "title": "Phone",
+            "type": "string"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/RiderPlan"
+          },
+          "saturday_addon": {
+            "title": "Saturday Addon",
+            "type": "boolean"
+          }
+        },
+        "title": "RiderUpdate",
+        "type": "object"
       },
       "RouteAreasSet": {
         "additionalProperties": false,
@@ -1839,7 +2221,7 @@
             "type": "string"
           },
           "rider_type": {
-            "$ref": "#/components/schemas/RiderType"
+            "$ref": "#/components/schemas/gize_api__route_requests__models__RiderType"
           },
           "route_id": {
             "anyOf": [
@@ -2047,7 +2429,7 @@
             "type": "string"
           },
           "rider_type": {
-            "$ref": "#/components/schemas/RiderType"
+            "$ref": "#/components/schemas/gize_api__route_requests__models__RiderType"
           },
           "route": {
             "anyOf": [
@@ -2375,6 +2757,64 @@
         },
         "title": "RouteUpdate",
         "type": "object"
+      },
+      "SeatRef": {
+        "additionalProperties": false,
+        "description": "The seat the rider holds today or later (one at most).",
+        "properties": {
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last day held; null: ongoing.",
+            "title": "End Date"
+          },
+          "route_code": {
+            "maxLength": 20,
+            "title": "Route Code",
+            "type": "string"
+          },
+          "route_id": {
+            "format": "uuid",
+            "title": "Route Id",
+            "type": "string"
+          },
+          "start_date": {
+            "format": "date",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AssignmentStatus",
+            "description": "`reserved` (forming route) or `active`."
+          }
+        },
+        "required": [
+          "route_id",
+          "route_code",
+          "status",
+          "start_date",
+          "end_date"
+        ],
+        "title": "SeatRef",
+        "type": "object"
+      },
+      "SeatState": {
+        "enum": [
+          "reserved",
+          "active",
+          "none"
+        ],
+        "title": "SeatState",
+        "type": "string"
       },
       "StaffInvite": {
         "additionalProperties": false,
@@ -2736,6 +3176,24 @@
         ],
         "title": "VerificationSent",
         "type": "object"
+      },
+      "gize_api__riders__models__RiderType": {
+        "enum": [
+          "adult",
+          "student",
+          "corporate"
+        ],
+        "title": "RiderType",
+        "type": "string"
+      },
+      "gize_api__route_requests__models__RiderType": {
+        "description": "Individual riders only: company riders come through their company.",
+        "enum": [
+          "adult",
+          "student"
+        ],
+        "title": "RiderType",
+        "type": "string"
       }
     },
     "securitySchemes": {
@@ -5686,6 +6144,954 @@
         "summary": "An adult signs up",
         "tags": [
           "registrations"
+        ]
+      }
+    },
+    "/v1/riders": {
+      "get": {
+        "description": "Each with the seat they hold (today or later) and their open requests; phones\nmasked. Deleted riders are not listed.",
+        "operationId": "riders_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rider_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/gize_api__riders__models__RiderType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rider Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "seat",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SeatState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Seat"
+            }
+          },
+          {
+            "in": "query",
+            "name": "route_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Route Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiderPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid Cursor, Validation Failed",
+            "x-error-codes": [
+              "INVALID_CURSOR",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Riders, newest first",
+        "tags": [
+          "riders"
+        ]
+      },
+      "post": {
+        "description": "Requires `Idempotency-Key`. 409 RIDER_EXISTS: a live adult has this phone. Areas\nthat don't exist (or are deleted) are a 422 on their field.",
+        "operationId": "riders_create",
+        "parameters": [
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RiderCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiderRead"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "Location": {
+                "description": "The new rider.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Request In Progress, Rider Exists",
+            "x-error-codes": [
+              "IDEMPOTENCY_IN_PROGRESS",
+              "RIDER_EXISTS"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Idempotency Key Mismatch, Validation Failed",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Record an adult rider",
+        "tags": [
+          "riders"
+        ]
+      }
+    },
+    "/v1/riders/lookup": {
+      "post": {
+        "description": "Reads only: a POST so the phone stays out of URLs and logs. Live riders with that\nphone, newest first (none: an empty list).",
+        "operationId": "riders_lookup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RiderLookup"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiderMatches"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Find riders by phone",
+        "tags": [
+          "riders"
+        ]
+      }
+    },
+    "/v1/riders/{rider_id}": {
+      "delete": {
+        "description": "Soft delete: hidden from lists, their phone free again; history keeps them. 409\nRIDER_HAS_SEAT while they hold a seat today or later: end it first.",
+        "operationId": "riders_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rider_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rider Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Rider Has Seat",
+            "x-error-codes": [
+              "RIDER_HAS_SEAT"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete a rider (admins only)",
+        "tags": [
+          "riders"
+        ]
+      },
+      "get": {
+        "description": "With the phone in full, the seat they hold and their open requests.",
+        "operationId": "riders_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rider_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rider Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiderRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "One rider",
+        "tags": [
+          "riders"
+        ]
+      },
+      "patch": {
+        "description": "Leave out what stays. Setting what is there changes nothing.\n\n- 409 RIDER_EXISTS: another live adult has the new phone.\n- 422 on an area or `saturday_addon`: the rider holds a seat and the change wouldn't\n  fit its route (boarding at A or an area it serves, going to B, Saturday where\n  offered), or the area doesn't exist.",
+        "operationId": "riders_update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rider_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rider Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RiderUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiderRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Rider Exists",
+            "x-error-codes": [
+              "RIDER_EXISTS"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Change a rider",
+        "tags": [
+          "riders"
         ]
       }
     },

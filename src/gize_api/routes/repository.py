@@ -60,7 +60,7 @@ def _reserved_for(launch_day: date) -> tuple[ColumnElement[bool], ...]:
     )
 
 
-def _holds_a_seat_from(today: date) -> tuple[ColumnElement[bool], ...]:
+def holds_a_seat_from(today: date) -> tuple[ColumnElement[bool], ...]:
     """A seat held today or later: not ended, and not gone before today."""
     return (
         _HOLDS_A_SEAT,
@@ -220,7 +220,7 @@ async def seat_counts(
                 RouteAssignment.route_id,
                 func.count().filter(and_(*_reserved_for(launch_day))),
             )
-            .where(RouteAssignment.route_id.in_(route_ids), *_holds_a_seat_from(today))
+            .where(RouteAssignment.route_id.in_(route_ids), *holds_a_seat_from(today))
             .group_by(RouteAssignment.route_id)
         )
     }
@@ -240,7 +240,7 @@ async def boarded_in(
     """A rider holding a seat today or later boards in one of these areas (their home)."""
     statement = exists().where(
         RouteAssignment.route_id == route_id,
-        *_holds_a_seat_from(today),
+        *holds_a_seat_from(today),
         Rider.id == RouteAssignment.rider_id,
         Rider.home_area_id.in_(area_ids),
     )
@@ -251,7 +251,7 @@ async def saturday_held(session: AsyncSession, route_id: uuid.UUID, today: date)
     """A rider holding a seat today or later has the Saturday add-on."""
     statement = exists().where(
         RouteAssignment.route_id == route_id,
-        *_holds_a_seat_from(today),
+        *holds_a_seat_from(today),
         Rider.id == RouteAssignment.rider_id,
         Rider.saturday_addon.is_(True),
     )
@@ -288,7 +288,7 @@ async def peak_taken_from(session: AsyncSession, route_id: uuid.UUID, today: dat
 
 async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) -> bool:
     """Someone holds a seat today or later."""
-    statement = exists().where(RouteAssignment.route_id == route_id, *_holds_a_seat_from(today))
+    statement = exists().where(RouteAssignment.route_id == route_id, *holds_a_seat_from(today))
     return bool(await session.scalar(select(statement)))
 
 

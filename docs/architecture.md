@@ -107,6 +107,7 @@ Staff changes (invites, role and status changes, the first-admin command) all ta
 Row locks never wait on each other in a circle:
 - Places (areas, corridors, companies) are locked exclusively only by their own changes and deletes, which then only read the routes and requests that use them (no lock). Everything else share-locks places, and share locks don't conflict with each other; a copy of a route (GZ-028) locks only the original, which keeps its corridor and areas in use.
 - Between routes and their requests and assignments: the route first. GZ-027 `set_status` share-locks the matched route, then locks the request; GZ-040's freed seats lock the route, then its requests; M3 changes an assignment under its route's lock.
+- Riders before routes: a staff edit or delete of a rider (GZ-034) locks the rider, then the route of the seat they hold; assigning or moving a rider (GZ-035) does the same. Nothing locks a route and then a rider: a public sign-up locks the route before its rider exists, and route changes only read riders.
 - Within a table, the row lock comes before the joined load (lock-then-load).
 
 ## Data model (MVP – refine in the plan for each ticket)

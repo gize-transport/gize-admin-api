@@ -13,13 +13,42 @@ import uuid
 from enum import StrEnum
 
 from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, String, text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from gize_api.areas.models import Area
+from gize_api.core.audit import AuditedEntity
 from gize_api.core.contact import MOBILE_E164_LENGTH
 from gize_api.core.models import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH
 
 RIDER_ADULT_PHONE_UNIQUE = "uq_riders_adult_phone"
+
+# Names and phones are personal data: the log shows that they changed, never their values.
+RIDER_AUDIT = AuditedEntity(
+    type="rider",
+    fields=(
+        "rider_type",
+        "full_name",
+        "phone",
+        "home_area_id",
+        "destination_area_id",
+        "plan",
+        "saturday_addon",
+        "source",
+        "deleted_at",
+    ),
+    visible=frozenset(
+        {
+            "rider_type",
+            "home_area_id",
+            "destination_area_id",
+            "plan",
+            "saturday_addon",
+            "source",
+            "deleted_at",
+        }
+    ),
+)
 
 
 class RiderType(StrEnum):
@@ -88,3 +117,8 @@ class Rider(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     plan: Mapped[RiderPlan | None] = mapped_column(_string_enum(RiderPlan))
     saturday_addon: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     source: Mapped[RiderSource] = mapped_column(_string_enum(RiderSource))
+    # Loaded with the rider (repository); never lazily, which async can't do.
+    home_area: Mapped[Area | None] = relationship(foreign_keys=[home_area_id], lazy="raise")
+    destination_area: Mapped[Area | None] = relationship(
+        foreign_keys=[destination_area_id], lazy="raise"
+    )

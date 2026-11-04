@@ -50,6 +50,13 @@ ACCESS: dict[tuple[str, str], Access] = {
     ("PATCH", "/v1/staff/{staff_id}"): ADMIN,
     ("GET", "/v1/audit-log"): ADMIN,
     # Areas, corridors, companies: staff manage them; admins delete.
+    # Riders (GZ-034): staff manage them; admins delete.
+    ("GET", "/v1/riders"): STAFF,
+    ("POST", "/v1/riders"): STAFF,
+    ("POST", "/v1/riders/lookup"): STAFF,
+    ("GET", "/v1/riders/{rider_id}"): STAFF,
+    ("PATCH", "/v1/riders/{rider_id}"): STAFF,
+    ("DELETE", "/v1/riders/{rider_id}"): ADMIN,
     ("GET", "/v1/areas"): STAFF,
     ("POST", "/v1/areas"): STAFF,
     ("GET", "/v1/areas/{area_id}"): STAFF,
