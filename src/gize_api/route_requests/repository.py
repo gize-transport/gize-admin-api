@@ -103,12 +103,22 @@ def _keys(
 
 
 async def own_requests_for(
-    session: AsyncSession, route_id: uuid.UUID, *, rider_id: uuid.UUID, phone: str | None
+    session: AsyncSession,
+    route_id: uuid.UUID,
+    *,
+    rider_id: uuid.UUID,
+    phone: str | None,
+    name: str,
 ) -> list[RouteRequest]:
     """The rider's open requests waiting for this route (GZ-035): theirs by `rider_id`, or
-    recorded by staff with their phone before they were a rider. Locked (`FOR UPDATE`):
+    recorded by staff for them before they were a rider (their phone and name, ignoring
+    case: a relative asking with the same phone is someone else). Locked (`FOR UPDATE`):
     placing them fulfils these. Oldest first."""
-    recorded_for_them = and_(RouteRequest.rider_id.is_(None), RouteRequest.contact_phone == phone)
+    recorded_for_them = and_(
+        RouteRequest.rider_id.is_(None),
+        RouteRequest.contact_phone == phone,
+        func.lower(RouteRequest.rider_name) == func.lower(literal(name, String)),
+    )
     statement = (
         select(RouteRequest)
         .where(*_waiting_for(route_id), or_(RouteRequest.rider_id == rider_id, recorded_for_them))

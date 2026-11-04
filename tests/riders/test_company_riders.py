@@ -13,6 +13,7 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gize_api.companies.models import Company
 from gize_api.routes.models import AssignmentStatus, RouteStatus, RouteType
 from tests.factories import CompanyFactory
 from tests.registrations.support import Trip, add_route, add_trip
@@ -300,6 +301,24 @@ async def test_a_company_rider_starting_later_and_ended_today_never_rides(
     assert response.json()["seat"] is None
     (seat,) = await seats_of(db_session, uuid.UUID(rider))
     assert seat.status is AssignmentStatus.ENDED
+
+
+async def test_an_inactive_companys_riders_are_not_placed(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    trip: Trip,
+    member: uuid.UUID,
+    company: uuid.UUID,
+) -> None:
+    """Its routes can't run (GZ-024): the same 409 as launching one."""
+    route = await _corporate_route(db_session, trip, company, status=RouteStatus.DRAFT)
+    rider = await _recorded(api, member, trip, company)
+    async with db_session.begin():
+        (await db_session.get_one(Company, company)).is_active = False
+    response = await api.put(
+        seat_path(rider), json={"route_id": str(route)}, headers=with_key(member)
+    )
+    assert (response.status_code, response.json()["code"]) == (409, "ROUTE_NOT_READY")
 
 
 # Edits, lists, deletes

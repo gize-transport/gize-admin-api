@@ -79,7 +79,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Fails if a rider holds two seats at once (a move in progress): end one first.
+    # The old index counts every seat not `ended`, and a seat that ran to its end date
+    # keeps its status: mark those ended first (they hold nothing any more). A rider
+    # holding two seats still to come or running (a move in progress) makes this fail:
+    # end one of them first.
+    op.execute(
+        "UPDATE gize.route_assignments SET status = 'ended'"
+        " WHERE status <> 'ended' AND end_date < current_date"
+    )
     op.create_index(
         "uq_route_assignments_rider_id_held",
         "route_assignments",

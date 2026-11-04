@@ -13,6 +13,7 @@ by default), reservations at once.
 """
 
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 
 import httpx
@@ -21,6 +22,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.audit import REDACTED
+from gize_api.core.db import get_session
+from gize_api.main import GizeAPI
 from gize_api.route_requests.models import RequestKind, RequestStatus, RouteRequest
 from gize_api.routes.models import AssignmentStatus, RouteStatus, RouteType
 from tests.factories import CompanyFactory, RouteRequestFactory
@@ -343,6 +346,128 @@ async def test_a_seat_holders_edit_must_fit_both_routes_while_moving(
     assert [error["field"] for error in response.json()["errors"]] == ["/home_area_id"]
 
 
+async def test_one_move_at_a_time(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    """A second move while one is planned is refused (it would leave a month unplanned);
+    undoing the first, by placing them back, lets the new one through."""
+    first = await add_route(db_session, trip, status=RouteStatus.ACTIVE, code="R1")
+    second = await add_route(db_session, trip, status=RouteStatus.ACTIVE, code="R2")
+    third = await add_route(db_session, trip, status=RouteStatus.ACTIVE, code="R3")
+    rider = await add_rider(db_session, trip)
+    await add_seat(db_session, first, rider, status=AssignmentStatus.ACTIVE,
+                   start_date=date(2026, 11, 1))  # fmt: skip
+    assert (await _place(api, member, rider, second, start_date="2027-01-01")).status_code == 200
+    again = await _place(api, member, rider, third, start_date="2027-02-01")
+    assert (again.status_code, again.json()["code"]) == (409, "RIDER_MOVING")
+    assert (await _place(api, member, rider, first)).status_code == 200  # undone
+    response = await _place(api, member, rider, third, start_date="2027-02-01")
+    assert response.status_code == 200, response.json()
+    body = response.json()
+    assert (body["seat"]["route_code"], body["seat"]["end_date"]) == ("R1", "2027-01-31")
+    assert (body["next_seat"]["route_code"], body["next_seat"]["start_date"]) == (
+        "R3",
+        "2027-02-01",
+    )
+    statuses = {seat.route_id: seat.status for seat in await seats_of(db_session, rider)}
+    assert statuses[second] is AssignmentStatus.ENDED
+
+
+async def test_a_seat_still_to_come_is_replaced(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    """Not riding yet: the new placement takes its place, and it ends (it never rode)."""
+    later = await add_route(db_session, trip, status=RouteStatus.ACTIVE)
+    instead = await add_route(db_session, trip, status=RouteStatus.ACTIVE)
+    rider = await add_rider(db_session, trip)
+    await add_seat(db_session, later, rider, status=AssignmentStatus.ACTIVE,
+                   start_date=date(2027, 3, 1))  # fmt: skip
+    response = await _place(api, member, rider, instead)
+    assert (response.json()["seat"]["route_id"], response.json()["next_seat"]) == (
+        str(instead),
+        None,
+    )
+
+
+async def test_placing_back_on_the_route_they_are_leaving_undoes_the_end(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    route = await add_route(db_session, trip, status=RouteStatus.ACTIVE)
+    rider = await add_rider(db_session, trip)
+    seat = await add_seat(db_session, route, rider, status=AssignmentStatus.ACTIVE,
+                          start_date=date(2026, 11, 1), end_date=date(2026, 12, 31))  # fmt: skip
+    response = await _place(api, member, rider, route)
+    assert response.status_code == 200, response.json()
+    assert response.json()["seat"]["end_date"] is None
+    entries = await audit_entries(db_session, seat)
+    assert [(entry.before, entry.after) for entry in entries] == [
+        ({"end_date": "2026-12-31"}, {"end_date": None})
+    ]
+
+
+async def test_undoing_an_end_needs_the_seat_still_free(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    """January went to someone else meanwhile."""
+    route = await add_route(db_session, trip, status=RouteStatus.ACTIVE, seats=1,
+                            launch_minimum=1)  # fmt: skip
+    rider = await add_rider(db_session, trip)
+    await add_seat(db_session, route, rider, status=AssignmentStatus.ACTIVE,
+                   start_date=date(2026, 11, 1), end_date=date(2026, 12, 31))  # fmt: skip
+    await add_seat(db_session, route, await add_rider(db_session, trip),
+                   status=AssignmentStatus.ACTIVE, start_date=date(2027, 1, 1))  # fmt: skip
+    response = await _place(api, member, rider, route)
+    assert (response.status_code, response.json()["code"]) == (409, "ROUTE_FULL")
+
+
+async def test_placing_back_cancels_a_move_still_to_come(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    old = await add_route(db_session, trip, status=RouteStatus.ACTIVE)
+    new = await add_route(db_session, trip, status=RouteStatus.ACTIVE)
+    rider = await add_rider(db_session, trip)
+    await add_seat(db_session, old, rider, status=AssignmentStatus.ACTIVE,
+                   start_date=date(2026, 11, 1), end_date=date(2026, 11, 30))  # fmt: skip
+    await add_seat(db_session, new, rider, status=AssignmentStatus.ACTIVE)
+    response = await _place(api, member, rider, old)
+    assert response.status_code == 200, response.json()
+    assert (response.json()["seat"]["route_id"], response.json()["seat"]["end_date"]) == (
+        str(old),
+        None,
+    )
+    assert response.json()["next_seat"] is None
+
+
+async def test_someone_riding_is_not_moved_to_a_forming_route(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    """It may launch late or never: they'd be left without a seat."""
+    running = await add_route(db_session, trip, status=RouteStatus.ACTIVE)
+    forming = await add_route(db_session, trip)
+    rider = await add_rider(db_session, trip)
+    await add_seat(db_session, running, rider, status=AssignmentStatus.ACTIVE,
+                   start_date=date(2026, 11, 1))  # fmt: skip
+    response = await _place(api, member, rider, forming)
+    assert [error["field"] for error in response.json()["errors"]] == ["/route_id"]
+
+
+@pytest.mark.parametrize(("name", "own"), [("Rider Who Asked", True), ("Her Brother", False)])
+async def test_a_request_staff_recorded_is_theirs_by_phone_and_name(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    trip: Trip,
+    member: uuid.UUID,
+    name: str,
+    own: bool,
+) -> None:
+    """A relative asking with the same phone is someone else, waiting ahead of them."""
+    route = await add_route(db_session, trip, status=RouteStatus.ACTIVE)
+    rider = await add_rider(db_session, trip, full_name="Rider Who Asked", phone="+251911234567")
+    await _request(db_session, route, rider_name=name.upper(), contact_phone="+251911234567")
+    response = await _place(api, member, rider, route)
+    assert response.status_code == (200 if own else 409), response.json()
+
+
 # Ending
 
 
@@ -422,7 +547,28 @@ async def test_ending_without_a_seat_is_409(
     assert (response.status_code, response.json()["code"]) == (409, "RIDER_HAS_NO_SEAT")
 
 
-# Shared: keys, unknown riders, bodies, deletes
+# Shared: keys, unknown riders, bodies, deletes, failures
+
+
+@pytest.mark.parametrize("ending", [False, True])
+async def test_the_database_down_is_503(
+    api: httpx.AsyncClient,
+    api_app: GizeAPI,
+    unreachable_sessions: AsyncSession,
+    member: uuid.UUID,
+    ending: bool,
+) -> None:
+    async def down() -> AsyncIterator[AsyncSession]:
+        yield unreachable_sessions
+
+    api_app.dependency_overrides[get_session] = down
+    rider = uuid.UUID(int=1)
+    if ending:
+        response = await api.post(end_path(rider), json={}, headers=with_key(member))
+    else:
+        response = await api.put(seat_path(rider), json={"route_id": str(rider)},
+                                 headers=with_key(member))  # fmt: skip
+    assert (response.status_code, response.json()["code"]) == (503, "SERVICE_UNAVAILABLE")
 
 
 @pytest.mark.parametrize("ending", [False, True])

@@ -11,7 +11,9 @@ and skip reasons redacted.
 - A rider holding a seat must still fit its route after an edit: boarding at A or an area
   it serves, going to B (an adult's destination), Saturday only where offered.
 - A move ends the old seat the day before the new one starts; a seat that hasn't started
-  by then (a reservation, or one still to come) just ends: it never rode.
+  by then (a reservation, or a move still to come) just ends: it never rode. Placing a
+  rider back on the route of a seat they are leaving undoes the end. A rider who is
+  riding isn't moved to a forming route: it may launch late or never.
 
 Locks (architecture.md, "Row locks"): the rider, then the routes of their seats and the
 new one in a fixed order, then the route's requests. Seats are counted under the route's
@@ -233,34 +235,102 @@ async def place(
         route = next((each for each in locked if each.id == placement.route_id), None)
         if route is None or not await _takes(session, route, row):
             raise invalid_field("body", "route_id")
-        if any(seat.route_id == route.id for seat in held):
-            raise AppError(ErrorCode.ALREADY_ON_ROUTE)
-        start = _start(row, placement.start_date, today)
-        own: list[uuid.UUID] = []
-        skip_reason = None
-        if row.rider_type is RiderType.ADULT and route.status is RouteStatus.ACTIVE:
-            own, skip_reason = await _queue(session, route, row, placement.skip_reason)
-        for seat in held:
-            await _end_seat(session, caller, seat, last_day=start - timedelta(days=1))
-        status = AssignmentStatus.RESERVED
-        if route.status is not RouteStatus.FORMING:
-            status = AssignmentStatus.ACTIVE
-        taken = await seats.take(
-            session, route, row.id, start=start, status=status, skip_reason=skip_reason
-        )
-        audit.record(
-            session,
-            actor_id=caller.id,
-            action="route_assignment.created",
-            entity=ROUTE_ASSIGNMENT_AUDIT,
-            entity_id=taken.id,
-            before=None,
-            after=audit.snapshot(ROUTE_ASSIGNMENT_AUDIT, taken),
-        )
-        await _fulfil(session, caller, own)
+        if row.company_id is not None:
+            await _company_takes_riders(session, row.company_id)
+        staying = next((seat for seat in held if seat.route_id == route.id), None)
+        if staying is not None:
+            await _stay(session, caller, route, staying, held, today)
+        else:
+            await _move(session, caller, route, row, held, placement, today)
         payload = (await _read_with_seats(session, row)).model_dump(mode="json")
         await record(session, claimed, status=200, body=payload)
     return JSONResponse(payload, status_code=200)
+
+
+async def _move(
+    session: AsyncSession,
+    caller: CurrentStaff,
+    route: Route,
+    row: Rider,
+    held: list[HeldSeat],
+    placement: SeatPlacement,
+    today: date,
+) -> None:
+    """A new seat on `route` (locked); what the rider holds ends the day before it starts,
+    and a seat not started yet ends at once: it is replaced. One move at a time: with a
+    move planned (two seats), 409 RIDER_MOVING until it is undone (`_stay`)."""
+    if len(held) > 1:
+        raise AppError(ErrorCode.RIDER_MOVING)
+    riding = any(seat.status is AssignmentStatus.ACTIVE for seat in held)
+    if riding and route.status is RouteStatus.FORMING:
+        # A forming route may launch late or never: they'd be left without a seat.
+        raise invalid_field("body", "route_id")
+    start = _start(row, placement.start_date, today)
+    own: list[uuid.UUID] = []
+    skip_reason = None
+    if row.rider_type is RiderType.ADULT and route.status is RouteStatus.ACTIVE:
+        own, skip_reason = await _queue(session, route, row, placement.skip_reason)
+    for seat in held:
+        before_it = seat.start_date if seat.start_date > today else start
+        await _end_seat(session, caller, seat, last_day=before_it - timedelta(days=1))
+    status = AssignmentStatus.RESERVED
+    if route.status is not RouteStatus.FORMING:
+        status = AssignmentStatus.ACTIVE
+    taken = await seats.take(
+        session, route, row.id, start=start, status=status, skip_reason=skip_reason
+    )
+    audit.record(
+        session,
+        actor_id=caller.id,
+        action="route_assignment.created",
+        entity=ROUTE_ASSIGNMENT_AUDIT,
+        entity_id=taken.id,
+        before=None,
+        after=audit.snapshot(ROUTE_ASSIGNMENT_AUDIT, taken),
+    )
+    await _fulfil(session, caller, own)
+
+
+async def _stay(
+    session: AsyncSession,
+    caller: CurrentStaff,
+    route: Route,
+    staying: HeldSeat,
+    held: list[HeldSeat],
+    today: date,
+) -> None:
+    """Placed on the route of a seat they hold: undo its end (a leave or a move changed
+    their mind), if the seat is still free after it; a move still to come ends at once.
+    409 ALREADY_ON_ROUTE when that seat isn't ending."""
+    if staying.end_date is None:
+        raise AppError(ErrorCode.ALREADY_ON_ROUTE)
+    after = staying.end_date + timedelta(days=1)
+    if await routes.peak_taken_from(session, route.id, after) >= route.seats:
+        raise AppError(ErrorCode.ROUTE_FULL)
+    for seat in held:
+        if seat.id != staying.id and seat.start_date > today:
+            await _end_seat(session, caller, seat, last_day=seat.start_date - timedelta(days=1))
+    reopened = await session.get_one(RouteAssignment, staying.id)
+    before = audit.snapshot(ROUTE_ASSIGNMENT_AUDIT, reopened)
+    reopened.end_date = None
+    await session.flush()
+    audit.record(
+        session,
+        actor_id=caller.id,
+        action="route_assignment.changed",
+        entity=ROUTE_ASSIGNMENT_AUDIT,
+        entity_id=reopened.id,
+        before=before,
+        after=audit.snapshot(ROUTE_ASSIGNMENT_AUDIT, reopened),
+    )
+
+
+async def _company_takes_riders(session: AsyncSession, company_id: uuid.UUID) -> None:
+    """A company rider's company is live and active, share-locked (a deactivation waits);
+    409 ROUTE_NOT_READY otherwise, as for its routes (GZ-024)."""
+    company = await get_live_company(session, company_id, lock="share")
+    if company is None or not company.is_active:
+        raise AppError(ErrorCode.ROUTE_NOT_READY)
 
 
 async def end(
@@ -386,7 +456,9 @@ async def _queue(
     before the rider's own come first (a free seat goes to the oldest request). Returns
     the rider's own requests (to fulfil) and the skip reason when it was needed; 409
     ROUTE_HAS_WAITING_REQUESTS without one."""
-    own = await route_requests.own_requests_for(session, route.id, rider_id=row.id, phone=row.phone)
+    own = await route_requests.own_requests_for(
+        session, route.id, rider_id=row.id, phone=row.phone, name=row.full_name
+    )
     waiting = await route_requests.others_waiting(
         session,
         route.id,

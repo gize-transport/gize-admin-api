@@ -155,7 +155,9 @@ async def update(
         ErrorCode.NOT_FOUND,
         ErrorCode.ROUTE_FULL,
         ErrorCode.ALREADY_ON_ROUTE,
+        ErrorCode.RIDER_MOVING,
         ErrorCode.ROUTE_HAS_WAITING_REQUESTS,
+        ErrorCode.ROUTE_NOT_READY,
         ErrorCode.IDEMPOTENCY_IN_PROGRESS,
         ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
         ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
@@ -177,9 +179,14 @@ async def place(
     - 409 ROUTE_HAS_WAITING_REQUESTS: an adult on an active route ahead of other people's
       open requests for it: send a `skip_reason` (kept and audited). Their own requests for
       it are fulfilled.
-    - 409 ALREADY_ON_ROUTE: they hold a seat on it.
-    - 422 on `route_id`: a route that doesn't take this rider; on `start_date`: not a
-      coming 1st for an adult, past, or more than a year ahead.
+    - 409 ALREADY_ON_ROUTE: they hold a seat on it that isn't ending. On the route of a
+      seat they are leaving, the end is undone instead (and a move still to come ends).
+    - 409 RIDER_MOVING: a move is already planned: undo it first (place them back on
+      their current route).
+    - 409 ROUTE_NOT_READY: a company rider whose company isn't active.
+    - 422 on `route_id`: a route that doesn't take this rider, or a forming one for
+      someone riding now (it may launch late); on `start_date`: not a coming 1st for an
+      adult, past, or more than a year ahead.
     """
     response = await service.place(session, caller, rider_id, placement, idempotent)
     response.headers["Cache-Control"] = "no-store"

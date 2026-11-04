@@ -201,3 +201,54 @@ async def test_two_placements_for_the_last_seat_one_succeeds(
     assert refused.json()["code"] == "ROUTE_FULL"
     async with committed_sessionmaker() as session, session.begin():
         assert len((await session.scalars(select(RouteAssignment))).all()) == 1
+
+
+async def test_two_moves_crossing_the_same_routes_both_go_through(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+) -> None:
+    """One rider moves A to B while another moves B to A: each locks its rider, then both
+    routes in the same order, so neither waits on the other in a circle."""
+    async with committed_sessionmaker() as session:
+        member = (await add_staff(session)).id
+        trip = await add_trip(session)
+        routes = [await add_route(session, trip, status=RouteStatus.ACTIVE) for _ in "ab"]
+        async with session.begin():
+            moving = []
+            for route in routes:
+                rider = await RiderFactory().create(
+                    session, home_area_id=trip.bole, destination_area_id=trip.mexico
+                )
+                moving.append(rider.id)
+                session.add(
+                    RouteAssignment(
+                        route_id=route,
+                        rider_id=rider.id,
+                        start_date=date(2026, 11, 1),
+                        status=AssignmentStatus.ACTIVE,
+                    )
+                )
+    conn = await asyncpg.connect(database.migrator, timeout=3)
+    try:
+        held = conn.transaction()
+        await held.start()
+        await conn.execute(LOCK_ROUTE, min(routes))  # both lock it first
+        tasks = [
+            asyncio.create_task(
+                committed_api.put(
+                    f"{RIDERS}/{rider}/seat",
+                    json={"route_id": str(target)},
+                    headers=with_key(member),
+                )
+            )
+            for rider, target in zip(moving, reversed(routes), strict=True)
+        ]
+        await wait_for_lock_waiters(database, count=2)
+        await held.rollback()
+        responses = await asyncio.gather(*tasks)
+    finally:
+        await conn.close()
+    assert [response.status_code for response in responses] == [200, 200], [
+        response.json() for response in responses
+    ]
