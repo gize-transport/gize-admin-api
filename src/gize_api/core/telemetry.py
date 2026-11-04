@@ -245,6 +245,17 @@ class Telemetry:
             "gize.job.duration", unit="s", description="Duration of background jobs by outcome"
         )
 
+    def record_sms(self, purpose: str, outcome: str, seconds: float) -> None:
+        """One SMS send (sms.service): purpose, outcome (sent, duplicate, or the failure
+        kind) and how long the sender took. Never the phone or the text."""
+        self._sms_duration.record(seconds, {"purpose": purpose, "outcome": outcome})
+
+    @functools.cached_property
+    def _sms_duration(self) -> Histogram:
+        return self.meter_provider.get_meter("gize_api.sms").create_histogram(
+            "gize.sms.send.duration", unit="s", description="SMS sends by purpose and outcome"
+        )
+
     def record_redis_operation(self, operation: str, outcome: str, seconds: float) -> None:
         """One Redis operation of ours (rate_limit, enqueue, ping): its outcome and duration.
 
