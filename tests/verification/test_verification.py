@@ -6,6 +6,7 @@
 Both are public and rate limited, failing closed: each SMS costs money.
 """
 
+import hashlib
 import re
 import uuid
 from collections.abc import AsyncIterator
@@ -13,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+import structlog
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -312,3 +314,67 @@ async def test_without_redis_no_code_is_checked(api: httpx.AsyncClient, api_app:
             VERIFY, json={"verification_id": str(uuid.uuid4()), "code": "123456"}
         )
     assert (response.status_code, response.json()["code"]) == (503, "SERVICE_UNAVAILABLE")
+
+
+# From review: failures after the commit, the switched-off key, the database, the logs
+
+
+async def test_a_send_that_breaks_releases_the_key_too(
+    api: httpx.AsyncClient, api_app: GizeAPI, sms: FakeSmsSender
+) -> None:
+    """A bug (or a database blip) mid-send must not leave a stored "sent" behind: the
+    retry with the same key sends a code."""
+
+    class Broken:
+        async def send(self, to: str, text: str) -> str:
+            raise RuntimeError("a bug")
+
+    api_app.state.sms_sender = Broken()
+    key = _key()
+    response = await api.post(REQUEST, json={"phone": PHONE}, headers=key)
+    assert response.status_code == 500
+    api_app.state.sms_sender = sms
+    again = await api.post(REQUEST, json={"phone": PHONE}, headers=key)
+    assert again.status_code == 201
+    assert "Idempotent-Replayed" not in again.headers
+    assert len(sms.sent) == 1
+
+
+async def test_switched_off_counts_nothing_against_the_limits(
+    api: httpx.AsyncClient, api_app: GizeAPI, sms: FakeSmsSender
+) -> None:
+    switched_on = api_app.state.settings
+    api_app.state.settings = switched_on.model_copy(update={"verified_phone_token_key": None})
+    for _ in range(12):
+        response = await api.post(REQUEST, json={"phone": PHONE}, headers=_key())
+        assert response.status_code == 503
+    api_app.state.settings = switched_on
+    assert (await api.post(REQUEST, json={"phone": PHONE}, headers=_key())).status_code == 201
+
+
+async def test_the_database_down_while_checking_is_503(
+    api: httpx.AsyncClient, api_app: GizeAPI, unreachable_sessions: AsyncSession
+) -> None:
+    async def down() -> AsyncIterator[AsyncSession]:
+        yield unreachable_sessions
+
+    api_app.dependency_overrides[get_session] = down
+    response = await api.post(VERIFY, json={"verification_id": str(uuid.uuid4()), "code": "123456"})
+    assert response.status_code == 503
+
+
+async def test_no_phone_or_code_reaches_the_logs(
+    api: httpx.AsyncClient, sms: FakeSmsSender
+) -> None:
+    key = _key()
+    with structlog.testing.capture_logs() as logs:
+        first = await api.post(REQUEST, json={"phone": PHONE}, headers=key)
+        await api.post(REQUEST, json={"phone": PHONE}, headers=key)  # a replay logs its scope
+        code = _code(sms)
+        await api.post(
+            VERIFY, json={"verification_id": first.json()["verification_id"], "code": code}
+        )
+    assert any(log["event"] == "idempotent_replay" for log in logs)
+    text = repr(logs)
+    for secret in (PHONE, PHONE[4:], code, hashlib.sha256(PHONE.encode()).hexdigest()[:32]):
+        assert secret not in text

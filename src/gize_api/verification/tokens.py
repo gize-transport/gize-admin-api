@@ -74,10 +74,17 @@ def code_hash(verification_id: uuid.UUID, code: str, *, key: str) -> str:
     ).hexdigest()
 
 
+def phone_scope(phone: str, *, key: str) -> str:
+    """The idempotency scope for a public caller, who has no identity but the phone: keyed,
+    because a plain hash of a phone number is reversible (and scopes appear in logs)."""
+    digest = hmac.new(_derived(key, b"gize-idempotency-scope"), phone.encode(), hashlib.sha256)
+    return f"phone:{digest.hexdigest()[:32]}"
+
+
 def _token_key(key: str) -> bytes:
     return _derived(key, b"gize-verified-phone-token")
 
 
 def _derived(key: str, purpose: bytes) -> bytes:
-    """One setting, two independent keys: a code hash can't help forge a token."""
+    """One setting, independent keys: a code hash can't help forge a token."""
     return hmac.new(key.encode(), purpose, hashlib.sha256).digest()

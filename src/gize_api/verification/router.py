@@ -41,7 +41,8 @@ def token_key(request: Request) -> str:
         ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
         ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
     ),
-    dependencies=[Depends(rate_limited(SMS))],
+    # The key first: switched off, nothing is counted against the limits.
+    dependencies=[Depends(token_key), Depends(rate_limited(SMS))],
 )
 async def request_code(
     body: VerificationRequest,
@@ -82,7 +83,7 @@ async def request_code(
         ErrorCode.RATE_LIMITED,
         ErrorCode.SERVICE_UNAVAILABLE,
     ),
-    dependencies=[Depends(rate_limited(VERIFICATION_CHECK))],
+    dependencies=[Depends(token_key), Depends(rate_limited(VERIFICATION_CHECK))],
 )
 async def verify_code(
     body: VerificationCheck,
@@ -91,7 +92,8 @@ async def verify_code(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> PhoneVerified:
     """The right code answers a token proving the phone, valid 30 minutes and good for one
-    sign-up.
+    sign-up. Not idempotent: a retry after a lost answer finds the code used (410) and the
+    app asks for a new one.
 
     - 422 VERIFICATION_CODE_INVALID: wrong code (five tries per code).
     - 410 VERIFICATION_EXPIRED: expired, already used, out of tries, or unknown: ask for a

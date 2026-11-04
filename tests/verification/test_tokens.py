@@ -4,6 +4,7 @@ Only a token we signed, for this audience, unexpired and complete, is accepted; 
 setting yields two independent keys (code hashes and tokens).
 """
 
+import hashlib
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,7 @@ from gize_api.verification.tokens import (
     _token_key,
     code_hash,
     issue_verified_phone_token,
+    phone_scope,
     read_verified_phone_token,
 )
 from tests.verification.support import TOKEN_KEY
@@ -99,3 +101,14 @@ def test_a_code_hash_depends_on_the_verification_the_code_and_the_key() -> None:
     assert base != code_hash(uuid.UUID(int=8), "123456", key=TOKEN_KEY)
     assert base != code_hash(VERIFICATION, "123457", key=TOKEN_KEY)
     assert base != code_hash(VERIFICATION, "123456", key=OTHER_KEY)
+
+
+def test_a_phone_scope_is_keyed_and_stable() -> None:
+    """Scopes reach logs: without the key they mustn't lead back to the number."""
+    scope = phone_scope(PHONE, key=TOKEN_KEY)
+    assert scope == phone_scope(PHONE, key=TOKEN_KEY)
+    assert scope.startswith("phone:")
+    assert len(scope) == len("phone:") + 32
+    assert scope != phone_scope("+251922334455", key=TOKEN_KEY)
+    assert scope != phone_scope(PHONE, key=OTHER_KEY)
+    assert scope.removeprefix("phone:") not in hashlib.sha256(PHONE.encode()).hexdigest()

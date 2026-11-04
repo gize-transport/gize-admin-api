@@ -8583,7 +8583,7 @@
     },
     "/v1/verification/verify": {
       "post": {
-        "description": "The right code answers a token proving the phone, valid 30 minutes and good for one\nsign-up.\n\n- 422 VERIFICATION_CODE_INVALID: wrong code (five tries per code).\n- 410 VERIFICATION_EXPIRED: expired, already used, out of tries, or unknown: ask for a\n  new code.\n- 429 RATE_LIMITED: 30 checks an hour per caller.",
+        "description": "The right code answers a token proving the phone, valid 30 minutes and good for one\nsign-up. Not idempotent: a retry after a lost answer finds the code used (410) and the\napp asks for a new one.\n\n- 422 VERIFICATION_CODE_INVALID: wrong code (five tries per code).\n- 410 VERIFICATION_EXPIRED: expired, already used, out of tries, or unknown: ask for a\n  new code.\n- 429 RATE_LIMITED: 30 checks an hour per caller.",
         "operationId": "verification_verify",
         "requestBody": {
           "content": {

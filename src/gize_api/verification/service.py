@@ -7,7 +7,13 @@ failing closed):
 2. send the SMS (GZ-030's `send_once`, keyed by the verification), with no transaction open;
 3. if it didn't go out, release the key and expire the verification, then answer 503
    SMS_UNAVAILABLE: the app's retry with the same key runs again instead of replaying a
-   success. A send left `sending` counts as not sent.
+   success. A send left `sending` counts as not sent, and so does anything that stops the
+   send (the database failing, a bug, the request cancelled): the key is released and the
+   code expired before the error goes on, so a stored "sent" never outlives an SMS that
+   wasn't.
+
+Every request counts against the limits, replays included (a retried success uses one of
+the phone's three codes an hour): the safe direction.
 
 Checking a code locks the verification, so parallel guesses can't exceed five attempts. A
 wrong code is counted (and committed) before the answer; an expired, used, exhausted or
@@ -15,7 +21,7 @@ unknown verification gets one answer, 410 VERIFICATION_EXPIRED, so nothing tells
 which IDs exist.
 """
 
-import hashlib
+import asyncio
 import hmac
 import secrets
 import uuid
@@ -41,7 +47,7 @@ from gize_api.verification.schemas import (
     VerificationCheck,
     VerificationSent,
 )
-from gize_api.verification.tokens import code_hash, issue_verified_phone_token
+from gize_api.verification.tokens import code_hash, issue_verified_phone_token, phone_scope
 
 CODE_LIFETIME = timedelta(minutes=10)
 SMS_RETRY_AFTER_SECONDS = "60"
@@ -62,8 +68,7 @@ async def request_code(
     telemetry: Telemetry | None,
 ) -> Response:
     await limiter.check(SMS, phone=phone)  # the caller's IP is counted by the route
-    # Keys are scoped by phone: the public caller has no other identity.
-    scope = f"phone:{hashlib.sha256(phone.encode()).hexdigest()[:32]}"
+    scope = phone_scope(phone, key=key)
     verification_id = uuid.uuid4()
     code = f"{secrets.randbelow(10**CODE_LENGTH):0{CODE_LENGTH}d}"
     async with session.begin():
@@ -84,25 +89,40 @@ async def request_code(
         ).model_dump(mode="json")
         await record(session, claimed, status=201, body=payload)
 
-    delivery = await send_once(
-        borrowed(session),
-        sender,
-        key=f"otp:{verification_id}",
-        purpose=SmsPurpose.PHONE_VERIFICATION,
-        to=phone,
-        text=message(code),
-        telemetry=telemetry,
-    )
+    try:
+        delivery = await send_once(
+            borrowed(session),
+            sender,
+            key=f"otp:{verification_id}",
+            purpose=SmsPurpose.PHONE_VERIFICATION,
+            to=phone,
+            text=message(code),
+            telemetry=telemetry,
+        )
+    except BaseException:
+        # Not known to be sent: forget the success, even while being cancelled.
+        await asyncio.shield(_withdraw(session, scope, idempotent, verification_id))
+        raise
     if delivery.status is not SmsStatus.SENT:
-        async with session.begin():
-            await idempotency.release(session, scope=scope, key=idempotent.key)
-            await session.execute(
-                update(PhoneVerification)
-                .where(PhoneVerification.id == verification_id)
-                .values(expires_at=PhoneVerification.created_at)  # never usable
-            )
+        await _withdraw(session, scope, idempotent, verification_id)
         raise AppError(ErrorCode.SMS_UNAVAILABLE, headers={"Retry-After": SMS_RETRY_AFTER_SECONDS})
     return JSONResponse(payload, status_code=201)
+
+
+async def _withdraw(
+    session: AsyncSession,
+    scope: str,
+    idempotent: IdempotentRequest,
+    verification_id: uuid.UUID,
+) -> None:
+    """Release the key (a retry runs again) and expire the code (never usable)."""
+    async with session.begin():
+        await idempotency.release(session, scope=scope, key=idempotent.key)
+        await session.execute(
+            update(PhoneVerification)
+            .where(PhoneVerification.id == verification_id)
+            .values(expires_at=PhoneVerification.created_at)
+        )
 
 
 async def check_code(session: AsyncSession, check: VerificationCheck, *, key: str) -> PhoneVerified:
