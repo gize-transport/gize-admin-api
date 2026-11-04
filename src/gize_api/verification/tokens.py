@@ -48,7 +48,9 @@ def issue_verified_phone_token(
     return jwt.encode(claims, _token_key(key), algorithm=_ALGORITHM), expires
 
 
-def read_verified_phone_token(token: str, *, key: str) -> VerifiedPhone:
+def read_verified_phone_token(token: str, *, key: str, check_expiry: bool = True) -> VerifiedPhone:
+    """`check_expiry=False` only to find which sign-up a retry repeats (GZ-032): an expired
+    token still names its phone, but never proves it for anything new."""
     try:
         claims = jwt.decode(
             token,
@@ -56,7 +58,10 @@ def read_verified_phone_token(token: str, *, key: str) -> VerifiedPhone:
             algorithms=[_ALGORITHM],
             audience=AUDIENCE,
             issuer=ISSUER,
-            options={"require": ["iss", "aud", "sub", "jti", "iat", "exp"]},
+            options={
+                "require": ["iss", "aud", "sub", "jti", "iat", "exp"],
+                "verify_exp": check_expiry,
+            },
         )
         return VerifiedPhone(
             phone=str(claims["sub"]),

@@ -2,7 +2,8 @@
 
 The code itself is never stored: `code_hash` is an HMAC of the verification's ID and the
 code, keyed by VERIFIED_PHONE_TOKEN_KEY, so a copy of the table can't be turned back into
-codes. A verification is usable until `expires_at` (10 minutes), for five attempts, once.
+codes. A verification is usable until `expires_at` (10 minutes), for five attempts, once;
+its token, by one sign-up (`consumed_at`, GZ-032).
 """
 
 import uuid
@@ -33,3 +34,5 @@ class PhoneVerification(TimestampMixin, Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(SmallInteger, server_default="0")
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When a sign-up spent its token (GZ-032): each token works once.
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

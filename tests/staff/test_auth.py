@@ -299,6 +299,8 @@ UNGUARDED_ROUTES = frozenset(
         # The rider app's catalogue (GZ-036): public reads, PUBLIC_READ (failing open).
         ("GET", "/v1/public/areas"),
         ("GET", "/v1/public/routes"),
+        # Adult sign-up (GZ-032): a verified phone instead, PUBLIC_SIGNUP (failing closed).
+        ("POST", "/v1/registrations/adult"),
     }
 )
 

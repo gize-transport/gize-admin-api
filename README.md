@@ -459,6 +459,29 @@ What the rider app reads before a sign-up (GZ-036). Public, with no sign-in. Bot
 
 `forming` routes take reservations. `active` and `paused` routes take requests for a seat (GZ-032). Student routes join with GZ-033.
 
+## Adult sign-up
+
+The public app's sign-up (GZ-032). No sign-in: the phone verified with GZ-031 instead. Limits are 5 an hour per caller and 3 a day per phone, failing closed (`503`) without Redis.
+
+`POST /v1/registrations/adult` (`registrations_adult`) takes `{verified_phone_token, full_name, home_area_id, destination_area_id, plan, saturday?, route_id?}` and requires `Idempotency-Key`. The phone is the token's, and the token works for one sign-up. It answers `201 {rider_id, outcome, route_id, start_date, route_request_id}`:
+
+| Chosen route | Outcome |
+| --- | --- |
+| `forming`, with a free seat | `reserved`: a seat from the next 1st (the launch moves it to its own day) |
+| `forming`, full | `409 ROUTE_FULL`: nothing kept, and the token still works |
+| `active` or `paused` | `requested`: a request for that route. Never a place directly, because freed seats go to the oldest request. |
+| none | `requested`: a request for a route between the two areas. Only when no route would take them: a running route, or a forming one with a seat, is a `422` on `route_id` (forming routes that are all full count as none). |
+
+Other answers:
+- `401 PHONE_NOT_VERIFIED`: the token is bad, expired or already used.
+- `409 RIDER_EXISTS`: one live adult rider per phone.
+- A request staff recorded earlier from a call (same phone, name, and areas or route) is linked to the rider and keeps its place in the queue.
+- A retry with the same `Idempotency-Key` replays the answer, even after the token has expired, and doesn't count against the phone's three a day.
+- `422` on `route_id`: a route the app can't sign up to for these areas.
+- `422` on `saturday`: the route has no Saturday add-on.
+
+Seats are counted and taken under the route's lock, so two riders never both get the last seat. While a rider holds a seat, staff can't drop the area they board in, and admins can't clear the Saturday price if they have the add-on (`409 ROUTE_HAS_RIDERS`).
+
 ## Health checks
 
 For the load balancer or orchestrator, without auth, never cached, not in the API schema:

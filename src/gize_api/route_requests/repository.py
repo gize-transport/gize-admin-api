@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import (
+    ColumnElement,
     Select,
     SQLColumnExpression,
     String,
@@ -104,6 +105,19 @@ async def open_request_exists(
 ) -> bool:
     """Another live, open request asks for the same (the unique index's rule, so the check
     and the index never disagree)."""
+    statement = exists().where(*_same_open(asked))
+    if except_id is not None:
+        statement = statement.where(RouteRequest.id != except_id)
+    return bool(await session.scalar(select(statement)))
+
+
+async def same_open_request(session: AsyncSession, asked: Asked) -> RouteRequest | None:
+    """The live, open request asking for the same, locked (`FOR UPDATE`): GZ-032 links a
+    request staff recorded to the rider who then signed up."""
+    return await session.scalar(select(RouteRequest).where(*_same_open(asked)).with_for_update())
+
+
+def _same_open(asked: Asked) -> tuple[ColumnElement[bool], ...]:
     stored = _keys(
         RouteRequest.contact_phone,
         RouteRequest.kind,
@@ -122,14 +136,11 @@ async def open_request_exists(
         _area_key(literal(asked.to_area_id, Uuid), literal(asked.to_area_name, String)),
         literal(asked.rider_name, String),
     )
-    statement = exists().where(
+    return (
         RouteRequest.not_deleted(),
         _OPEN,
         *(column == value for column, value in zip(stored, new, strict=True)),
     )
-    if except_id is not None:
-        statement = statement.where(RouteRequest.id != except_id)
-    return bool(await session.scalar(select(statement)))
 
 
 def live_requests(
