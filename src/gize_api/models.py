@@ -11,6 +11,7 @@ from gize_api.core.models import Base
 from gize_api.corridors import models as corridor_models  # gize.corridors
 from gize_api.route_requests import models as route_request_models  # gize.route_requests
 from gize_api.routes import models as route_models  # gize.routes, gize.route_assignments
+from gize_api.sms import models as sms_models  # gize.sms_messages
 from gize_api.staff import models as staff_models  # gize.staff
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "idempotency",
     "route_models",
     "route_request_models",
+    "sms_models",
     "staff_models",
 ]

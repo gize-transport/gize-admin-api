@@ -69,6 +69,7 @@ src/gize_api/
   staff/  areas/  companies/  routes/  route_requests/  riders/  drivers/  verification/   # domain slices
   audit_log/              # GET /v1/audit-log (admins); the writer is core/audit.py
   integrations/sms.py     # SmsSender protocol + FakeSmsSender + real gateway adapter later
+  sms/                    # send_once: de-duplicated, inline sending (free plan: no worker)
   integrations/supabase_auth.py  # Supabase Auth admin API (secret key; read users, invites later)
   cli/first_admin.py      # operator command: make the first admin (`python -m gize_api.cli.first_admin`)
 migrations/               # Alembic (env.py runs as gize_migrator)
