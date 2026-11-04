@@ -24,6 +24,7 @@ RIDERS = "/v1/riders"
 LOCK_AREA = "SELECT 1 FROM gize.areas WHERE id = $1 FOR UPDATE"
 LOCK_ROUTE = "SELECT 1 FROM gize.routes WHERE id = $1 FOR UPDATE"
 DROP_SERVED = "DELETE FROM gize.route_areas WHERE route_id = $1 AND area_id = $2"
+END_SEATS = "UPDATE gize.route_assignments SET status = 'ended' WHERE route_id = $1"
 
 
 async def test_two_records_of_one_phone_make_one_rider(
@@ -31,8 +32,8 @@ async def test_two_records_of_one_phone_make_one_rider(
     committed_sessionmaker: async_sessionmaker[AsyncSession],
     database: DatabaseUrls,
 ) -> None:
-    """Both pass the "phone free" check together: the unique index decides, and the
-    loser's violation is the same 409."""
+    """Released together: one rider, the other a 409 RIDER_EXISTS, whether the check or
+    the unique index catches it (test_rules.py proves the index's answer directly)."""
     async with committed_sessionmaker() as session:
         member = (await add_staff(session)).id
         trip = await add_trip(session)
@@ -108,3 +109,48 @@ async def test_an_edit_waiting_on_a_route_change_judges_the_new_route(
         await conn.close()
     assert (response.status_code, response.json()["code"]) == (422, "VALIDATION_FAILED")
     assert [error["field"] for error in response.json()["errors"]] == ["/home_area_id"]
+
+
+async def test_an_edit_waiting_on_a_launch_that_lapses_the_seat_is_free(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+    database: DatabaseUrls,
+) -> None:
+    """The seat ends (a launch lapses it) while the edit waits for the route: after the
+    wait the rider holds nothing, so the route no longer limits the edit."""
+    async with committed_sessionmaker() as session:
+        member = (await add_staff(session)).id
+        trip = await add_trip(session)
+        route = await add_route(session, trip)
+        async with session.begin():
+            rider = await RiderFactory().create(
+                session, home_area_id=trip.bole, destination_area_id=trip.mexico
+            )
+            rider_id: uuid.UUID = rider.id
+            session.add(
+                RouteAssignment(
+                    route_id=route,
+                    rider_id=rider_id,
+                    start_date=date(2026, 12, 1),
+                    status=AssignmentStatus.RESERVED,
+                )
+            )
+    conn = await asyncpg.connect(database.migrator, timeout=3)
+    try:
+        launch = conn.transaction()
+        await launch.start()
+        await conn.execute(LOCK_ROUTE, route)
+        await conn.execute(END_SEATS, route)
+        edit = asyncio.create_task(
+            committed_api.patch(
+                f"{RIDERS}/{rider_id}",
+                json={"home_area_id": str(trip.summit)},  # not on the route
+                headers=signed_in(member),
+            )
+        )
+        await wait_for_lock_waiters(database)
+        await launch.commit()
+        response = await edit
+    finally:
+        await conn.close()
+    assert response.status_code == 200, response.json()

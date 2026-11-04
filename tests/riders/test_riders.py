@@ -455,6 +455,80 @@ async def test_a_seat_holders_edit_must_still_fit_their_route(
         assert [error["field"] for error in response.json()["errors"]] == [field]
 
 
+async def test_a_route_offering_saturday_takes_the_add_on(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    route = await add_route(db_session, trip, price_saturday=600)
+    rider = (await _rider(db_session, trip)).id
+    await _seat(db_session, route, rider)
+    response = await api.patch(
+        _path(rider), json={"saturday_addon": True}, headers=signed_in(member)
+    )
+    assert (response.status_code, response.json()["saturday_addon"]) == (200, True)
+
+
+@pytest.mark.parametrize(
+    ("home", "destination", "blamed"),
+    [
+        ("megenagna", "summit", "/destination_area_id"),  # boards on the way, wrong B
+        ("summit", "mexico", "/home_area_id"),  # the route doesn't pass Summit
+    ],
+)
+async def test_both_areas_changing_blames_the_one_that_breaks_it(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    trip: Trip,
+    member: uuid.UUID,
+    home: str,
+    destination: str,
+    blamed: str,
+) -> None:
+    route = await add_route(db_session, trip, serves=(trip.megenagna,))
+    rider = (await _rider(db_session, trip)).id
+    await _seat(db_session, route, rider)
+    change = {
+        "home_area_id": str(getattr(trip, home)),
+        "destination_area_id": str(getattr(trip, destination)),
+    }
+    response = await api.patch(_path(rider), json=change, headers=signed_in(member))
+    assert (response.status_code, response.json()["code"]) == (422, "VALIDATION_FAILED")
+    assert [error["field"] for error in response.json()["errors"]] == [blamed]
+
+
+async def test_a_seat_holder_may_change_what_the_route_does_not_care_about(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    route = await add_route(db_session, trip)
+    rider = (await _rider(db_session, trip)).id
+    await _seat(db_session, route, rider, status=AssignmentStatus.ACTIVE,
+                start_date=date(2026, 11, 1))  # fmt: skip
+    response = await api.patch(
+        _path(rider),
+        json={"full_name": "Abebe Kebede", "plan": "morning", "phone": "+251922334455"},
+        headers=signed_in(member),
+    )
+    assert response.status_code == 200
+    moved = await api.patch(
+        _path(rider), json={"home_area_id": str(trip.summit)}, headers=signed_in(member)
+    )
+    assert moved.status_code == 422  # an active seat restricts edits like a reserved one
+
+
+async def test_a_seat_that_ended_restricts_nothing(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    route = await add_route(db_session, trip)
+    rider = (await _rider(db_session, trip)).id
+    await _seat(db_session, route, rider, status=AssignmentStatus.ACTIVE,
+                start_date=date(2026, 10, 1), end_date=date(2026, 10, 31))  # fmt: skip
+    response = await api.patch(
+        _path(rider),
+        json={"home_area_id": str(trip.summit), "saturday_addon": True},
+        headers=signed_in(member),
+    )
+    assert response.status_code == 200
+
+
 # Deleting
 
 
@@ -496,19 +570,32 @@ async def test_staff_cannot_delete_riders(
 
 @pytest.mark.parametrize(
     ("method", "path"),
-    [("GET", RIDERS), ("GET", _path(uuid.UUID(int=1))), ("POST", f"{RIDERS}/lookup")],
+    [
+        ("GET", RIDERS),
+        ("GET", _path(uuid.UUID(int=1))),
+        ("POST", f"{RIDERS}/lookup"),
+        ("POST", RIDERS),
+        ("PATCH", _path(uuid.UUID(int=1))),
+        ("DELETE", _path(uuid.UUID(int=1))),
+    ],
 )
 async def test_the_database_down_is_503(
     api: httpx.AsyncClient,
     api_app: GizeAPI,
+    db_session: AsyncSession,
     unreachable_sessions: AsyncSession,
-    member: uuid.UUID,
+    trip: Trip,
     method: str,
     path: str,
 ) -> None:
+    admin = (await add_admin(db_session)).id  # may call every one of them
+
     async def down() -> AsyncIterator[AsyncSession]:
         yield unreachable_sessions
 
     api_app.dependency_overrides[get_session] = down
-    response = await api.request(method, path, json={"phone": PHONE}, headers=signed_in(member))
+    body = _new(trip) if method == "POST" and path == RIDERS else {"phone": PHONE}
+    if method == "PATCH":
+        body = {"plan": "morning"}
+    response = await api.request(method, path, json=body, headers=with_key(admin))
     assert (response.status_code, response.json()["code"]) == (503, "SERVICE_UNAVAILABLE")

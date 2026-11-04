@@ -49,7 +49,7 @@ from gize_api.riders.schemas import (
     masked,
 )
 from gize_api.routes import repository as routes
-from gize_api.routes.models import AssignmentStatus
+from gize_api.routes.models import AssignmentStatus, Route
 
 _AREA_FIELDS = ("home_area_id", "destination_area_id")
 
@@ -141,25 +141,16 @@ async def update(
     async with session.begin():
         row = await _live(session, rider_id, for_update=True)
         today = schedule.addis_today()
-        held = (await repository.held_seats(session, [row.id], today)).get(row.id)
-        route = (
-            None
-            if held is None
-            else await routes.get_live_route(session, held.route_id, for_update=True)
-        )
+        route = await _route_of_seat(session, row.id, today)
         home = change.home_area_id or row.home_area_id
         destination = change.destination_area_id or row.destination_area_id
         moved = [field for field in _AREA_FIELDS if field in change.model_fields_set]
-        if home == destination:
+        if moved and home == destination:
             raise invalid_field("body", moved[-1])
         await _refer_to_areas(session, {field: getattr(change, field) for field in moved})
         if route is not None:
-            if moved and (
-                home is None
-                or destination is None
-                or not await routes.serves(session, route.id, home, destination)
-            ):
-                raise invalid_field("body", moved[0])
+            if moved:
+                await _still_on_the_way(session, route, row, home, destination, moved)
             if change.saturday_addon and route.price_saturday is None:
                 raise invalid_field("body", "saturday_addon")
         if change.phone is not None and await repository.phone_taken(
@@ -205,6 +196,45 @@ async def delete(session: AsyncSession, caller: CurrentStaff, rider_id: uuid.UUI
             before=before,
             after=audit.snapshot(RIDER_AUDIT, row),
         )
+
+
+async def _route_of_seat(session: AsyncSession, rider_id: uuid.UUID, today: date) -> Route | None:
+    """The route of the seat the rider (locked already) holds, locked; the seat is read
+    again after the wait, since a launch may have lapsed it meanwhile."""
+    held = (await repository.held_seats(session, [rider_id], today)).get(rider_id)
+    if held is None:
+        return None
+    route = await routes.get_live_route(session, held.route_id, for_update=True)
+    still = (await repository.held_seats(session, [rider_id], today)).get(rider_id)
+    return route if still is not None else None
+
+
+async def _still_on_the_way(
+    session: AsyncSession,
+    route: Route,
+    row: Rider,
+    home: uuid.UUID | None,
+    destination: uuid.UUID | None,
+    moved: list[str],
+) -> None:
+    """The route still takes the rider: boarding at A or an area it serves, going to B.
+    Otherwise a 422 on the area that breaks it: with both changed, the new home is judged
+    against the current destination first."""
+    if (
+        home is not None
+        and destination is not None
+        and await routes.serves(session, route.id, home, destination)
+    ):
+        return
+    field = moved[0]
+    if (
+        len(moved) == len(_AREA_FIELDS)
+        and home is not None
+        and row.destination_area_id is not None
+        and await routes.serves(session, route.id, home, row.destination_area_id)
+    ):
+        field = "destination_area_id"
+    raise invalid_field("body", field)
 
 
 async def _refer_to_areas(session: AsyncSession, areas: dict[str, uuid.UUID | None]) -> None:
