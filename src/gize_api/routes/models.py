@@ -218,6 +218,14 @@ ROUTE_AREAS_AUDIT = AuditedEntity(
 )
 
 
+# Seats staff give, move and end (GZ-035). The skip reason is free text: redacted.
+ROUTE_ASSIGNMENT_AUDIT = AuditedEntity(
+    type="route_assignment",
+    fields=("route_id", "rider_id", "start_date", "end_date", "status", "skip_reason"),
+    visible=frozenset({"route_id", "rider_id", "start_date", "end_date", "status"}),
+)
+
+
 class RouteArea(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """An area a route passes between A and B, where riders board or get off (GZ-023): in
     order, no times (owner decision). Replaced as a whole list; A and B are the corridor's."""
@@ -242,12 +250,13 @@ class RouteAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("status IN ('reserved', 'active', 'ended')", name="status"),
         CheckConstraint("end_date IS NULL OR end_date >= start_date", name="dates"),
         Index("ix_route_assignments_route_id_start_date", "route_id", "start_date"),
-        # A rider holds one seat at a time (GZ-032; GZ-035 moves riders by ending one).
+        # One ongoing (open-ended) seat per rider (GZ-035): a move keeps the old seat to
+        # the day before the new one starts; the service keeps a rider's seats apart.
         Index(
-            "uq_route_assignments_rider_id_held",
+            "uq_route_assignments_rider_id_ongoing",
             "rider_id",
             unique=True,
-            postgresql_where=text("status <> 'ended'"),
+            postgresql_where=text("status <> 'ended' AND end_date IS NULL"),
         ),
     )
 
@@ -259,3 +268,5 @@ class RouteAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     rider_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("gize.riders.id", ondelete="RESTRICT")
     )
+    # Why staff placed this rider ahead of open requests for the route (GZ-035).
+    skip_reason: Mapped[str | None] = mapped_column(String(SHORT_TEXT_MAX_LENGTH))

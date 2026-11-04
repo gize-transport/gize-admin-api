@@ -461,7 +461,7 @@ What the rider app reads before a sign-up (GZ-036). Public, with no sign-in. Bot
 
 ## Riders
 
-Staff manage riders (GZ-034); admins delete them. Phones never go in URLs.
+Staff manage riders (GZ-034) and their seats (GZ-035); admins delete them. Phones never go in URLs. Riders are adults (who may also sign up themselves) or company riders, recorded with `rider_type: corporate`, their `company_id` and where they board; a phone appears once among live adults and once per company.
 
 | Endpoint | What it does |
 | --- | --- |
@@ -470,7 +470,9 @@ Staff manage riders (GZ-034); admins delete them. Phones never go in URLs.
 | `POST /v1/riders/lookup` (`riders_lookup`) | Body `{phone}`: the live riders with that phone. A POST so the number stays out of URLs and logs. |
 | `GET /v1/riders/{rider_id}` (`riders_get`) | One rider, phone in full, with the seat they hold (route, status, dates) and their open requests. |
 | `PATCH /v1/riders/{rider_id}` (`riders_update`) | Change any field. A rider holding a seat must still fit its route: boarding at A or an area it serves, going to B, Saturday only where the route offers it (`422` on the field). |
-| `DELETE /v1/riders/{rider_id}` (`riders_delete`) | Admins only, soft. `409 RIDER_HAS_SEAT` while they hold a seat: end it first (GZ-035). |
+| `DELETE /v1/riders/{rider_id}` (`riders_delete`) | Admins only, soft. `409 RIDER_HAS_SEAT` while they hold a seat: end it first. |
+| `PUT /v1/riders/{rider_id}/seat` (`riders_place`) | Give a seat or move the rider (GZ-035), with `Idempotency-Key`. Adults: a public route on their trip, from a 1st (the next by default): a reservation on a forming route, a place on an active one. Company riders: their company's route, from any day (today by default). A move ends the old seat the day before; a reservation just ends. `409 ROUTE_FULL`; `409 ROUTE_HAS_WAITING_REQUESTS` when an adult would jump other people's open requests for an active route (send `skip_reason`, kept and audited); their own requests for it are fulfilled. |
+| `POST /v1/riders/{rider_id}/seat/end` (`riders_end_seat`) | The rider leaves, with `Idempotency-Key`: adults at a month's end (this month's by default; the seat stays empty until the next month), company riders any day (today by default). A reservation ends at once. |
 
 Every change is in the audit log, with names and phones redacted.
 

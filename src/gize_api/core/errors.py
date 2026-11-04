@@ -83,6 +83,9 @@ class ErrorCode(StrEnum):
     RIDER_EXISTS = "RIDER_EXISTS"
     ROUTE_FULL = "ROUTE_FULL"
     RIDER_HAS_SEAT = "RIDER_HAS_SEAT"
+    RIDER_HAS_NO_SEAT = "RIDER_HAS_NO_SEAT"
+    ALREADY_ON_ROUTE = "ALREADY_ON_ROUTE"
+    ROUTE_HAS_WAITING_REQUESTS = "ROUTE_HAS_WAITING_REQUESTS"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -149,6 +152,9 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.RIDER_EXISTS: ErrorSpec(409, "Rider Exists"),
     ErrorCode.ROUTE_FULL: ErrorSpec(409, "Route Full"),
     ErrorCode.RIDER_HAS_SEAT: ErrorSpec(409, "Rider Has Seat"),
+    ErrorCode.RIDER_HAS_NO_SEAT: ErrorSpec(409, "Rider Has No Seat"),
+    ErrorCode.ALREADY_ON_ROUTE: ErrorSpec(409, "Already On Route"),
+    ErrorCode.ROUTE_HAS_WAITING_REQUESTS: ErrorSpec(409, "Route Has Waiting Requests"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

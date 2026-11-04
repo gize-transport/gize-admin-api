@@ -2,6 +2,7 @@
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -10,6 +11,7 @@ from sqlalchemy import (
     SQLColumnExpression,
     String,
     Uuid,
+    and_,
     cast,
     exists,
     func,
@@ -97,6 +99,49 @@ def _keys(
         from_area,
         to_area,
         func.lower(rider_name),
+    )
+
+
+async def own_requests_for(
+    session: AsyncSession, route_id: uuid.UUID, *, rider_id: uuid.UUID, phone: str | None
+) -> list[RouteRequest]:
+    """The rider's open requests waiting for this route (GZ-035): theirs by `rider_id`, or
+    recorded by staff with their phone before they were a rider. Locked (`FOR UPDATE`):
+    placing them fulfils these. Oldest first."""
+    recorded_for_them = and_(RouteRequest.rider_id.is_(None), RouteRequest.contact_phone == phone)
+    statement = (
+        select(RouteRequest)
+        .where(*_waiting_for(route_id), or_(RouteRequest.rider_id == rider_id, recorded_for_them))
+        .order_by(RouteRequest.created_at, RouteRequest.id)
+        .with_for_update()
+    )
+    return list((await session.scalars(statement)).all())
+
+
+async def others_waiting(
+    session: AsyncSession,
+    route_id: uuid.UUID,
+    *,
+    exclude: list[uuid.UUID],
+    before: datetime | None,
+) -> bool:
+    """Someone else's open request waits for this route (asked for it, or matched to it):
+    any, or only those made `before` (the rider's own oldest request)."""
+    statement = exists().where(*_waiting_for(route_id), RouteRequest.id.not_in(exclude))
+    if before is not None:
+        statement = statement.where(RouteRequest.created_at < before)
+    return bool(await session.scalar(select(statement)))
+
+
+def _waiting_for(route_id: uuid.UUID) -> tuple[ColumnElement[bool], ...]:
+    """Live, open, and for this route: asked for it (`route`) or matched to it."""
+    return (
+        RouteRequest.not_deleted(),
+        _OPEN,
+        or_(
+            and_(RouteRequest.kind == RequestKind.ROUTE, RouteRequest.route_id == route_id),
+            RouteRequest.matched_route_id == route_id,
+        ),
     )
 
 

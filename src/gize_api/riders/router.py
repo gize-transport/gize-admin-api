@@ -1,5 +1,6 @@
-"""/v1/riders: the people who ride (GZ-034). Staff record, list, look up, read and edit
-them; admins delete. Phones never go in URLs: look-ups send them in the body."""
+"""/v1/riders: the people who ride (GZ-034, GZ-035). Staff record, list, look up, read and
+edit them, and give, move and end their seats; admins delete. Phones never go in URLs:
+look-ups send them in the body."""
 
 import uuid
 from typing import Annotated
@@ -20,6 +21,8 @@ from gize_api.riders.schemas import (
     RiderPage,
     RiderRead,
     RiderUpdate,
+    SeatEnd,
+    SeatPlacement,
 )
 from gize_api.staff.models import StaffRole
 
@@ -141,6 +144,79 @@ async def update(
     """
     response.headers["Cache-Control"] = "no-store"
     return await service.update(session, caller, rider_id, change)
+
+
+@router.put(
+    "/{rider_id}/seat",
+    operation_id="riders_place",
+    summary="Give a rider a seat, or move them",
+    response_model=RiderRead,
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND,
+        ErrorCode.ROUTE_FULL,
+        ErrorCode.ALREADY_ON_ROUTE,
+        ErrorCode.ROUTE_HAS_WAITING_REQUESTS,
+        ErrorCode.IDEMPOTENCY_IN_PROGRESS,
+        ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+        ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+    ),
+)
+async def place(
+    rider_id: uuid.UUID,
+    placement: SeatPlacement,
+    caller: CurrentStaff = Depends(current_staff),  # noqa: B008
+    idempotent: IdempotentRequest = Depends(idempotent_request),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Response:
+    """Requires `Idempotency-Key`. An adult rides a public route that takes their trip
+    (a reservation on a `forming` one, a place on an `active` one) from a 1st; a company
+    rider their company's route from any day. A move ends the seat they hold the day
+    before (a reservation just ends).
+
+    - 409 ROUTE_FULL: not a seat free on every day from the start (record a route request).
+    - 409 ROUTE_HAS_WAITING_REQUESTS: an adult on an active route ahead of other people's
+      open requests for it: send a `skip_reason` (kept and audited). Their own requests for
+      it are fulfilled.
+    - 409 ALREADY_ON_ROUTE: they hold a seat on it.
+    - 422 on `route_id`: a route that doesn't take this rider; on `start_date`: not a
+      coming 1st for an adult, past, or more than a year ahead.
+    """
+    response = await service.place(session, caller, rider_id, placement, idempotent)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post(
+    "/{rider_id}/seat/end",
+    operation_id="riders_end_seat",
+    summary="A rider leaves their route",
+    response_model=RiderRead,
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND,
+        ErrorCode.RIDER_HAS_NO_SEAT,
+        ErrorCode.IDEMPOTENCY_IN_PROGRESS,
+        ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+        ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+    ),
+)
+async def end_seat(
+    rider_id: uuid.UUID,
+    ending: SeatEnd,
+    caller: CurrentStaff = Depends(current_staff),  # noqa: B008
+    idempotent: IdempotentRequest = Depends(idempotent_request),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Response:
+    """Requires `Idempotency-Key`. An adult leaves at a month's end (this month's by
+    default; the seat stays empty until the next month), a company rider on any day (today
+    by default). A reservation, or a seat not started by then, ends at once.
+
+    - 409 RIDER_HAS_NO_SEAT: they hold none.
+    - 422 on `end_date`: not a month's last day for an adult, past, or more than a year
+      ahead.
+    """
+    response = await service.end(session, caller, rider_id, ending, idempotent)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.delete(

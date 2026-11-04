@@ -1,7 +1,8 @@
 """Rider queries: live (not deleted) riders, the seat each holds, their open requests.
 
-A rider holds at most one seat at a time (`uq_route_assignments_rider_id_held`); "holds"
-means today or later (`routes.repository.holds_a_seat_from`).
+"Holds" means today or later (`routes.repository.holds_a_seat_from`). A rider holds one
+seat, or two that follow each other while moving (GZ-035): the old one to the day before
+the new one starts.
 """
 
 import uuid
@@ -19,11 +20,16 @@ from gize_api.route_requests.models import OPEN_STATUSES, RouteRequest
 from gize_api.routes.models import AssignmentStatus, Route, RouteAssignment
 from gize_api.routes.repository import holds_a_seat_from
 
-_WITH_AREAS = (joinedload(Rider.home_area), joinedload(Rider.destination_area))
+_WITH_AREAS = (
+    joinedload(Rider.home_area),
+    joinedload(Rider.destination_area),
+    joinedload(Rider.company),
+)
 
 
 @dataclass(frozen=True)
 class HeldSeat:
+    id: uuid.UUID
     route_id: uuid.UUID
     route_code: str
     status: AssignmentStatus
@@ -37,6 +43,12 @@ async def lives_or_goes_to(session: AsyncSession, area_id: uuid.UUID) -> bool:
         or_(Rider.home_area_id == area_id, Rider.destination_area_id == area_id),
         Rider.not_deleted(),
     )
+    return bool(await session.scalar(select(statement)))
+
+
+async def works_for(session: AsyncSession, company_id: uuid.UUID) -> bool:
+    """A live rider belongs to this company (index: ix_riders_company_id)."""
+    statement = exists().where(Rider.company_id == company_id, Rider.not_deleted())
     return bool(await session.scalar(select(statement)))
 
 
@@ -62,11 +74,21 @@ async def reload(session: AsyncSession, rider: Rider) -> Rider:
     return (await session.scalars(statement)).one()
 
 
-async def phone_taken(session: AsyncSession, phone: str, *, except_id: uuid.UUID | None) -> bool:
-    """A live adult other than `except_id` has this phone (`uq_riders_adult_phone`'s rule)."""
-    statement = exists().where(
-        Rider.phone == phone, Rider.rider_type == RiderType.ADULT, Rider.not_deleted()
+async def phone_taken(
+    session: AsyncSession,
+    phone: str,
+    *,
+    company_id: uuid.UUID | None,
+    except_id: uuid.UUID | None,
+) -> bool:
+    """Another live rider of the same kind has this phone: an adult (`company_id` None,
+    `uq_riders_adult_phone`'s rule) or a rider of that company (`uq_riders_company_phone`)."""
+    same_kind = (
+        Rider.rider_type == RiderType.ADULT
+        if company_id is None
+        else Rider.company_id == company_id
     )
+    statement = exists().where(Rider.phone == phone, same_kind, Rider.not_deleted())
     if except_id is not None:
         statement = statement.where(Rider.id != except_id)
     return bool(await session.scalar(select(statement)))
@@ -114,8 +136,9 @@ async def with_phone(session: AsyncSession, phone: str, *, limit: int) -> list[R
 
 async def held_seats(
     session: AsyncSession, rider_ids: list[uuid.UUID], today: date
-) -> dict[uuid.UUID, HeldSeat]:
-    """The seat each rider holds today or later, with its route's code, in one query."""
+) -> dict[uuid.UUID, list[HeldSeat]]:
+    """The seats each rider holds today or later, earliest start first, with their routes'
+    codes, in one query. A rider holding none has no key."""
     if not rider_ids:
         return {}
     rows = await session.execute(
@@ -126,15 +149,19 @@ async def held_seats(
             RouteAssignment.status,
             RouteAssignment.start_date,
             RouteAssignment.end_date,
+            RouteAssignment.id,
         )
         .join(Route, Route.id == RouteAssignment.route_id)
         .where(RouteAssignment.rider_id.in_(rider_ids), *holds_a_seat_from(today))
+        .order_by(RouteAssignment.start_date)
     )
-    # Keys are never null: the query matched them against `rider_ids`.
-    return {
-        cast(uuid.UUID, rider_id): HeldSeat(route_id, code, status, start, end)
-        for rider_id, route_id, code, status, start, end in rows
-    }
+    held: dict[uuid.UUID, list[HeldSeat]] = {}
+    for rider_id, route_id, code, status, start, end, seat_id in rows:
+        # Never null: the query matched it against `rider_ids`.
+        held.setdefault(cast(uuid.UUID, rider_id), []).append(
+            HeldSeat(seat_id, route_id, code, status, start, end)
+        )
+    return held
 
 
 async def open_request_counts(

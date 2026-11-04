@@ -26,6 +26,7 @@ from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.idempotency import IdempotentRequest, claim, record, replay_response
 from gize_api.core.pagination import paginate
 from gize_api.core.security import CurrentStaff
+from gize_api.riders.repository import works_for as company_has_riders
 from gize_api.routes.repository import (
     company_has_a_route,
     company_runs_a_route,
@@ -140,10 +141,11 @@ async def update(
 
 
 async def delete(session: AsyncSession, caller: CurrentStaff, company_id: uuid.UUID) -> None:
-    """Soft delete (admins: the route's require_role)."""
+    """Soft delete (admins: the route's require_role), refused while it has a live route
+    or live riders (GZ-035). The update lock waits for a rider being recorded for it."""
     async with session.begin():
         row = await _live(session, company_id, lock="update")
-        if await company_has_a_route(session, row.id):
+        if await company_has_a_route(session, row.id) or await company_has_riders(session, row.id):
             raise AppError(ErrorCode.COMPANY_IN_USE)
         before = audit.snapshot(COMPANY_AUDIT, row)
         row.deleted_at = func.now()  # the database's clock, like every other timestamp

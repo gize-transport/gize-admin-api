@@ -2,7 +2,9 @@
 
 Adults sign themselves up from the public app (GZ-032) or are recorded by staff (GZ-034):
 name, phone, home and destination areas, plan and Saturday add-on, the subscription they
-asked for. Students (GZ-033) and company riders (GZ-035) add their own fields later.
+asked for. Company riders (GZ-035) are recorded by staff for their company: name, phone and
+where they board (`home_area_id`); one live rider per phone per company. Students (GZ-033)
+are deferred.
 
 One live adult rider per phone (`uq_riders_adult_phone`). The seat a rider holds is a
 `route_assignments` row naming them; a seat asked for, a `route_requests` row. Names and
@@ -16,12 +18,14 @@ from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from gize_api.areas.models import Area
+from gize_api.companies.models import Company
 from gize_api.core.audit import AuditedEntity
 from gize_api.core.contact import MOBILE_E164_LENGTH
 from gize_api.core.models import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH
 
 RIDER_ADULT_PHONE_UNIQUE = "uq_riders_adult_phone"
+RIDER_COMPANY_PHONE_UNIQUE = "uq_riders_company_phone"
 
 # Names and phones are personal data: the log shows that they changed, never their values.
 RIDER_AUDIT = AuditedEntity(
@@ -30,6 +34,7 @@ RIDER_AUDIT = AuditedEntity(
         "rider_type",
         "full_name",
         "phone",
+        "company_id",
         "home_area_id",
         "destination_area_id",
         "plan",
@@ -40,6 +45,7 @@ RIDER_AUDIT = AuditedEntity(
     visible=frozenset(
         {
             "rider_type",
+            "company_id",
             "home_area_id",
             "destination_area_id",
             "plan",
@@ -94,20 +100,39 @@ class Rider(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
             name="adult",
         ),
         CheckConstraint("home_area_id <> destination_area_id", name="areas"),
+        # Company riders (GZ-035): their company, a phone and where they board; no
+        # destination (the route's B), plan or Saturday add-on (the company is billed).
+        CheckConstraint("(rider_type = 'corporate') = (company_id IS NOT NULL)", name="company"),
+        CheckConstraint(
+            "rider_type <> 'corporate' OR (phone IS NOT NULL AND home_area_id IS NOT NULL"
+            " AND destination_area_id IS NULL AND plan IS NULL AND NOT saturday_addon)",
+            name="corporate",
+        ),
         Index(
             RIDER_ADULT_PHONE_UNIQUE,
             "phone",
             unique=True,
             postgresql_where=text("rider_type = 'adult' AND deleted_at IS NULL"),
         ),
+        Index(
+            RIDER_COMPANY_PHONE_UNIQUE,
+            "company_id",
+            "phone",
+            unique=True,
+            postgresql_where=text("rider_type = 'corporate' AND deleted_at IS NULL"),
+        ),
         Index("ix_riders_home_area_id", "home_area_id"),  # "area in use"
         Index("ix_riders_destination_area_id", "destination_area_id"),
         Index("ix_riders_created_at_id", "created_at", "id"),  # GZ-034's list
+        Index("ix_riders_company_id", "company_id"),  # "company in use"
     )
 
     rider_type: Mapped[RiderType] = mapped_column(_string_enum(RiderType))
     full_name: Mapped[str] = mapped_column(String(SHORT_TEXT_MAX_LENGTH))
     phone: Mapped[str | None] = mapped_column(String(MOBILE_E164_LENGTH))
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("gize.companies.id", ondelete="RESTRICT")
+    )
     home_area_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("gize.areas.id", ondelete="RESTRICT")
     )
@@ -122,3 +147,4 @@ class Rider(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     destination_area: Mapped[Area | None] = relationship(
         foreign_keys=[destination_area_id], lazy="raise"
     )
+    company: Mapped[Company | None] = relationship(lazy="raise")

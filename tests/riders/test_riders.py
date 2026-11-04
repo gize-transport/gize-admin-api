@@ -104,7 +104,9 @@ async def test_staff_record_an_adult_from_a_call(
         "plan": "round_trip",
         "saturday_addon": True,
         "source": "staff",
+        "company": None,
         "seat": None,
+        "next_seat": None,
         "open_requests": 0,
         "created_at": created["created_at"],
         "updated_at": created["updated_at"],
@@ -117,6 +119,7 @@ async def test_staff_record_an_adult_from_a_call(
         "rider_type": "adult",
         "full_name": REDACTED,  # personal data
         "phone": REDACTED,
+        "company_id": None,
         "home_area_id": str(trip.bole),
         "destination_area_id": str(trip.mexico),
         "plan": "round_trip",
@@ -166,7 +169,10 @@ async def test_one_live_adult_per_phone(
         {"plan": "weekends"},
         {"saturday_addon": "yes"},
         {"home_area_id": "bole"},
-        {"rider_type": "corporate"},  # company riders come with GZ-035
+        {"rider_type": "corporate"},  # a company rider names their company
+        {"company_id": str(uuid.UUID(int=1))},  # an adult has none
+        {"plan": None},
+        {"destination_area_id": None},
         {"source": "app"},
         {"destination_area_id": "SAME"},
     ],
@@ -262,8 +268,8 @@ async def test_the_list_masks_phones_newest_first(
     assert "phone" not in items[1]
     assert set(items[1]) == {
         "id", "rider_type", "full_name", "phone_masked", "home_area", "destination_area",
-        "plan", "saturday_addon", "source", "seat", "open_requests", "created_at",
-        "updated_at",
+        "plan", "saturday_addon", "source", "company", "seat", "next_seat", "open_requests",
+        "created_at", "updated_at",
     }  # fmt: skip
 
 

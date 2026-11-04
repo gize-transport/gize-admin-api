@@ -1,4 +1,5 @@
-"""Giving a rider a seat (GZ-032; GZ-035 extends it to staff and company riders).
+"""Giving a rider a seat: a public sign-up's reservation (GZ-032), and staff placing
+adults and company riders (GZ-035).
 
 The caller locks the route first (`repository.get_live_route(for_update=True)`), then
 calls here: seats are counted and the new one inserted under that lock, so two riders can
@@ -25,11 +26,35 @@ async def reserve(
     a seat isn't free on every day from then."""
     if route.status is not RouteStatus.FORMING:
         raise ValueError("reservations are for forming routes")
-    start = repository.next_launch_day(today)
+    return await take(
+        session,
+        route,
+        rider_id,
+        start=repository.next_launch_day(today),
+        status=AssignmentStatus.RESERVED,
+    )
+
+
+async def take(
+    session: AsyncSession,
+    route: Route,
+    rider_id: uuid.UUID,
+    *,
+    start: date,
+    status: AssignmentStatus,
+    skip_reason: str | None = None,
+) -> RouteAssignment:
+    """A seat on the route (locked by the caller) from `start`, open-ended. 409 ROUTE_FULL
+    when a seat isn't free on every day from then: counted per day, so someone leaving at
+    a month's end frees the month after, not that one."""
     if await repository.peak_taken_from(session, route.id, start) >= route.seats:
         raise AppError(ErrorCode.ROUTE_FULL)
     seat = RouteAssignment(
-        route_id=route.id, rider_id=rider_id, start_date=start, status=AssignmentStatus.RESERVED
+        route_id=route.id,
+        rider_id=rider_id,
+        start_date=start,
+        status=status,
+        skip_reason=skip_reason,
     )
     session.add(seat)
     await session.flush()

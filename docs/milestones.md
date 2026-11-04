@@ -258,11 +258,14 @@ Status: done · Depends on: GZ-032
 - For GZ-035: lock the rider first and re-check it isn't deleted, then the route(s).
 
 ### GZ-035 · Assign rider to route
-Status: todo · Depends on: GZ-034, GZ-023, GZ-032
+Status: done · Depends on: GZ-034, GZ-023, GZ-032
 - Assign/move a rider to a route (boarding at A or a served area) with plan and Saturday add-on; route row locked; never exceeds seats on any day; rule checks (student ↔ student route, adult ↔ public route, corporate ↔ that company's route). Individual riders: a `forming` route gives a reservation, an `active` one a place, starting on the 1st of a month; company riders (recorded by Gize staff) start on any day. Placing an individual rider on an active route while that route has older open requests needs a skip reason, audited (the brief's skip rule).
 - A rider leaves a route: individual riders at the end of a month (the seat stays empty until the next month), company riders on any day.
 - Acceptance: parallel test – two assignments for the last seat → exactly one succeeds (`ROUTE_FULL` for the other, who can be recorded as a route request); uses GZ-032's assignment service, extended to staff assignment and company riders.
 - The parallel test needs committed data on two connections: `db_session` runs inside one rolled-back transaction, so add a committed-data fixture that truncates its tables afterwards (from GZ-006 review).
+- Owner decisions (GZ-035 plan, 2026-11-04): a company rider is a name, phone, company and boarding area (no destination: the route's B; no plan or Saturday), a phone once per company; adults start on a 1st staff choose (the next by default, a year ahead at most), company riders any day (today by default); a move ends the old seat the day before, a reservation just ends; adults leave at a chosen month's end (this month's by default), company riders any day (today by default).
+- Built: `PUT /v1/riders/{rider_id}/seat` (`riders_place`, Idempotency-Key: place or move; `ROUTE_FULL`, `ALREADY_ON_ROUTE`, `ROUTE_HAS_WAITING_REQUESTS` without a `skip_reason`) and `POST /v1/riders/{rider_id}/seat/end` (`riders_end_seat`; `RIDER_HAS_NO_SEAT`); `POST /v1/riders` takes `rider_type: corporate` with `company_id` (live and active). Migration 0015 (expand; GZ-033's number unused): `riders.company_id` with `ck_riders_company`, `ck_riders_corporate`, `uq_riders_company_phone`; `route_assignments.skip_reason`; `uq_route_assignments_rider_id_held` narrowed to `uq_route_assignments_rider_id_ongoing` (one open-ended seat), since a move holds the old seat to the day before the new one. `routes.seats.take` counts seats from the start under the route's lock (GZ-032's `reserve` uses it). The queue: other people's open requests for an active route (asked for it or matched to it) made before the rider's own come first; the rider's own are fulfilled on placement (`route_request.status_changed`). Riders show `company` and `next_seat` (additive). Locks: rider, then routes in id order, then requests. Audit `route_assignment.created`/`changed`, skip reasons redacted. A company with live riders can't be deleted (`COMPANY_IN_USE`).
+
 
 ---
 
