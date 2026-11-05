@@ -73,11 +73,25 @@ async def busy(
     )
     mine = _runs(times)
     return any(
-        start < their_end and their_start < end
+        _overlap(run, theirs)
         for other in rows
-        for their_start, their_end in _runs(tuple(other))  # type: ignore[arg-type]
-        for start, end in mine
+        for theirs in _runs(tuple(other))  # type: ignore[arg-type]
+        for run in mine
     )
+
+
+def _overlap(a: tuple[time, time], b: tuple[time, time]) -> bool:
+    """Runs share a moment. A run without an arrival time is its departure alone: it
+    clashes with a run under way then (from its start, until before its end), or another
+    departure alone at the same time. Runs that only touch don't overlap."""
+    (a_start, a_end), (b_start, b_end) = a, b
+    if a_start == a_end and b_start == b_end:
+        return a_start == b_start
+    if a_start == a_end:
+        return b_start <= a_start < b_end
+    if b_start == b_end:
+        return a_start <= b_start < a_end
+    return a_start < b_end and b_start < a_end
 
 
 def _runs(times: Times) -> tuple[tuple[time, time], tuple[time, time]]:

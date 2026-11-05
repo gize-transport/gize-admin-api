@@ -322,6 +322,7 @@ Status: done · Depends on: GZ-050, GZ-021
 - Only approved drivers with a passed inspection and enough seats; one active route per driver per time slot.
 - Rescoped (owner decision, 2026-11-05): no approval or vehicle seats in the MVP: only active drivers; one driver per route; a driver may cover several routes whose times don't overlap.
 - Built: migration 0019 (`routes.driver_id`, `ix_routes_driver_id`). `PUT /v1/routes/{id}/driver {driver_id}` (`routes_set_driver`, staff): give, replace or clear (null); the driver live and active (422 on `driver_id`), and none of their other live routes' runs (leave A → arrive B, leave B → arrive A) overlapping (`409 DRIVER_BUSY`; runs that only touch are fine). Every route shows `driver` {id, full_name, plate} (loaded with its places). Changing a route's times re-checks its driver (`DRIVER_BUSY`). A driver who drives a route can't be deactivated or deleted (`409 DRIVER_ASSIGNED`). Audit `route.driver_changed`. Locks: the route, then the driver (two routes given one driver at once are judged in turn; tested).
+- From review: a route made before arrival times existed is its departures alone, and clashes with a run under way then or another departure at the same time (it used to clash with nothing); a route's new times judge only the overlap (its driver stays). Every live route counts, draft and paused too (the safe default: no clash when it resumes; owner may relax it).
 
 ---
 

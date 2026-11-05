@@ -309,7 +309,9 @@ async def update(
             row.return_time,
             row.return_arrival_time,
         ):  # its driver's other routes must still fit (GZ-053; route, then driver locked)
-            await _driver_free_or_raise(session, row.driver_id, times, route_id=row.id)
+            await _driver_free_or_raise(
+                session, row.driver_id, times, route_id=row.id, assigning=False
+            )
 
         before = audit.snapshot(ROUTE_AUDIT, row)
         row.corridor, row.company = corridor, company
@@ -421,7 +423,9 @@ async def set_driver(
                 row.morning_time, row.morning_arrival_time, row.return_time,
                 row.return_arrival_time,
             )  # fmt: skip
-            await _driver_free_or_raise(session, body.driver_id, times, route_id=row.id)
+            await _driver_free_or_raise(
+                session, body.driver_id, times, route_id=row.id, assigning=True
+            )
         row.driver_id = body.driver_id
         await session.flush()
         row = await _live(session, route_id)  # with the driver loaded
@@ -443,11 +447,13 @@ async def _driver_free_or_raise(
     times: drivers.Times,
     *,
     route_id: uuid.UUID,
+    assigning: bool,
 ) -> None:
-    """The driver, locked, is live and active (422 on `driver_id`) and none of their other
-    routes' runs overlaps these times (409 DRIVER_BUSY)."""
+    """The driver, locked, is live and active when `assigning` (422 on `driver_id`), and
+    none of their other routes' runs overlaps these times (409 DRIVER_BUSY). New times on
+    a route keep its driver: only the overlap is judged then."""
     driver = await drivers.get_live_driver(session, driver_id, for_update=True)
-    if driver is None or not driver.is_active:
+    if assigning and (driver is None or not driver.is_active):
         raise invalid_field("body", "driver_id")
     if await drivers.busy(session, driver_id, times, excluding=route_id):
         raise AppError(ErrorCode.DRIVER_BUSY)

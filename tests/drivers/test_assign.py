@@ -122,8 +122,15 @@ async def test_only_an_active_driver_drives(
           "return_time": time(18, 0), "return_arrival_time": time(19, 0)}, True),  # evening
         ({"morning_time": time(5, 0), "morning_arrival_time": time(5, 45),
           "return_time": time(19, 0), "return_arrival_time": time(19, 45)}, False),
+        # Made before arrival times existed: a departure alone.
+        ({"morning_arrival_time": None, "return_arrival_time": None}, True),
+        ({"morning_time": time(7, 0), "morning_arrival_time": None,
+          "return_time": time(18, 0), "return_arrival_time": None}, True),  # under way then
+        ({"morning_time": time(7, 15), "morning_arrival_time": None,
+          "return_time": time(18, 15), "return_arrival_time": None}, False),  # just after
     ],
-    ids=["same", "morning overlaps", "touching", "evening overlaps", "apart"],
+    ids=["same", "morning overlaps", "touching", "evening overlaps", "apart",
+         "no arrivals, same departures", "no arrivals, during a run", "no arrivals, after"],
 )  # fmt: skip
 async def test_a_driver_covers_routes_whose_runs_dont_overlap(
     api: httpx.AsyncClient,
@@ -253,3 +260,44 @@ async def test_one_driver_given_two_overlapping_routes_at_once_gets_one(
     assert sorted(response.status_code for response in responses) == [200, 409]
     (refused,) = [response for response in responses if response.status_code == 409]
     assert refused.json()["code"] == "DRIVER_BUSY"
+
+
+async def test_routes_without_arrival_times_clash_on_the_same_departures(
+    api: httpx.AsyncClient, db_session: AsyncSession, member: uuid.UUID
+) -> None:
+    """Made before arrival times existed: a departure alone. The same departure is the
+    same moment; a newer route under way then clashes with it too."""
+    driver = await _driver(db_session)
+    older = {"morning_arrival_time": None, "return_arrival_time": None}
+
+    async def assigned(**times: Any) -> int:  # noqa: ANN401
+        response = await _assign(api, member, await _route(db_session, **times), driver)
+        return int(response.status_code)
+
+    assert await assigned(**older) == 200
+    assert await assigned(**older) == 409
+    assert await assigned(morning_time=time(6, 0), morning_arrival_time=time(7, 0)) == 409
+    assert await assigned(**{**older, "morning_time": time(8, 0),
+                             "return_time": time(16, 0)}) == 200  # fmt: skip
+
+
+async def test_giving_a_route_the_driver_it_has_records_nothing(
+    api: httpx.AsyncClient, db_session: AsyncSession, member: uuid.UUID
+) -> None:
+    driver = await _driver(db_session)
+    route = await _route(db_session)
+    await _assign(api, member, route, driver)
+    again = await _assign(api, member, route, driver)
+    assert again.status_code == 200
+    assert len(await audit_entries(db_session, route)) == 1
+
+
+async def test_a_driver_whose_route_was_deleted_may_be_deactivated(
+    api: httpx.AsyncClient, db_session: AsyncSession, member: uuid.UUID
+) -> None:
+    driver = await _driver(db_session)
+    await _route(db_session, driver_id=driver, deleted_at=datetime.now(UTC))
+    response = await api.patch(
+        f"/v1/drivers/{driver}", json={"is_active": False}, headers=signed_in(member)
+    )
+    assert (response.status_code, response.json()["is_active"]) == (200, False)
