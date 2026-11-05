@@ -284,8 +284,10 @@ Status: todo · Depends on: GZ-031, GZ-027, GZ-035
 - Acceptance: two acceptances for one seat → exactly one succeeds; an expired offer cannot be accepted.
 
 ### GZ-041 · Launch notifications
-Status: todo · Depends on: GZ-024, GZ-030, GZ-035
+Status: done · Depends on: GZ-024, GZ-030, GZ-035
 - When a route launches (GZ-024), every rider on it gets an SMS, enqueued after the commit; an SMS failure never undoes the launch. Idempotent: a repeated launch sends nothing more.
+- Owner decisions (2026-11-05): sent in the background right after the launch answers (no worker on the free plan), with a status view and a retry; English text "Gize: your route <code> starts on <their first day>. The van leaves <A> at <time>."; company routes send none.
+- Built: migration 0016 (`route_assignments.launched_on`, set by `start_reserved` on each seat a launch starts; `sms_messages.purpose` takes `route_launch`). `launches/service.send_due`: one `send_once` per recipient (seats the latest launch started, still held, rider with a phone), key `launch:<seat>:<attempt>`, one at a time, each failure logged and the rest sent; `send_in_background` (FastAPI background task after `PUT /status` with a `launch_date`; the app's own sessions and sender; never raises, logs `launch_messages_failed`). `GET /v1/routes/{id}/launch-messages` (`routes_launch_messages`, staff) and `POST .../retry` (`routes_retry_launch_messages`, staff, 202, background): failed and pending get a new attempt, sent never again. A message left `sending` counts as failed (GZ-030: final for its key). The price walk (GZ-022) now covers writes that take a body.
 
 ### GZ-042 · Company days without service
 Status: todo · Depends on: GZ-029, GZ-024

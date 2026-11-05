@@ -321,6 +321,7 @@ async def start_reserved(
         .values(
             status=AssignmentStatus.ACTIVE,
             start_date=func.greatest(RouteAssignment.start_date, literal(launch_day, Date)),
+            launched_on=launch_day,  # GZ-041: who gets the launch SMS
         )
         .returning(RouteAssignment.id)
     )

@@ -83,6 +83,8 @@ ACCESS: dict[tuple[str, str], Access] = {
     ("PUT", "/v1/routes/{route_id}/status"): STAFF,
     ("POST", "/v1/routes/{route_id}/copies"): STAFF,
     ("GET", "/v1/routes/{route_id}/launch-months"): STAFF,
+    ("GET", "/v1/routes/{route_id}/launch-messages"): STAFF,
+    ("POST", "/v1/routes/{route_id}/launch-messages/retry"): STAFF,
     ("PUT", "/v1/routes/{route_id}/prices"): ADMIN,
     ("DELETE", "/v1/routes/{route_id}"): ADMIN,
     # Route requests: staff record and settle them; admins delete.
