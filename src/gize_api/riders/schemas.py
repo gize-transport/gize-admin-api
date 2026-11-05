@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
@@ -28,6 +28,18 @@ class RecordedType(StrEnum):
     CORPORATE = "corporate"
 
 
+# Left out when they don't apply, never null: the contract shows each as its type (so the
+# released `plan` and `destination_area_id` keep their shape: GZ-034 required them).
+_LEFT_OUT_NOT_NULL = ("company_id", "destination_area_id", "plan")
+
+
+def _without_null(schema: dict[str, Any]) -> None:
+    for name in _LEFT_OUT_NOT_NULL:
+        field = schema["properties"][name]
+        branches = [branch for branch in field.pop("anyOf") if branch != {"type": "null"}]
+        field.update(branches[0])
+
+
 class RiderCreate(BaseModel):
     """A rider recorded by staff. The phone may be typed any usual way (`0911 23 45 67`);
     it is stored `+251911234567`.
@@ -37,7 +49,7 @@ class RiderCreate(BaseModel):
       destination (they ride to the route's B), plan or Saturday (the company is billed).
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra=_without_null)
 
     rider_type: RecordedType = RecordedType.ADULT
     full_name: ShortText
@@ -54,6 +66,11 @@ class RiderCreate(BaseModel):
 
     @model_validator(mode="after")
     def _fits_its_type(self) -> Self:
+        if any(
+            name in self.model_fields_set and getattr(self, name) is None
+            for name in _LEFT_OUT_NOT_NULL
+        ):
+            raise ValueError("leave a field out when it doesn't apply; null is not a value")
         if self.rider_type is RecordedType.CORPORATE:
             if self.company_id is None:
                 raise ValueError("a company rider names their company")

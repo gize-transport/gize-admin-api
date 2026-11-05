@@ -1245,30 +1245,16 @@
         "description": "A rider recorded by staff. The phone may be typed any usual way (`0911 23 45 67`);\nit is stored `+251911234567`.\n\n- `adult` (from a phone call): home and destination areas, plan, Saturday add-on.\n- `corporate` (GZ-035): their `company_id` and where they board (`home_area_id`); no\n  destination (they ride to the route's B), plan or Saturday (the company is billed).",
         "properties": {
           "company_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "description": "Company riders only.",
-            "title": "Company Id"
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
           },
           "destination_area_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "description": "Where they go (adults only).",
-            "title": "Destination Area Id"
+            "format": "uuid",
+            "title": "Destination Area Id",
+            "type": "string"
           },
           "full_name": {
             "maxLength": 100,
@@ -1289,14 +1275,7 @@
             "type": "string"
           },
           "plan": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RiderPlan"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "$ref": "#/components/schemas/RiderPlan",
             "description": "Adults only. `morning`: A to B only; `evening`: B to A."
           },
           "rider_type": {

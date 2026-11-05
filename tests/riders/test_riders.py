@@ -173,6 +173,7 @@ async def test_one_live_adult_per_phone(
         {"company_id": str(uuid.UUID(int=1))},  # an adult has none
         {"plan": None},
         {"destination_area_id": None},
+        {"plan": "NULL"},  # sent as null: left out is the only way
         {"source": "app"},
         {"destination_area_id": "SAME"},
     ],
@@ -184,6 +185,8 @@ async def test_a_bad_new_rider_is_422(
     if changes.get("destination_area_id") == "SAME":
         changes = {"destination_area_id": str(trip.bole)}
     body = {k: v for k, v in _new(trip, **changes).items() if v is not None}
+    if changes.get("plan") == "NULL":
+        body["plan"] = None
     response = await api.post(RIDERS, json=body, headers=with_key(member))
     assert (response.status_code, response.json()["code"]) == (422, "VALIDATION_FAILED")
 
