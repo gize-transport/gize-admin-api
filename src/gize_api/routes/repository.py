@@ -47,7 +47,7 @@ _WITH_PUBLIC_PLACES = (
     ),
     selectinload(Route.route_areas).joinedload(RouteArea.area, innerjoin=True),
 )
-_WITH_PLACES = (*_WITH_PUBLIC_PLACES, joinedload(Route.company))
+_WITH_PLACES = (*_WITH_PUBLIC_PLACES, joinedload(Route.company), joinedload(Route.driver))
 _HOLDS_A_SEAT = RouteAssignment.status != AssignmentStatus.ENDED
 _RESERVED = RouteAssignment.status == AssignmentStatus.RESERVED
 

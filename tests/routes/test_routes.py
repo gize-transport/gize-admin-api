@@ -65,6 +65,7 @@ async def test_staff_create_a_public_route(
         "route_type": "public",
         "school_name": None,
         "company": None,
+        "driver": None,  # GZ-053
         "morning_time": "06:30",  # leaves A, local Addis Ababa time
         "morning_arrival_time": "07:15",  # at B
         "return_time": "17:30",  # leaves B
@@ -597,6 +598,7 @@ def test_routes_are_in_the_contract(make_settings: SettingsFactory) -> None:
         "ROUTE_CODE_TAKEN",
     ]
     assert member["patch"]["responses"]["409"]["x-error-codes"] == [
+        "DRIVER_BUSY",  # GZ-053: new times overlapping the driver's other routes
         "ROUTE_CODE_TAKEN",
         "ROUTE_HAS_PRICES",
         "ROUTE_HAS_REQUESTS",

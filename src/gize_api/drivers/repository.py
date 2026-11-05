@@ -1,12 +1,14 @@
 """Driver queries: live (not deleted) drivers only."""
 
 import uuid
+from datetime import time
 
 from sqlalchemy import Select, exists, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.db import LIKE_ESCAPE, escape_like
 from gize_api.drivers.models import Driver
+from gize_api.routes.models import Route
 
 
 async def get_live_driver(
@@ -44,3 +46,41 @@ def live_drivers(*, q: str | None, plate_q: str | None, is_active: bool | None) 
     if is_active is not None:
         statement = statement.where(Driver.is_active.is_(is_active))
     return statement
+
+
+Times = tuple[time, time | None, time, time | None]
+
+
+async def drives_a_route(session: AsyncSession, driver_id: uuid.UUID) -> bool:
+    """A live route has this driver (index: ix_routes_driver_id)."""
+    statement = exists().where(Route.driver_id == driver_id, Route.not_deleted())
+    return bool(await session.scalar(select(statement)))
+
+
+async def busy(
+    session: AsyncSession, driver_id: uuid.UUID, times: Times, *, excluding: uuid.UUID
+) -> bool:
+    """The driver's other live routes have a run overlapping one of these (GZ-053): the
+    morning run (leaves A to arrives B) or the return run (leaves B to arrives A). Runs
+    that only touch (one arrives as the other leaves) don't overlap."""
+    rows = await session.execute(
+        select(
+            Route.morning_time,
+            Route.morning_arrival_time,
+            Route.return_time,
+            Route.return_arrival_time,
+        ).where(Route.driver_id == driver_id, Route.not_deleted(), Route.id != excluding)
+    )
+    mine = _runs(times)
+    return any(
+        start < their_end and their_start < end
+        for other in rows
+        for their_start, their_end in _runs(tuple(other))  # type: ignore[arg-type]
+        for start, end in mine
+    )
+
+
+def _runs(times: Times) -> tuple[tuple[time, time], tuple[time, time]]:
+    """A route made before arrival times existed (null) runs from its departure only."""
+    leaves_a, arrives_b, leaves_b, arrives_a = times
+    return (leaves_a, arrives_b or leaves_a), (leaves_b, arrives_a or leaves_b)

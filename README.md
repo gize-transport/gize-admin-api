@@ -498,6 +498,8 @@ Who drives the vans (GZ-050): basic information only for the MVP. Staff manage t
 
 Every change is in the audit log, with the name, phone and address redacted.
 
+**Who drives a route** (GZ-053): `PUT /v1/routes/{route_id}/driver` (`routes_set_driver`) with `{driver_id}`, or `null` to clear it. Only active drivers. A driver may drive several routes whose runs don't overlap in time (`409 DRIVER_BUSY` otherwise, also when a route's times change); every route shows its `driver`. A driver who drives a route can't be deactivated or deleted (`409 DRIVER_ASSIGNED`).
+
 ## Seat offers
 
 A free seat goes to the oldest request waiting for the route (GZ-040). Staff offer it, the person has **48 hours** to accept, and meanwhile the offer holds the seat: nobody else can take it.

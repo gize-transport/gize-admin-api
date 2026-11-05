@@ -18,6 +18,7 @@ from gize_api.routes.schemas import (
     RouteAreasSet,
     RouteCopy,
     RouteCreate,
+    RouteDriverSet,
     RouteLaunchMonths,
     RouteListParams,
     RoutePage,
@@ -181,6 +182,7 @@ async def launch_months(
         ErrorCode.ROUTE_CODE_TAKEN,
         ErrorCode.ROUTE_HAS_PRICES,
         ErrorCode.ROUTE_HAS_REQUESTS,
+        ErrorCode.DRIVER_BUSY,
         ErrorCode.ROUTE_HAS_RIDERS,
         ErrorCode.SEATS_BELOW_LAUNCH_MINIMUM,
         ErrorCode.SEATS_BELOW_TAKEN,
@@ -232,6 +234,29 @@ async def set_prices(
     """
     response.headers["Cache-Control"] = "no-store"
     return await service.set_prices(session, caller, route_id, prices)
+
+
+@router.put(
+    "/{route_id}/driver",
+    operation_id="routes_set_driver",
+    summary="Set who drives a route",
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.DRIVER_BUSY),
+)
+async def set_driver(
+    route_id: uuid.UUID,
+    body: RouteDriverSet,
+    response: Response,
+    caller: CurrentStaff = Depends(current_staff),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> RouteRead:
+    """`driver_id`: an active driver, or null for none (GZ-053). A driver may drive several
+    routes whose runs don't overlap in time.
+
+    - 409 DRIVER_BUSY: one of their other routes runs at the same time.
+    - 422 on `driver_id`: unknown, deleted or inactive.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return await service.set_driver(session, caller, route_id, body)
 
 
 @router.put(

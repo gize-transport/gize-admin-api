@@ -21,6 +21,7 @@ from gize_api.core.schedule import LocalDate, LocalTime
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, ShortText
 from gize_api.core.updates import PartialUpdate
 from gize_api.corridors.schemas import AreaRef
+from gize_api.drivers.models import PLATE_MAX_LENGTH
 from gize_api.routes.models import (
     MAX_PRICE,
     MAX_SEATS,
@@ -203,6 +204,22 @@ class CompanyRef(BaseModel):
     name: str = Field(max_length=SHORT_TEXT_MAX_LENGTH)
 
 
+class DriverRef(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, from_attributes=True)
+
+    id: uuid.UUID
+    full_name: str = Field(max_length=SHORT_TEXT_MAX_LENGTH)
+    plate: str = Field(max_length=PLATE_MAX_LENGTH)
+
+
+class RouteDriverSet(BaseModel):
+    """The route's driver: an active driver, or null for none."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    driver_id: uuid.UUID | None
+
+
 class Prices(BaseModel):
     """Whole birr a month; null until an admin sets them (GZ-022). Saturday: public only."""
 
@@ -258,6 +275,7 @@ class RouteRead(BaseModel):
     route_type: RouteType
     school_name: str | None = Field(max_length=SHORT_TEXT_MAX_LENGTH)
     company: CompanyRef | None
+    driver: DriverRef | None = Field(description="Who drives it (GZ-053).")
     morning_time: LocalTime = Field(description="Leaves A.")
     morning_arrival_time: LocalTime | None = Field(
         description="Arrives at B (null only on routes made before arrival times existed)."

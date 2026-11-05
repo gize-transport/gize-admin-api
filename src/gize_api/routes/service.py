@@ -31,12 +31,14 @@ from gize_api.core.security import CurrentStaff
 from gize_api.corridors.models import Corridor
 from gize_api.corridors.repository import get_live_corridor
 from gize_api.corridors.schemas import AreaRef
+from gize_api.drivers import repository as drivers
 from gize_api.route_requests.repository import names_route as request_names_route
 from gize_api.routes import repository
 from gize_api.routes.models import (
     ROUTE_AREAS_AUDIT,
     ROUTE_AUDIT,
     ROUTE_CODE_UNIQUE,
+    ROUTE_DRIVER_AUDIT,
     ROUTE_LAUNCH_AUDIT,
     Route,
     RouteArea,
@@ -47,6 +49,7 @@ from gize_api.routes.repository import SeatCounts
 from gize_api.routes.schemas import (
     CompanyRef,
     CorridorRef,
+    DriverRef,
     LaunchMonth,
     MonthSeats,
     Prices,
@@ -54,6 +57,7 @@ from gize_api.routes.schemas import (
     RouteBlocker,
     RouteCopy,
     RouteCreate,
+    RouteDriverSet,
     RouteLaunchMonths,
     RouteListParams,
     RoutePage,
@@ -299,6 +303,13 @@ async def update(
         priced = (row.price_round_trip, row.price_one_way, row.price_saturday) != (None,) * 3
         if relocates and priced:
             raise AppError(ErrorCode.ROUTE_HAS_PRICES)
+        if row.driver_id is not None and times != (
+            row.morning_time,
+            row.morning_arrival_time,
+            row.return_time,
+            row.return_arrival_time,
+        ):  # its driver's other routes must still fit (GZ-053; route, then driver locked)
+            await _driver_free_or_raise(session, row.driver_id, times, route_id=row.id)
 
         before = audit.snapshot(ROUTE_AUDIT, row)
         row.corridor, row.company = corridor, company
@@ -395,6 +406,51 @@ async def set_areas(
             after={"served_area_ids": list(areas.area_ids)},
         )
         return await _read_with_counts(session, row)
+
+
+async def set_driver(
+    session: AsyncSession, caller: CurrentStaff, route_id: uuid.UUID, body: RouteDriverSet
+) -> RouteRead:
+    """Give the route its driver, replace them, or clear it (GZ-053). Locks the route,
+    then the driver: two routes given one driver at once are judged in turn."""
+    async with session.begin():
+        row = await _live(session, route_id, for_update=True)
+        before = {"driver_id": row.driver_id}
+        if body.driver_id is not None and body.driver_id != row.driver_id:
+            times = (
+                row.morning_time, row.morning_arrival_time, row.return_time,
+                row.return_arrival_time,
+            )  # fmt: skip
+            await _driver_free_or_raise(session, body.driver_id, times, route_id=row.id)
+        row.driver_id = body.driver_id
+        await session.flush()
+        row = await _live(session, route_id)  # with the driver loaded
+        audit.record(
+            session,
+            actor_id=caller.id,
+            action="route.driver_changed",
+            entity=ROUTE_DRIVER_AUDIT,
+            entity_id=row.id,
+            before=before,
+            after={"driver_id": row.driver_id},
+        )
+        return await _read_with_counts(session, row)
+
+
+async def _driver_free_or_raise(
+    session: AsyncSession,
+    driver_id: uuid.UUID,
+    times: drivers.Times,
+    *,
+    route_id: uuid.UUID,
+) -> None:
+    """The driver, locked, is live and active (422 on `driver_id`) and none of their other
+    routes' runs overlaps these times (409 DRIVER_BUSY)."""
+    driver = await drivers.get_live_driver(session, driver_id, for_update=True)
+    if driver is None or not driver.is_active:
+        raise invalid_field("body", "driver_id")
+    if await drivers.busy(session, driver_id, times, excluding=route_id):
+        raise AppError(ErrorCode.DRIVER_BUSY)
 
 
 async def launch_months(session: AsyncSession, route_id: uuid.UUID) -> RouteLaunchMonths:
@@ -614,6 +670,7 @@ def _read(row: Route, counts: SeatCounts, today: date) -> RouteRead:
         route_type=row.route_type,
         school_name=row.school_name,
         company=None if row.company is None else CompanyRef.model_validate(row.company),
+        driver=None if row.driver_id is None else DriverRef.model_validate(row.driver),
         morning_time=row.morning_time,
         morning_arrival_time=row.morning_arrival_time,
         return_time=row.return_time,
