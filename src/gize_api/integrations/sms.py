@@ -1,14 +1,13 @@
 """SMS senders (GZ-030): the interface the rest of the app sends through.
 
-No provider is chosen yet (an Ethiopian SMS gateway, product brief), so:
-- local and test runs use `FakeSmsSender`, which keeps what it sent; locally it also prints
-  each message, the number masked as in logs, so a developer can read a sign-up code;
-- staging and production use `UnconfiguredSmsSender`: every send fails as `unavailable`.
-  A code is never silently dropped into a fake where nobody can read it.
+- `FakeSmsSender` keeps what it sent (tests); locally it also prints each message, the
+  number masked as in logs, so a developer can read a sign-up code;
+- `UnconfiguredSmsSender`: no gateway configured, every send fails as `unavailable`. A
+  code is never silently dropped into a fake where nobody can read it;
+- the gateway, AfroMessage (GZ-038, `integrations/afromessage.py`).
 
-The gateway adapter comes with the provider: it will call the gateway through
-`core/http.py` (allowlisted host, bounded time, no retried POST) and map its answers to
-`SmsSendError` kinds. Senders never log or store the text: it may hold a code.
+`integrations/sms_senders.sms_sender_for` picks one from the settings. Senders never log
+or store the text: it may hold a code.
 """
 
 import sys
@@ -16,7 +15,6 @@ import uuid
 from collections import deque
 from typing import Literal, Protocol, get_args
 
-from gize_api.core.config import Environment, Settings
 from gize_api.core.scrub import mask_phone_numbers
 
 # Why a send failed, for the record and the caller's answer:
@@ -41,6 +39,10 @@ class SmsSender(Protocol):
         SmsSendError. Called at most once per message: never retried on its own."""
         ...
 
+    async def aclose(self) -> None:
+        """Release connections (at shutdown)."""
+        ...
+
 
 class FakeSmsSender:
     """Keeps the latest messages in `sent` (tests read them); with `echo`, prints each one
@@ -60,17 +62,15 @@ class FakeSmsSender:
             print(f"[fake SMS to {mask_phone_numbers(to)}] {text}", file=sys.stderr)  # noqa: T201
         return f"fake-{uuid.uuid4()}"
 
+    async def aclose(self) -> None:
+        return None
+
 
 class UnconfiguredSmsSender:
-    """No provider yet: nothing can be sent."""
+    """No gateway configured (no AFROMESSAGE_TOKEN): nothing can be sent."""
 
     async def send(self, to: str, text: str) -> str:
         raise SmsSendError("unavailable")
 
-
-def sms_sender_for(settings: Settings) -> SmsSender:
-    if settings.app_env is Environment.LOCAL:
-        return FakeSmsSender(echo=True)
-    if settings.app_env is Environment.TEST:
-        return FakeSmsSender()
-    return UnconfiguredSmsSender()
+    async def aclose(self) -> None:
+        return None

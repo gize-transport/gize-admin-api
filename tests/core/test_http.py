@@ -21,6 +21,7 @@ from gize_api.core.http import (
     MAX_RESPONSE_BYTES,
     BlockedDestinationError,
     OpenTransactionError,
+    OutboundAnswerLostError,
     OutboundClient,
     OutboundTimeoutError,
     OutboundUnavailableError,
@@ -209,6 +210,33 @@ async def test_a_post_connection_failure_is_not_retried() -> None:
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("error", "lost"),
+    [
+        (httpx.ConnectError("refused"), False),
+        (httpx.ConnectTimeout("slow"), False),
+        (httpx.PoolTimeout("busy"), False),
+        (httpx.ReadTimeout("slow"), True),
+        (httpx.WriteTimeout("slow"), True),
+        (httpx.ReadError("reset"), True),
+        (httpx.WriteError("reset"), True),
+        (httpx.RemoteProtocolError("dropped"), True),
+    ],
+    ids=str,
+)
+async def test_an_answer_lost_after_sending_is_told_apart(error: Exception, lost: bool) -> None:
+    """GZ-038: an SMS POST whose answer was lost may have been sent; one that never
+    connected was not. Both stay `OutboundUnavailableError` for everyone else."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error
+
+    async with _client(handler) as client:
+        with pytest.raises(OutboundUnavailableError) as raised:
+            await client.request("POST", f"https://{HOST}/send", json={})
+    assert isinstance(raised.value, OutboundAnswerLostError) is lost
+
+
 async def test_safe_methods_are_retried_with_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("gize_api.core.http.RETRY_BASE_DELAY_SECONDS", 0.01)
     calls: list[int] = []
@@ -344,7 +372,8 @@ async def test_a_read_timeout_is_unavailable_and_marks_the_span(
     (span,) = spans.get_finished_spans()
     assert span.status.status_code == trace.StatusCode.ERROR
     assert span.status.description is None
-    assert dict(span.attributes or {})["error.type"] == "OutboundUnavailableError"
+    # GZ-038: sent, no answer: the precise kind of unavailability.
+    assert dict(span.attributes or {})["error.type"] == "OutboundAnswerLostError"
 
 
 async def test_the_default_resolver_returns_addresses() -> None:

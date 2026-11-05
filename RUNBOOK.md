@@ -26,6 +26,8 @@ Never put any of these in chat, code, tickets or logs. Each lives in exactly the
 | `DATABASE_URL` (`gize_app`) | Render (`gize-api-staging` → Environment); your local `.env.staging` | the API |
 | `MIGRATOR_DATABASE_URL` (`gize_migrator`) | GitHub → Settings → Secrets and variables → Actions: `STAGING_MIGRATOR_DATABASE_URL`; `.env.staging` | the deploy workflow's migrations |
 | `SUPABASE_SECRET_KEY` | Render; `.env.staging` | staff invites; the first-admin command |
+| `VERIFIED_PHONE_TOKEN_KEY` | Render only | phone verification (GZ-031) |
+| `AFROMESSAGE_TOKEN` | Render only (AfroMessage's dashboard makes it) | sending SMS (GZ-038) |
 | Render deploy hook URL | GitHub: `RENDER_STAGING_DEPLOY_HOOK_URL` | the deploy workflow |
 | The `postgres` database password | Supabase; your password manager; `.env.staging` only while bootstrapping | the bootstrap |
 
@@ -98,10 +100,12 @@ Render emails the workspace owner when a deploy fails.
 | --- | --- |
 | `gize_app` or `gize_migrator` password | 1. Put the new password into `.env.staging`, plus a temporary `BOOTSTRAP_ADMIN_DATABASE_URL`. 2. Re-run the bootstrap, which sets the role passwords from the URLs. 3. Update Render (`DATABASE_URL`, which restarts the API) or GitHub (`STAGING_MIGRATOR_DATABASE_URL`). 4. Remove the bootstrap line again. Between steps 2 and 3, the API's new connections fail; keep the gap short. |
 | `SUPABASE_SECRET_KEY` | 1. Create a new secret key in Supabase (Project Settings → API Keys). 2. Set it in Render and `.env.staging`. 3. Delete the old key in Supabase. |
+| `VERIFIED_PHONE_TOKEN_KEY` | 1. Generate a new one: `python -c "import secrets; print(secrets.token_urlsafe(32))"`. 2. Set it in Render. Codes and tokens in flight (10 and 30 minutes) stop working. |
+| `AFROMESSAGE_TOKEN` | 1. Generate a new token in AfroMessage's dashboard. 2. Set it in Render. 3. Revoke the old one in AfroMessage. |
 | Deploy hook URL | 1. Regenerate it in Render (`gize-api-staging` → Settings). 2. Update `RENDER_STAGING_DEPLOY_HOOK_URL` in GitHub. The old URL stops working at once. |
 | The `postgres` database password | Reset it in Supabase (Project Settings → Database). Nothing deployed uses it. |
 
-After any leak, rotate first and investigate second. A leaked `SUPABASE_SECRET_KEY` can create users: check Authentication → Users.
+After any leak, rotate first and investigate second. A leaked `SUPABASE_SECRET_KEY` can create users: check Authentication → Users. A leaked `AFROMESSAGE_TOKEN` spends your balance: check AfroMessage's sent messages.
 
 ## Backups and restoring
 

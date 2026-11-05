@@ -52,6 +52,9 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `REDIS_URL` | yes, secret | `redis://` or `rediss://` URL (with `rediss`, the server's certificate and host name are checked). |
 | `SUPABASE_URL` | yes | The Supabase project URL, `https://<project-ref>.supabase.co` (Project Settings → API). Sign-in tokens are verified against its public signing keys and must name its Auth service as issuer. |
 | `VERIFIED_PHONE_TOKEN_KEY` | for phone verification (without it, `/v1/verification/*` answer `503`) | **Secret.** Signs verified-phone tokens and keys the stored code hashes (GZ-031); at least 32 characters of randomness, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Rotating it voids codes and tokens in flight (they last 10 and 30 minutes). |
+| `AFROMESSAGE_TOKEN` | to send real SMS (without it, staging and production send none; locally a fake prints them) | **Secret.** The API token from AfroMessage's dashboard (GZ-038). Never used in tests. |
+| `AFROMESSAGE_SENDER_NAME` | no | The approved sender name riders see (1–20 letters, digits, spaces, `.`, `_`, `-`). Unset: AfroMessage's own name, which it allows for beta testing only. Request it in AfroMessage's dashboard first. |
+| `AFROMESSAGE_IDENTIFIER_ID` | no | The identifier (short code) to send from, for accounts with several. Unset: the account's default. |
 | `SUPABASE_SECRET_KEY` | for the first-admin command and staff invites (without it, invites answer `503`) | **Secret.** The project's secret API key, `sb_secret_...` (Project Settings → API Keys → Secret keys). It can read and create users: keep it in `.env` or the host's secret store, never in chat, code or the frontend. The legacy `service_role` JWT is refused. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
 | `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, or Cloudflare's authenticated origin pulls): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. |
@@ -422,14 +425,15 @@ A signed-in user who isn't staff gets `403`. Admins add more staff with `POST /v
 
 ## SMS
 
-There's no provider yet. Code sends an SMS through `sms.service.send_once(sessions, sender, key=…, purpose=…, to=…, text=…)`, with no transaction open:
+The gateway is [AfroMessage](https://www.afromessage.com/developers) (GZ-038). Code sends an SMS through `sms.service.send_once(sessions, sender, key=…, purpose=…, to=…, text=…)`, with no transaction open:
 - **One SMS per event.** `key` names the event (for example `otp:<verification id>`). A second call with the same key sends nothing and returns the first call's outcome.
 - **No automatic retry.** A failure is recorded as `failed` (`unavailable`, `rejected`, `timeout`, or `error` for anything unexpected) and returned. The person asks again, which is a new event.
 - **Where it's recorded:** `gize.sms_messages` holds the key, purpose, phone and outcome, never the text.
 - **Which sender:**
   - **Locally:** a fake that prints each message to the API's terminal with the number masked, so you can read a sign-up code.
   - **In tests:** a fake that keeps the messages.
-  - **On staging and production:** none yet, so every send fails as `unavailable` until a provider is configured.
+  - **With `AFROMESSAGE_TOKEN` set** (any environment but tests): AfroMessage, `POST https://api.afromessage.com/api/send`. Its answer becomes the outcome: accepted is `sent` with AfroMessage's message ID (accepted for sending, not yet delivered); a refusal (bad number, unapproved sender name) is `rejected`, with AfroMessage's reasons logged, numbers masked; a refused token, `429` or an outage is `unavailable` (nothing sent); no answer after sending, or an answer we can't read, is `timeout` (it may have been sent).
+  - **On staging and production without the token:** none, so every send fails as `unavailable`.
 
 ## Phone verification
 
@@ -441,6 +445,8 @@ The public app's first step (GZ-031). Both endpoints are public, with no sign-in
 | `POST /v1/verification/verify` (`verification_verify`) | Body `{verification_id, code}`. The right code answers `200 {verified_phone_token, expires_at}`: a token proving the phone, valid 30 minutes, for one sign-up (GZ-032). A wrong code is `422 VERIFICATION_CODE_INVALID`, with five tries per code. Expired, used, out of tries or unknown are all `410 VERIFICATION_EXPIRED`, one answer so nothing tells a guesser which IDs exist. Limit: 30 an hour per caller. |
 
 **How it's stored:** codes only as an HMAC keyed by `VERIFIED_PHONE_TOKEN_KEY`; checking one locks its row, so parallel guesses can't exceed five.
+
+**If the gateway took the SMS but its answer was lost** (a timeout), the request still answers `201`: the code may arrive, so it stays valid. If it doesn't, the person asks for a new one.
 
 **Where you see the code:**
 - **Locally:** in the API's terminal (the fake SMS sender).

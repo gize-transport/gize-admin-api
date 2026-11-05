@@ -80,6 +80,7 @@ Resolver = Callable[[str, int], Awaitable[list[str]]]
 __all__ = [
     "BlockedDestinationError",
     "OpenTransactionError",
+    "OutboundAnswerLostError",
     "OutboundClient",
     "OutboundError",
     "OutboundResponse",
@@ -106,6 +107,12 @@ class OutboundTimeoutError(OutboundError):
 
 class OutboundUnavailableError(OutboundError):
     """The service could not be reached (name, connection or transfer failed)."""
+
+
+class OutboundAnswerLostError(OutboundUnavailableError):
+    """The request went out but no answer came back (read timed out, connection dropped):
+    the service may have acted on it. A POST that sends something (an SMS) must treat
+    this as "maybe done"; for safe methods it is retried like any unavailability."""
 
 
 class ResponseTooLargeError(OutboundError):
@@ -275,7 +282,8 @@ class OutboundClient:
                 extensions={"sni_hostname": target.host},
             ) as response:
                 if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-                    raise OutboundUnavailableError("the service sent a compressed response")
+                    # Answered, but not in a form we read: it may have acted on it.
+                    raise OutboundAnswerLostError("the service sent a compressed response")
                 declared = response.headers.get("Content-Length", "")
                 if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
                     raise ResponseTooLargeError("response too large")
@@ -288,8 +296,16 @@ class OutboundClient:
                 return OutboundResponse(
                     status=response.status_code, headers=response.headers, content=bytes(content)
                 )
-        except httpx.TimeoutException:
+        except (httpx.ConnectTimeout, httpx.PoolTimeout):
             raise OutboundUnavailableError("the service did not answer in time") from None
+        except (
+            httpx.TimeoutException,
+            httpx.ReadError,
+            httpx.WriteError,
+            httpx.RemoteProtocolError,
+        ):
+            # Sent, at least in part: the service may have acted on it.
+            raise OutboundAnswerLostError("no answer came back from the service") from None
         except httpx.TransportError:
             raise OutboundUnavailableError("the service could not be reached") from None
 

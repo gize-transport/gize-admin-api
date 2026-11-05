@@ -37,7 +37,8 @@ from gize_api.core.telemetry import Telemetry, configure_telemetry
 from gize_api.corridors.router import router as corridor_routes
 from gize_api.health.readiness import Readiness
 from gize_api.health.router import router as health_router
-from gize_api.integrations.sms import sms_sender_for
+from gize_api.integrations.sms import SmsSender
+from gize_api.integrations.sms_senders import sms_sender_for
 from gize_api.integrations.supabase_auth import SupabaseAuthAdmin
 from gize_api.registrations.router import router as registration_routes
 from gize_api.riders.router import router as rider_routes
@@ -119,6 +120,9 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     if settings.app_env in {Environment.STAGING, Environment.PRODUCTION}:
         for name in settings.missing_observability():
             structlog.get_logger("gize_api.startup").warning("observability_disabled", setting=name)
+        if settings.afromessage_token is None:
+            # Every SMS fails (phone codes answer 503) until AFROMESSAGE_TOKEN is set.
+            structlog.get_logger("gize_api.startup").warning("sms_disabled")
     app = GizeAPI(
         title="Gize Admin API",
         version="v1",  # each released contract is an api-vX.Y.Z tag (docs/api-contract.md)
@@ -172,7 +176,8 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             app.state.readiness = readiness
             app.state.rate_limiter = RateLimiter.for_settings(settings, telemetry=telemetry)
             app.state.token_verifier = TokenVerifier.for_settings(settings, telemetry=telemetry)
-            app.state.sms_sender = sms_sender_for(settings)  # GZ-030: a fake until a provider
+            # AfroMessage with AFROMESSAGE_TOKEN (GZ-038); otherwise a fake or none (GZ-030).
+            app.state.sms_sender = sms_sender_for(settings, telemetry=telemetry)
             # Staff invites need SUPABASE_SECRET_KEY; without it they answer 503.
             app.state.auth_admin = (
                 None
@@ -194,6 +199,7 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             rate_limiter: RateLimiter = app.state.rate_limiter
             token_verifier: TokenVerifier = app.state.token_verifier
             auth_admin: SupabaseAuthAdmin | None = app.state.auth_admin
+            sms_sender: SmsSender = app.state.sms_sender
             del app.state.redis, app.state.engine, app.state.sessionmaker, app.state.readiness
             del app.state.rate_limiter, app.state.token_verifier, app.state.auth_admin
             del app.state.sms_sender
@@ -215,6 +221,12 @@ def _lifespan(settings: Settings) -> Callable[[GizeAPI], AbstractAsyncContextMan
             except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
                 structlog.get_logger("gize_api.startup").warning(
                     "auth_admin_close_failed", exc_info=True
+                )
+            try:
+                await sms_sender.aclose()
+            except Exception:  # noqa: BLE001 - shutdown must carry on; the failure is logged
+                structlog.get_logger("gize_api.startup").warning(
+                    "sms_sender_close_failed", exc_info=True
                 )
             try:
                 await engine.dispose()

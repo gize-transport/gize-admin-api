@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     # characters of randomness, e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
     # Unset: phone verification answers 503 (nothing is sent).
     verified_phone_token_key: SecretStr | None = Field(default=None, min_length=32)
+    # AfroMessage (GZ-038), the SMS gateway: the API token from its dashboard. Set, the API
+    # sends real SMS (except in tests); unset, as before: a fake locally, none on staging
+    # and production (every send fails as `unavailable`).
+    afromessage_token: SecretStr | None = None
+    # The approved sender name riders see (unset: AfroMessage's own, for beta testing only)
+    # and the identifier (short code) to send from (unset: the account's default).
+    afromessage_sender_name: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,19}$"
+    )
+    afromessage_identifier_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]{1,64}$")
     # CA certificate (PEM) that the database's certificate must chain to (ssl=verify-full);
     # Supabase's is downloaded from the project's database settings. Unset: system CAs.
     database_ssl_root_cert: FilePath | None = None
@@ -161,6 +171,13 @@ class Settings(BaseSettings):
     def _supabase_secret_key_shape(cls, value: SecretStr | None) -> SecretStr | None:
         if value is not None and not _SUPABASE_SECRET_KEY.fullmatch(value.get_secret_value()):
             raise ValueError("must be a secret API key (sb_secret_...) from Project Settings")
+        return value
+
+    @field_validator("afromessage_token")
+    @classmethod
+    def _afromessage_token_shape(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not _AFROMESSAGE_TOKEN.fullmatch(value.get_secret_value()):
+            raise ValueError("must be the API token from AfroMessage's dashboard (no spaces)")
         return value
 
     @field_validator("sentry_dsn")
@@ -282,6 +299,7 @@ class Settings(BaseSettings):
 _DATABASE_SCHEMES = frozenset({"postgresql", "postgres", "postgresql+asyncpg"})
 _DATABASE_SSL_MODES = frozenset({"require", "verify-full"})
 _SUPABASE_SECRET_KEY = re.compile(r"sb_secret_[A-Za-z0-9_-]{16,200}")
+_AFROMESSAGE_TOKEN = re.compile(r"\S{20,4096}")
 _DATABASE_NAME = re.compile(r"/[A-Za-z0-9_-]{1,63}")
 
 

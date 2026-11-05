@@ -65,6 +65,9 @@ class FailingSender:
         self.calls += 1
         raise self.error
 
+    async def aclose(self) -> None:
+        return None
+
 
 async def test_it_sends_and_records_the_outcome_without_the_text(
     committed_sessionmaker: async_sessionmaker[AsyncSession],
@@ -139,6 +142,9 @@ async def test_a_send_cancelled_midway_is_recorded_as_a_timeout(
             entered.set()
             await asyncio.Event().wait()
             raise AssertionError("never answers")  # pragma: no cover
+
+        async def aclose(self) -> None:
+            return None
 
     task = asyncio.create_task(_send(committed_sessionmaker, HangingSender(), _key()))
     await asyncio.wait_for(entered.wait(), timeout=5)
