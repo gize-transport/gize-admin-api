@@ -40,6 +40,8 @@ from gize_api.health.router import router as health_router
 from gize_api.integrations.sms import SmsSender
 from gize_api.integrations.sms_senders import sms_sender_for
 from gize_api.integrations.supabase_auth import SupabaseAuthAdmin
+from gize_api.offers.router import public_router as public_offer_routes
+from gize_api.offers.router import router as offer_routes
 from gize_api.registrations.router import router as registration_routes
 from gize_api.riders.router import router as rider_routes
 from gize_api.route_requests.router import router as route_request_routes
@@ -150,6 +152,8 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     app.include_router(catalogue_routes)
     app.include_router(registration_routes)
     app.include_router(rider_routes)
+    app.include_router(offer_routes)
+    app.include_router(public_offer_routes)
     return app
 
 

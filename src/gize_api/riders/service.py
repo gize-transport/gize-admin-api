@@ -304,9 +304,7 @@ async def _stay(
     409 ALREADY_ON_ROUTE when that seat isn't ending."""
     if staying.end_date is None:
         raise AppError(ErrorCode.ALREADY_ON_ROUTE)
-    after = staying.end_date + timedelta(days=1)
-    if await routes.peak_taken_from(session, route.id, after) >= route.seats:
-        raise AppError(ErrorCode.ROUTE_FULL)
+    await seats.full_or_raise(session, route, staying.end_date + timedelta(days=1))
     for seat in held:
         if seat.id != staying.id and seat.start_date > today:
             await _end_seat(session, caller, seat, last_day=seat.start_date - timedelta(days=1))

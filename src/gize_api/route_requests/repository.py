@@ -24,10 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from gize_api.areas.models import Area
+from gize_api.offers.models import OfferStatus, SeatOffer
 from gize_api.route_requests.models import (
     OPEN_STATUSES,
     RequestKind,
     RequestStatus,
+    RiderType,
     RouteRequest,
 )
 from gize_api.routes.models import Route
@@ -141,6 +143,33 @@ async def others_waiting(
     if before is not None:
         statement = statement.where(RouteRequest.created_at < before)
     return bool(await session.scalar(select(statement)))
+
+
+async def waiting_without_offer(session: AsyncSession, route_id: uuid.UUID) -> list[RouteRequest]:
+    """Adults' requests waiting for this route with no open offer (GZ-040): the queue a
+    free seat is offered from. Oldest first, except that a request already offered a seat
+    on this route that expired or was withdrawn goes behind the others (the seat passes to
+    the next request). Locked (`FOR UPDATE`, after the route's lock): two staff offering at
+    once see the same queue in turn. Bounded: the route's requests still open."""
+    in_time = SeatOffer.expires_at > func.now()
+    open_offer = exists().where(
+        SeatOffer.request_id == RouteRequest.id, SeatOffer.status == OfferStatus.OPEN, in_time
+    )
+    passed_over = exists().where(
+        SeatOffer.request_id == RouteRequest.id,
+        SeatOffer.route_id == route_id,
+        or_(
+            SeatOffer.status.in_((OfferStatus.EXPIRED, OfferStatus.WITHDRAWN)),
+            and_(SeatOffer.status == OfferStatus.OPEN, ~in_time),
+        ),
+    )
+    statement = (
+        select(RouteRequest)
+        .where(*_waiting_for(route_id), RouteRequest.rider_type == RiderType.ADULT, ~open_offer)
+        .order_by(passed_over, RouteRequest.created_at, RouteRequest.id)
+        .with_for_update()
+    )
+    return list((await session.scalars(statement)).all())
 
 
 def _waiting_for(route_id: uuid.UUID) -> tuple[ColumnElement[bool], ...]:

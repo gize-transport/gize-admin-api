@@ -48,7 +48,14 @@ from gize_api.verification.schemas import (
     VerificationCheck,
     VerificationSent,
 )
-from gize_api.verification.tokens import code_hash, issue_verified_phone_token, phone_scope
+from gize_api.verification.tokens import (
+    InvalidVerifiedPhoneTokenError,
+    VerifiedPhone,
+    code_hash,
+    issue_verified_phone_token,
+    phone_scope,
+    read_verified_phone_token,
+)
 
 CODE_LIFETIME = timedelta(minutes=10)
 SMS_RETRY_AFTER_SECONDS = "60"
@@ -156,3 +163,30 @@ async def check_code(session: AsyncSession, check: VerificationCheck, *, key: st
     if not right:
         raise AppError(ErrorCode.VERIFICATION_CODE_INVALID)
     return PhoneVerified(verified_phone_token=token, expires_at=expires_at)
+
+
+def prove(token: str, key: str, *, check_expiry: bool = True) -> VerifiedPhone:
+    """The phone a verified-phone token proves (GZ-032, GZ-040); 401 PHONE_NOT_VERIFIED
+    otherwise. `check_expiry=False` only to find which earlier request a retry repeats."""
+    try:
+        return read_verified_phone_token(token, key=key, check_expiry=check_expiry)
+    except InvalidVerifiedPhoneTokenError:
+        raise AppError(ErrorCode.PHONE_NOT_VERIFIED) from None
+
+
+async def spend(session: AsyncSession, proved: VerifiedPhone) -> None:
+    """The token's verification, confirmed for this phone and not spent yet, is spent now
+    (locked: two uses of one token, one gets through); 401 PHONE_NOT_VERIFIED otherwise."""
+    verification = await session.scalar(
+        select(PhoneVerification)
+        .where(PhoneVerification.id == proved.verification_id)
+        .with_for_update()
+    )
+    if (
+        verification is None
+        or verification.phone != proved.phone
+        or verification.verified_at is None
+        or verification.consumed_at is not None
+    ):
+        raise AppError(ErrorCode.PHONE_NOT_VERIFIED)
+    verification.consumed_at = func.now()

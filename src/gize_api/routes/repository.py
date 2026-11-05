@@ -26,6 +26,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from gize_api.core.db import LIKE_ESCAPE, escape_like
 from gize_api.corridors.models import Corridor
+from gize_api.offers.models import OfferStatus, SeatOffer
 from gize_api.riders.models import Rider
 from gize_api.routes.models import (
     AssignmentStatus,
@@ -284,6 +285,39 @@ async def peak_taken_from(session: AsyncSession, route_id: uuid.UUID, today: dat
     last_day = max(today, last_start or today)
     row = (await session.execute(_peaks([route_id], today, last_day, split=None))).first()
     return 0 if row is None else int(row[1])
+
+
+async def held_by_offers(
+    session: AsyncSession, route_id: uuid.UUID, *, excluding: uuid.UUID | None = None
+) -> int:
+    """Seats open offers hold on the route (GZ-040): open and not past `expires_at`. Every
+    way of taking a seat counts them; an offer being accepted doesn't count itself."""
+    statement = select(func.count()).where(
+        SeatOffer.route_id == route_id,
+        SeatOffer.status == OfferStatus.OPEN,
+        SeatOffer.expires_at > func.now(),
+    )
+    if excluding is not None:
+        statement = statement.where(SeatOffer.id != excluding)
+    return int(await session.scalar(statement.select_from(SeatOffer)) or 0)
+
+
+async def held_by_offers_on(
+    session: AsyncSession, route_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """`held_by_offers` for several routes at once (one query); a route with none has no key."""
+    if not route_ids:
+        return {}
+    rows = await session.execute(
+        select(SeatOffer.route_id, func.count())
+        .where(
+            SeatOffer.route_id.in_(route_ids),
+            SeatOffer.status == OfferStatus.OPEN,
+            SeatOffer.expires_at > func.now(),
+        )
+        .group_by(SeatOffer.route_id)
+    )
+    return {route_id: int(count) for route_id, count in rows}
 
 
 async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) -> bool:

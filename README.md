@@ -484,6 +484,20 @@ Staff manage riders (GZ-034) and their seats (GZ-035); admins delete them. Phone
 
 Every change is in the audit log, with names and phones redacted.
 
+## Seat offers
+
+A free seat goes to the oldest request waiting for the route (GZ-040). Staff offer it, the person has **48 hours** to accept, and meanwhile the offer holds the seat: nobody else can take it.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/routes/{route_id}/offers` (`offers_create`) | Requires `Idempotency-Key`. Offers the seat to the oldest adult request waiting for the route (asked for it, or matched to it); `request_id` picks another one (ahead of older ones it needs `skip_reason`, audited). A request whose earlier offer expired or was withdrawn goes behind the others. On an active route the seat is from a coming 1st (`start_date`, the next by default); on a forming route it's a reservation. The person gets an SMS after the answer. `409 ROUTE_FULL`, `NO_WAITING_REQUESTS`, `OFFER_OPEN`, `ROUTE_HAS_WAITING_REQUESTS`, `ROUTE_NOT_READY` (not a forming or active public route). |
+| `GET /v1/routes/{route_id}/offers` (`offers_list`), `GET /v1/offers/{offer_id}` (`offers_get`) | Offers newest first; each with its status (`open`, `accepted`, `expired`, `withdrawn`) and `sms_status` (`failed`: call them). |
+| `POST /v1/offers/{offer_id}/accept` (`offers_accept`) | Staff accept for a caller, with `Idempotency-Key`. The seat becomes theirs (a rider is made from the request if they have none: A to B, round trip), the request fulfilled. `409 OFFER_CLOSED` (accepted, withdrawn or past 48 hours), `409 RIDER_HAS_SEAT` (they ride elsewhere: move them instead). |
+| `POST /v1/offers/{offer_id}/withdraw` (`offers_withdraw`) | The person said no: the seat is free again. |
+| `POST /v1/public/offers/{offer_id}/accept` (`public_offers_accept`) | Public, for the website: `{verified_phone_token}` for the request's phone (GZ-031), with `Idempotency-Key`. The same as staff accepting; another person's offer is `404`. |
+
+Nothing runs on a timer: an offer reads `expired` the moment its 48 hours pass. Two acceptances of one offer at once give one seat; the other gets `409 OFFER_CLOSED`.
+
 ## Adult sign-up
 
 The public app's sign-up (GZ-032). No sign-in: the phone verified with GZ-031 instead. Limits are 5 an hour per caller and 3 a day per phone, failing closed (`503`) without Redis.
