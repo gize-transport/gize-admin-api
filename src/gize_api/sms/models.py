@@ -8,7 +8,7 @@ event finds the row and sends nothing (`uq_sms_messages_dedup_key`).
 
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, Enum, Index, String
+from sqlalchemy import CheckConstraint, Enum, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gize_api.core.contact import MOBILE_E164_LENGTH
@@ -20,6 +20,7 @@ PROVIDER_ID_MAX_LENGTH = 100
 
 class SmsPurpose(StrEnum):
     PHONE_VERIFICATION = "phone_verification"  # GZ-031
+    ROUTE_LAUNCH = "route_launch"  # GZ-041
 
 
 class SmsStatus(StrEnum):
@@ -47,7 +48,7 @@ class SmsMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             f" AND length(dedup_key) <= {DEDUP_KEY_MAX_LENGTH}",
             name="dedup_key",
         ),
-        CheckConstraint("purpose IN ('phone_verification')", name="purpose"),
+        CheckConstraint("purpose IN ('phone_verification', 'route_launch')", name="purpose"),
         CheckConstraint("to_phone ~ '^\\+251[79][0-9]{8}$'", name="to_phone"),
         CheckConstraint(
             "status IN ('sending', 'sent', 'failed')"
@@ -57,6 +58,12 @@ class SmsMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         Index("uq_sms_messages_dedup_key", "dedup_key", unique=True),
         Index("ix_sms_messages_created_at", "created_at"),
+        # GZ-041's launch messages, read by seat (`launches.service._attempts`).
+        Index(
+            "ix_sms_messages_route_launch",
+            "dedup_key",
+            postgresql_where=text("purpose = 'route_launch'"),
+        ),
     )
 
     dedup_key: Mapped[str] = mapped_column(String(DEDUP_KEY_MAX_LENGTH))

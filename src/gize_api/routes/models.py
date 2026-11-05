@@ -270,3 +270,5 @@ class RouteAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     # Why staff placed this rider ahead of open requests for the route (GZ-035).
     skip_reason: Mapped[str | None] = mapped_column(String(SHORT_TEXT_MAX_LENGTH))
+    # The launch day, on a reservation a launch started (GZ-041): its rider gets the SMS.
+    launched_on: Mapped[date | None] = mapped_column(Date)

@@ -852,6 +852,120 @@
         "title": "FieldError",
         "type": "object"
       },
+      "LaunchMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "description": "SMS sent or tried for this launch.",
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "full_name": {
+            "maxLength": 100,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "rider_id": {
+            "format": "uuid",
+            "title": "Rider Id",
+            "type": "string"
+          },
+          "start_date": {
+            "description": "Their first day, as the SMS says.",
+            "format": "date",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/LaunchMessageStatus"
+          }
+        },
+        "required": [
+          "rider_id",
+          "full_name",
+          "start_date",
+          "status",
+          "attempts"
+        ],
+        "title": "LaunchMessage",
+        "type": "object"
+      },
+      "LaunchMessageStatus": {
+        "enum": [
+          "sent",
+          "sending",
+          "unconfirmed",
+          "failed",
+          "pending"
+        ],
+        "title": "LaunchMessageStatus",
+        "type": "string"
+      },
+      "LaunchMessages": {
+        "additionalProperties": false,
+        "description": "The SMS the route's latest launch sends its riders (one each; never a second once\none was sent). A route never launched has none.",
+        "properties": {
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "launch_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Date"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "riders": {
+            "items": {
+              "$ref": "#/components/schemas/LaunchMessage"
+            },
+            "maxItems": 60,
+            "title": "Riders",
+            "type": "array"
+          },
+          "sending": {
+            "title": "Sending",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "unconfirmed": {
+            "description": "May have arrived: not resent; call if unsure.",
+            "title": "Unconfirmed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "launch_date",
+          "total",
+          "sent",
+          "sending",
+          "unconfirmed",
+          "failed",
+          "pending",
+          "riders"
+        ],
+        "title": "LaunchMessages",
+        "type": "object"
+      },
       "LaunchMonth": {
         "additionalProperties": false,
         "properties": {
@@ -9906,6 +10020,310 @@
         ]
       }
     },
+    "/v1/routes/{route_id}/launch-messages": {
+      "get": {
+        "description": "Each rider the latest launch started, and their SMS: `sent` (the gateway took it),\n`sending` (right now), `unconfirmed` (no answer from the gateway: it may have arrived),\n`failed` or `pending` (not tried yet; both resent by `POST .../retry`). Check it after\na launch: a restart midway leaves the rest `pending`. A route never launched has none.",
+        "operationId": "routes_launch_messages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Route Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchMessages"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            },
+            "description": "Validation Failed",
+            "x-error-codes": [
+              "VALIDATION_FAILED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The SMS a route's launch sent its riders",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/v1/routes/{route_id}/launch-messages/retry": {
+      "post": {
+        "description": "Requires `Idempotency-Key` (a retried request replays, starting nothing more).\nSends, after this answer, each `failed` or `pending` message again: never one `sent`,\n`sending`, or `unconfirmed` (it may have arrived: call the rider if unsure). 202 with\nthe messages as they were.",
+        "operationId": "routes_retry_launch_messages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "route_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Route Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchMessages"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Request In Progress",
+            "x-error-codes": [
+              "IDEMPOTENCY_IN_PROGRESS"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Idempotency Key Mismatch, Validation Failed",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Resend a launch's failed SMS",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
     "/v1/routes/{route_id}/launch-months": {
       "get": {
         "description": "Every `launch_date` a launch may name (the 1st of each month, from the earliest to a\nyear ahead), with the riders reserved for it and whether a launch that day would be\naccepted now (`ready`: the route is forming and they reach its launch minimum). Other\nroutes show their reservations, never ready. A snapshot: a launch can still be refused\nif riders leave meanwhile.",
@@ -10205,7 +10623,7 @@
     },
     "/v1/routes/{route_id}/status": {
       "put": {
-        "description": "Public and student routes: `draft` → `forming` → `active` ⇄ `paused`, and `forming`\n→ `draft`. Corporate routes: `draft` → `active` ⇄ `paused`. The status a route already\nhas changes nothing.\n\nLaunching (`forming` → `active`) takes `launch_date`, the 1st of a month from today to\na year ahead (a 422 on `launch_date` otherwise, or when another move sends one). Riders\nreserved for that month or earlier must reach the launch minimum; they all start that\nday, and later reservations from their own date.\n\n- 409 INVALID_STATUS_CHANGE: any other move.\n- 409 ROUTE_NOT_READY: forming without round-trip and one-way prices; a corporate\n  route starting while its company isn't active.\n- 409 NOT_ENOUGH_RIDERS: fewer riders reserved for the launch month than the minimum.\n- 409 ROUTE_HAS_RIDERS: back to draft while someone is reserved (today or later).",
+        "description": "Public and student routes: `draft` → `forming` → `active` ⇄ `paused`, and `forming`\n→ `draft`. Corporate routes: `draft` → `active` ⇄ `paused`. The status a route already\nhas changes nothing.\n\nLaunching (`forming` → `active`) takes `launch_date`, the 1st of a month from today to\na year ahead (a 422 on `launch_date` otherwise, or when another move sends one). Riders\nreserved for that month or earlier must reach the launch minimum; they all start that\nday, and later reservations from their own date.\n\n- 409 INVALID_STATUS_CHANGE: any other move.\n- 409 ROUTE_NOT_READY: forming without round-trip and one-way prices; a corporate\n  route starting while its company isn't active.\n- 409 NOT_ENOUGH_RIDERS: fewer riders reserved for the launch month than the minimum.\n- 409 ROUTE_HAS_RIDERS: back to draft while someone is reserved (today or later).\n\nAfter a launch, each rider it started gets an SMS, sent after this answer (GZ-041;\nsee `GET /launch-messages`). A repeated launch sends nothing more.",
         "operationId": "routes_set_status",
         "parameters": [
           {

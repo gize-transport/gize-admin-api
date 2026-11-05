@@ -4,13 +4,15 @@ staff (GZ-021, GZ-024); prices set and routes deleted by admins (GZ-022, GZ-024)
 import uuid
 from typing import Annotated
 
-from fastapi import Depends, Query, Response
+from fastapi import BackgroundTasks, Depends, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.db import get_session
 from gize_api.core.errors import ErrorCode, problem_responses
 from gize_api.core.idempotency import IdempotentRequest, idempotent_request
 from gize_api.core.security import CurrentStaff, current_staff, require_role, staff_router
+from gize_api.launches import service as launches
+from gize_api.launches.schemas import LaunchMessages
 from gize_api.routes import service
 from gize_api.routes.schemas import (
     RouteAreasSet,
@@ -270,7 +272,9 @@ async def set_areas(
 async def set_status(
     route_id: uuid.UUID,
     change: RouteStatusSet,
+    request: Request,
     response: Response,
+    background: BackgroundTasks,
     caller: CurrentStaff = Depends(current_staff),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> RouteRead:
@@ -288,9 +292,67 @@ async def set_status(
       route starting while its company isn't active.
     - 409 NOT_ENOUGH_RIDERS: fewer riders reserved for the launch month than the minimum.
     - 409 ROUTE_HAS_RIDERS: back to draft while someone is reserved (today or later).
+
+    After a launch, each rider it started gets an SMS, sent after this answer (GZ-041;
+    see `GET /launch-messages`). A repeated launch sends nothing more.
     """
     response.headers["Cache-Control"] = "no-store"
-    return await service.set_status(session, caller, route_id, change)
+    route = await service.set_status(session, caller, route_id, change)
+    if change.launch_date is not None:
+        background.add_task(launches.send_in_background, request.app, route_id, retry_failed=False)
+    return route
+
+
+@router.get(
+    "/{route_id}/launch-messages",
+    operation_id="routes_launch_messages",
+    summary="The SMS a route's launch sent its riders",
+    responses=problem_responses(ErrorCode.NOT_FOUND),
+)
+async def launch_messages(
+    route_id: uuid.UUID,
+    response: Response,
+    _: CurrentStaff = Depends(current_staff),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> LaunchMessages:
+    """Each rider the latest launch started, and their SMS: `sent` (the gateway took it),
+    `sending` (right now), `unconfirmed` (no answer from the gateway: it may have arrived),
+    `failed` or `pending` (not tried yet; both resent by `POST .../retry`). Check it after
+    a launch: a restart midway leaves the rest `pending`. A route never launched has none."""
+    response.headers["Cache-Control"] = "no-store"
+    return await launches.status(session, route_id)
+
+
+@router.post(
+    "/{route_id}/launch-messages/retry",
+    operation_id="routes_retry_launch_messages",
+    summary="Resend a launch's failed SMS",
+    status_code=202,
+    response_model=LaunchMessages,
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND,
+        ErrorCode.IDEMPOTENCY_IN_PROGRESS,
+        ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+        ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+    ),
+)
+async def retry_launch_messages(
+    route_id: uuid.UUID,
+    request: Request,
+    background: BackgroundTasks,
+    caller: CurrentStaff = Depends(current_staff),  # noqa: B008
+    idempotent: IdempotentRequest = Depends(idempotent_request),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Response:
+    """Requires `Idempotency-Key` (a retried request replays, starting nothing more).
+    Sends, after this answer, each `failed` or `pending` message again: never one `sent`,
+    `sending`, or `unconfirmed` (it may have arrived: call the rider if unsure). 202 with
+    the messages as they were."""
+    response, started = await launches.retry(session, caller, route_id, idempotent)
+    if started:
+        background.add_task(launches.send_in_background, request.app, route_id, retry_failed=True)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.delete(
