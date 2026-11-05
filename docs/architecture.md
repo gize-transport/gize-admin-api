@@ -130,9 +130,9 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 | `route_requests` | id, kind (`new_areas`/`route`), from_area_id or from_area_name, to_area_id or to_area_name (a name for an area not listed yet), route_id (kind `route`), rider_type (`adult`/`student`), rider_name, rider_id (who asked from the public app, GZ-032), school_name, preferred_morning_time, preferred_return_time, contact_name, contact_phone, notes, source (`staff`/`app`), status (`new`/`matched`/`fulfilled`/`declined`; open = `new` or `matched`), matched_route_id, decline_reason, created_at, deleted_at (admin) – seat offers (M4) add their own columns |
 | `seat_offers` | id, route_id, request_id, rider_id (once accepted), start_date, status (`open`/`accepted`/`expired`/`withdrawn`), expires_at (48 hours; an open offer holds its seat until then), skip_reason (GZ-040) |
 | `phone_verifications` | id, phone, code_hash, attempts, expires_at, verified_at, consumed_at (a sign-up spent its token, GZ-032) |
-| `drivers` | id, full_name, phone, is_owner, status (`applied`/`approved`/`rejected`/`inactive`) |
-| `vehicles` | id, driver_id, plate, vehicle_type, seats, inspection_status, inspected_at, inspection_notes |
-| `driver_documents` | id, driver_id, doc_type, storage_path, content_type, size_bytes, uploaded_at |
+| `drivers` | id, full_name, phone (one live driver per phone), address, plate (the van they drive; one live driver per plate), is_active, deleted_at (GZ-050: basic information only for the MVP) |
+| `vehicles` | deferred (GZ-051/052): id, driver_id, plate, vehicle_type, seats, inspection_status, inspected_at, inspection_notes |
+| `driver_documents` | deferred (GZ-051): id, driver_id, doc_type, storage_path, content_type, size_bytes, uploaded_at |
 
 ## API conventions
 

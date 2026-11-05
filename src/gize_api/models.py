@@ -9,6 +9,7 @@ from gize_api.companies import models as company_models  # gize.companies
 from gize_api.core import audit, idempotency  # gize.audit_log, gize.idempotency_keys
 from gize_api.core.models import Base
 from gize_api.corridors import models as corridor_models  # gize.corridors
+from gize_api.drivers import models as driver_models  # gize.drivers
 from gize_api.offers import models as offer_models  # gize.seat_offers
 from gize_api.riders import models as rider_models  # gize.riders
 from gize_api.route_requests import models as route_request_models  # gize.route_requests
@@ -23,6 +24,7 @@ __all__ = [
     "audit",
     "company_models",
     "corridor_models",
+    "driver_models",
     "idempotency",
     "offer_models",
     "rider_models",
