@@ -16,16 +16,37 @@ from pydantic import (
 
 from gize_api.core.contact import MOBILE_E164_LENGTH, EthiopianMobile
 from gize_api.core.pagination import Page, PageParams
-from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, ShortText, no_control_characters, same_looking
+from gize_api.core.text import (
+    SHORT_TEXT_MAX_LENGTH,
+    SearchText,
+    ShortText,
+    no_control_characters,
+    same_looking,
+)
 from gize_api.core.updates import PartialUpdate
 from gize_api.drivers.models import ADDRESS_MAX_LENGTH, PLATE_MAX_LENGTH, PLATE_PATTERN
 
 _PLATE = re.compile(PLATE_PATTERN)
+_SPACES = re.compile(" +")
 
 
 def plate_form(value: str) -> str:
     """One spelling per plate: capitals, single spaces ("aa  3-b12345" is "AA 3-B12345")."""
-    return " ".join(value.split()).upper()
+    return _SPACES.sub(" ", value.strip()).upper()
+
+
+def _ascii(value: str) -> str:
+    """Plates are ASCII: other letters are refused, never rewritten ("ß" isn't "SS")."""
+    if not value.isascii():
+        raise ValueError("letters A-Z, digits, spaces and dashes only")
+    return value
+
+
+def _address_short_enough(value: str) -> str:
+    """The length again after normalising (NFC can lengthen text; the column holds 200)."""
+    if len(value) > ADDRESS_MAX_LENGTH:
+        raise ValueError(f"must be at most {ADDRESS_MAX_LENGTH} characters")
+    return value
 
 
 def _plate_shape(value: str) -> str:
@@ -39,10 +60,12 @@ Address = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=ADDRESS_MAX_LENGTH),
     AfterValidator(no_control_characters),
     AfterValidator(same_looking),
+    AfterValidator(_address_short_enough),
 ]
 Plate = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=2, max_length=PLATE_MAX_LENGTH * 2),
+    AfterValidator(_ascii),
     AfterValidator(plate_form),
     AfterValidator(_plate_shape),
 ]
@@ -90,5 +113,5 @@ class DriverPage(Page[DriverRead]):
 class DriverListParams(PageParams):
     """`q`: names, or plates (any case or spacing), starting with it; blank is no filter."""
 
-    q: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=100)] = None
+    q: SearchText = None
     is_active: bool | None = None

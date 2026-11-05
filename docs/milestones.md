@@ -307,6 +307,7 @@ Status: done · Depends on: GZ-012
 - Staff create/list/read/update driver applications and vehicles (plate unique, seats range). Status `applied`.
 - Owner decisions (M5 plan, 2026-11-05): basic information only for the MVP: full name, phone, address and the plate number of the van they drive; no documents, inspection or approval (GZ-051, GZ-052 deferred); a driver is active or inactive.
 - Built: `gize.drivers` (migration 0018: name, phone E.164, address, plate in capitals with single spaces, `is_active`, soft delete; `uq_drivers_phone` and `uq_drivers_plate` among live drivers; RLS). `/v1/drivers` (staff_router): `drivers_create` (Idempotency-Key; `DRIVER_EXISTS`, `PLATE_TAKEN`), `drivers_list` (newest first; `q` matches a name or a plate typed any case or spacing; `is_active`), `drivers_get`, `drivers_update` (PATCH, deactivation included), `drivers_delete` (admins). Audit `driver.created`/`updated`/`deleted`, name, phone and address redacted (the plate shown). No phone in URLs.
+- From review: the search uses the shared `SearchText` (control characters refused, names matched however typed); the address is measured again after normalising; plates must be ASCII (never silently rewritten); tests for wildcards, keeping one's own phone or plate, the table's refusal of other spellings, and two adds of one phone at once.
 
 ### GZ-051 · Driver documents
 Status: deferred (owner decision, 2026-11-05: not in the MVP) · Depends on: GZ-050

@@ -7,13 +7,16 @@ or inactive; admins delete them (soft). The phone and address are personal data:
 in the audit log, never in a URL. Documents, inspection and approval come later.
 """
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gize_api.core.audit import REDACTED
 from gize_api.core.db import get_session
@@ -127,6 +130,9 @@ async def test_a_deleted_drivers_phone_and_plate_are_free(
         {"plate": "A"},
         {"plate": "x" * 21},
         {"plate": None},
+        {"plate": "ßa 1"},  # not rewritten to "SSA 1": refused
+        {"plate": "AA\t1"},
+        {"address": "\u0958" * 200},  # 400 characters once normalised
         {"is_owner": True},
     ],
     ids=str,
@@ -257,3 +263,65 @@ async def test_the_database_down_is_503(
     body = NEW if method == "POST" else {"address": "CMC"}
     response = await api.request(method, path, json=body, headers=with_key(admin))
     assert (response.status_code, response.json()["code"]) == (503, "SERVICE_UNAVAILABLE")
+
+
+@pytest.mark.parametrize(
+    ("params", "code"),
+    [({"q": "ab\u0000"}, "VALIDATION_FAILED"), ({"q": "x" * 101}, "VALIDATION_FAILED"),
+     ({"cursor": "nope"}, "INVALID_CURSOR")],
+    ids=str,
+)  # fmt: skip
+async def test_bad_list_parameters_are_422(
+    api: httpx.AsyncClient, member: uuid.UUID, params: dict[str, str], code: str
+) -> None:
+    response = await api.get(DRIVERS, params=params, headers=signed_in(member))
+    assert (response.status_code, response.json()["code"]) == (422, code)
+
+
+async def test_a_search_with_like_wildcards_finds_them_literally(
+    api: httpx.AsyncClient, db_session: AsyncSession, member: uuid.UUID
+) -> None:
+    await _driver(db_session, full_name="Abebe Driver")
+    for q in ("%", "_bebe", "a%"):
+        response = await api.get(DRIVERS, params={"q": q}, headers=signed_in(member))
+        assert response.json()["items"] == [], q
+
+
+async def test_keeping_ones_own_phone_and_plate_is_no_conflict(
+    api: httpx.AsyncClient, db_session: AsyncSession, member: uuid.UUID
+) -> None:
+    driver = await _driver(db_session, phone="+251911234567", plate="AA 3-B12345")
+    response = await api.patch(
+        _path(driver),
+        json={"phone": "0911 234 567", "plate": "aa 3-b12345", "address": "CMC"},
+        headers=signed_in(member),
+    )
+    assert response.status_code == 200, response.json()
+
+
+@pytest.mark.parametrize("plate", ["aa 3-b12345", "AA  3-B12345"])
+async def test_the_table_refuses_a_plate_in_another_spelling(
+    db_session: AsyncSession, plate: str
+) -> None:
+    """The service stores one spelling; the table refuses anything that skipped it."""
+    with pytest.raises(IntegrityError):
+        await _driver(db_session, plate=plate)
+
+
+async def test_two_adds_of_one_phone_make_one_driver(
+    committed_api: httpx.AsyncClient,
+    committed_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with committed_sessionmaker() as session:
+        member = (await add_staff(session)).id
+    responses = await asyncio.gather(
+        *(
+            committed_api.post(DRIVERS, json={**NEW, "plate": plate}, headers=with_key(member))
+            for plate in ("AA 1-11111", "AA 2-22222")
+        )
+    )
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    (refused,) = [response for response in responses if response.status_code == 409]
+    assert refused.json()["code"] == "DRIVER_EXISTS"
+    async with committed_sessionmaker() as session, session.begin():
+        assert len((await session.scalars(select(Driver))).all()) == 1
