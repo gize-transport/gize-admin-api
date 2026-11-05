@@ -813,6 +813,10 @@
           "RIDER_EXISTS",
           "ROUTE_FULL",
           "RIDER_HAS_SEAT",
+          "RIDER_HAS_NO_SEAT",
+          "ALREADY_ON_ROUTE",
+          "RIDER_MOVING",
+          "ROUTE_HAS_WAITING_REQUESTS",
           "INTERNAL_ERROR",
           "SERVICE_UNAVAILABLE"
         ],
@@ -1193,6 +1197,15 @@
         "title": "PublicRoutePage",
         "type": "object"
       },
+      "RecordedType": {
+        "description": "The riders staff record: adults (who may also sign up themselves) and company\nriders.",
+        "enum": [
+          "adult",
+          "corporate"
+        ],
+        "title": "RecordedType",
+        "type": "string"
+      },
       "RegistrationOutcome": {
         "enum": [
           "reserved",
@@ -1229,10 +1242,16 @@
       },
       "RiderCreate": {
         "additionalProperties": false,
-        "description": "An adult recorded by staff (from a phone call). The phone may be typed any usual\nway (`0911 23 45 67`); it is stored `+251911234567`. Company riders come with GZ-035.",
+        "description": "A rider recorded by staff. The phone may be typed any usual way (`0911 23 45 67`);\nit is stored `+251911234567`.\n\n- `adult` (from a phone call): home and destination areas, plan, Saturday add-on.\n- `corporate` (GZ-035): their `company_id` and where they board (`home_area_id`); no\n  destination (they ride to the route's B), plan or Saturday (the company is billed).",
         "properties": {
+          "company_id": {
+            "description": "Company riders only.",
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
+          },
           "destination_area_id": {
-            "description": "Where they go.",
+            "description": "Where they go (adults only).",
             "format": "uuid",
             "title": "Destination Area Id",
             "type": "string"
@@ -1257,7 +1276,11 @@
           },
           "plan": {
             "$ref": "#/components/schemas/RiderPlan",
-            "description": "`morning`: A to B only; `evening`: B to A only."
+            "description": "Adults only. `morning`: A to B only; `evening`: B to A."
+          },
+          "rider_type": {
+            "$ref": "#/components/schemas/RecordedType",
+            "default": "adult"
           },
           "saturday_addon": {
             "default": false,
@@ -1268,9 +1291,7 @@
         "required": [
           "full_name",
           "phone",
-          "home_area_id",
-          "destination_area_id",
-          "plan"
+          "home_area_id"
         ],
         "title": "RiderCreate",
         "type": "object"
@@ -1278,6 +1299,17 @@
       "RiderListItem": {
         "additionalProperties": false,
         "properties": {
+          "company": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CompanyRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Company riders only."
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -1312,6 +1344,17 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "next_seat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SeatRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While moving: the seat that starts after `seat` ends (GZ-035)."
           },
           "open_requests": {
             "description": "Their open route requests (new or matched).",
@@ -1356,7 +1399,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "The seat held now, or the next to start."
           },
           "source": {
             "$ref": "#/components/schemas/RiderSource",
@@ -1377,7 +1421,9 @@
           "plan",
           "saturday_addon",
           "source",
+          "company",
           "seat",
+          "next_seat",
           "open_requests",
           "created_at",
           "updated_at",
@@ -1463,6 +1509,17 @@
       "RiderRead": {
         "additionalProperties": false,
         "properties": {
+          "company": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CompanyRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Company riders only."
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -1497,6 +1554,17 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "next_seat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SeatRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While moving: the seat that starts after `seat` ends (GZ-035)."
           },
           "open_requests": {
             "description": "Their open route requests (new or matched).",
@@ -1541,7 +1609,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "The seat held now, or the next to start."
           },
           "source": {
             "$ref": "#/components/schemas/RiderSource",
@@ -1562,7 +1631,9 @@
           "plan",
           "saturday_addon",
           "source",
+          "company",
           "seat",
+          "next_seat",
           "open_requests",
           "created_at",
           "updated_at",
@@ -1581,7 +1652,7 @@
       },
       "RiderUpdate": {
         "additionalProperties": false,
-        "description": "Change any of these (leave out what stays). A rider holding a seat must still fit\nits route: boarding at A or an area it serves, going to B, Saturday only where offered\n(a 422 on the field otherwise).",
+        "description": "Change any of these (leave out what stays). A rider holding a seat must still fit\nits route: boarding at A or an area it serves, going to B, Saturday only where offered\n(a 422 on the field otherwise). Company riders change only their name, phone and where\nthey board; their company doesn't change (record them again).",
         "minProperties": 1,
         "properties": {
           "destination_area_id": {
@@ -2758,9 +2829,73 @@
         "title": "RouteUpdate",
         "type": "object"
       },
+      "SeatEnd": {
+        "additionalProperties": false,
+        "description": "When the rider leaves: an adult at a month's end (this month's by default); a\ncompany rider on any day (today by default). A reservation, or a seat that hasn't\nstarted by then, ends at once (it never rode).",
+        "properties": {
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last day they ride.",
+            "title": "End Date"
+          }
+        },
+        "title": "SeatEnd",
+        "type": "object"
+      },
+      "SeatPlacement": {
+        "additionalProperties": false,
+        "description": "The route to place the rider on (or move them to).\n\n- `start_date`: an adult starts on a 1st (the next by default, at most a year ahead);\n  a company rider on any day (today by default, at most a year ahead).\n- `skip_reason`: needed to place an adult on an active route ahead of other people's\n  open requests for it (kept with the seat and audited).",
+        "properties": {
+          "route_id": {
+            "format": "uuid",
+            "title": "Route Id",
+            "type": "string"
+          },
+          "skip_reason": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skip Reason"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          }
+        },
+        "required": [
+          "route_id"
+        ],
+        "title": "SeatPlacement",
+        "type": "object"
+      },
       "SeatRef": {
         "additionalProperties": false,
-        "description": "The seat the rider holds today or later (one at most).",
+        "description": "A seat the rider holds today or later.",
         "properties": {
           "end_date": {
             "anyOf": [
@@ -7090,6 +7225,406 @@
           }
         ],
         "summary": "Change a rider",
+        "tags": [
+          "riders"
+        ]
+      }
+    },
+    "/v1/riders/{rider_id}/seat": {
+      "put": {
+        "description": "Requires `Idempotency-Key`. An adult rides a public route that takes their trip\n(a reservation on a `forming` one, a place on an `active` one) from a 1st; a company\nrider their company's route from any day. A move ends the seat they hold the day\nbefore (a reservation just ends).\n\n- 409 ROUTE_FULL: not a seat free on every day from the start (record a route request).\n- 409 ROUTE_HAS_WAITING_REQUESTS: an adult on an active route ahead of other people's\n  open requests for it: send a `skip_reason` (kept and audited). Their own requests for\n  it are fulfilled.\n- 409 ALREADY_ON_ROUTE: they hold a seat on it that isn't ending. On the route of a\n  seat they are leaving, the end is undone instead (and a move still to come ends).\n- 409 RIDER_MOVING: a move is already planned: undo it first (place them back on\n  their current route).\n- 409 ROUTE_NOT_READY: a company rider whose company isn't active.\n- 422 on `route_id`: a route that doesn't take this rider, or a forming one for\n  someone riding now (it may launch late); on `start_date`: not a coming 1st for an\n  adult, past, or more than a year ahead.",
+        "operationId": "riders_place",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rider_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rider Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeatPlacement"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiderRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Already On Route, Request In Progress, Rider Moving, Route Full, Route Has Waiting Requests, Route Not Ready",
+            "x-error-codes": [
+              "ALREADY_ON_ROUTE",
+              "IDEMPOTENCY_IN_PROGRESS",
+              "RIDER_MOVING",
+              "ROUTE_FULL",
+              "ROUTE_HAS_WAITING_REQUESTS",
+              "ROUTE_NOT_READY"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Idempotency Key Mismatch, Validation Failed",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Give a rider a seat, or move them",
+        "tags": [
+          "riders"
+        ]
+      }
+    },
+    "/v1/riders/{rider_id}/seat/end": {
+      "post": {
+        "description": "Requires `Idempotency-Key`. An adult leaves at a month's end (this month's by\ndefault; the seat stays empty until the next month), a company rider on any day (today\nby default). A reservation, or a seat not started by then, ends at once.\n\n- 409 RIDER_HAS_NO_SEAT: they hold none.\n- 422 on `end_date`: not a month's last day for an adult, past, or more than a year\n  ahead.",
+        "operationId": "riders_end_seat",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rider_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rider Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeatEnd"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiderRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-error-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Request In Progress, Rider Has No Seat",
+            "x-error-codes": [
+              "IDEMPOTENCY_IN_PROGRESS",
+              "RIDER_HAS_NO_SEAT"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large",
+            "x-error-codes": [
+              "PAYLOAD_TOO_LARGE"
+            ]
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Idempotency Key Mismatch, Validation Failed",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
+              "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "A rider leaves their route",
         "tags": [
           "riders"
         ]
