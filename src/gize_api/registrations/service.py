@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from typing import NoReturn
 
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,13 +47,8 @@ from gize_api.route_requests import service as route_requests
 from gize_api.routes import repository as routes
 from gize_api.routes import seats
 from gize_api.routes.models import Route, RouteStatus, RouteType
-from gize_api.verification.models import PhoneVerification
-from gize_api.verification.tokens import (
-    InvalidVerifiedPhoneTokenError,
-    VerifiedPhone,
-    phone_scope,
-    read_verified_phone_token,
-)
+from gize_api.verification.service import prove, spend
+from gize_api.verification.tokens import phone_scope
 
 _OPEN_TO_RIDERS = (RouteStatus.FORMING, RouteStatus.ACTIVE, RouteStatus.PAUSED)
 MAX_FITTING = 20  # routes serving one trip looked at; more would be a city of vans
@@ -69,7 +64,7 @@ async def register_adult(
 ) -> Response:
     """201 with what the sign-up got, or the stored answer for a retry."""
     # Signed by us, expired or not: enough to find a sign-up this retries.
-    proved = _proved(registration.verified_phone_token, key, check_expiry=False)
+    proved = prove(registration.verified_phone_token, key, check_expiry=False)
     scope = phone_scope(proved.phone, key=key)
     async with session.begin():
         stored = await peek(session, scope=scope, request=idempotent)
@@ -82,7 +77,7 @@ async def register_adult(
         claimed = await claim(session, scope=scope, request=idempotent)
         if claimed.stored is not None:
             return replay_response(claimed.stored)
-        await _spend(session, proved)
+        await spend(session, proved)
         route = await _route_to_take(session, registration)
         # Sorted: two sign-ups naming the same areas the other way round lock alike.
         for area_id, field in sorted(
@@ -106,31 +101,6 @@ async def register_adult(
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-def _proved(token: str, key: str, *, check_expiry: bool) -> VerifiedPhone:
-    try:
-        return read_verified_phone_token(token, key=key, check_expiry=check_expiry)
-    except InvalidVerifiedPhoneTokenError:
-        raise AppError(ErrorCode.PHONE_NOT_VERIFIED) from None
-
-
-async def _spend(session: AsyncSession, proved: VerifiedPhone) -> None:
-    """The token's verification, confirmed for this phone and not spent yet, is spent now
-    (locked: two sign-ups with one token, one gets through)."""
-    verification = await session.scalar(
-        select(PhoneVerification)
-        .where(PhoneVerification.id == proved.verification_id)
-        .with_for_update()
-    )
-    if (
-        verification is None
-        or verification.phone != proved.phone
-        or verification.verified_at is None
-        or verification.consumed_at is not None
-    ):
-        raise AppError(ErrorCode.PHONE_NOT_VERIFIED)
-    verification.consumed_at = func.now()
 
 
 async def _route_to_take(session: AsyncSession, registration: AdultRegistration) -> Route | None:
@@ -168,9 +138,8 @@ async def _no_route_takes_them(session: AsyncSession, registration: AdultRegistr
     for route in await routes.fitting_public_routes(
         session, registration.home_area_id, registration.destination_area_id, limit=MAX_FITTING
     ):
-        if (
-            route.status is not RouteStatus.FORMING
-            or await routes.peak_taken_from(session, route.id, start) < route.seats
+        if route.status is not RouteStatus.FORMING or not await seats.is_full(
+            session, route, start
         ):
             raise invalid_field("body", "route_id")
 

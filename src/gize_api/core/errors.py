@@ -87,6 +87,9 @@ class ErrorCode(StrEnum):
     ALREADY_ON_ROUTE = "ALREADY_ON_ROUTE"
     RIDER_MOVING = "RIDER_MOVING"
     ROUTE_HAS_WAITING_REQUESTS = "ROUTE_HAS_WAITING_REQUESTS"
+    OFFER_OPEN = "OFFER_OPEN"
+    OFFER_CLOSED = "OFFER_CLOSED"
+    NO_WAITING_REQUESTS = "NO_WAITING_REQUESTS"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -157,6 +160,9 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.ALREADY_ON_ROUTE: ErrorSpec(409, "Already On Route"),
     ErrorCode.RIDER_MOVING: ErrorSpec(409, "Rider Moving"),
     ErrorCode.ROUTE_HAS_WAITING_REQUESTS: ErrorSpec(409, "Route Has Waiting Requests"),
+    ErrorCode.OFFER_OPEN: ErrorSpec(409, "Offer Open"),
+    ErrorCode.OFFER_CLOSED: ErrorSpec(409, "Offer Closed"),
+    ErrorCode.NO_WAITING_REQUESTS: ErrorSpec(409, "No Waiting Requests"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

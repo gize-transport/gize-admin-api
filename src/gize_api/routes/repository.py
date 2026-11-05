@@ -26,7 +26,9 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from gize_api.core.db import LIKE_ESCAPE, escape_like
 from gize_api.corridors.models import Corridor
+from gize_api.offers.models import OfferStatus, SeatOffer
 from gize_api.riders.models import Rider
+from gize_api.route_requests.models import OPEN_STATUSES, RequestKind, RouteRequest
 from gize_api.routes.models import (
     AssignmentStatus,
     Route,
@@ -284,6 +286,68 @@ async def peak_taken_from(session: AsyncSession, route_id: uuid.UUID, today: dat
     last_day = max(today, last_start or today)
     row = (await session.execute(_peaks([route_id], today, last_day, split=None))).first()
     return 0 if row is None else int(row[1])
+
+
+def _holding_offers() -> tuple[ColumnElement[bool], ...]:
+    """Open offers in time whose request is still live, open and waiting for the offer's
+    route (asked for it, or matched to it): they hold a seat."""
+    return (
+        SeatOffer.status == OfferStatus.OPEN,
+        SeatOffer.expires_at > func.now(),
+        exists().where(
+            RouteRequest.id == SeatOffer.request_id,
+            RouteRequest.not_deleted(),
+            RouteRequest.status.in_(OPEN_STATUSES),
+            or_(
+                and_(
+                    RouteRequest.kind == RequestKind.ROUTE,
+                    RouteRequest.route_id == SeatOffer.route_id,
+                ),
+                RouteRequest.matched_route_id == SeatOffer.route_id,
+            ),
+        ),
+    )
+
+
+async def held_by_offers(
+    session: AsyncSession, route_id: uuid.UUID, *, excluding: uuid.UUID | None = None
+) -> int:
+    """Seats open offers hold on the route (GZ-040): open, in time, their request still
+    open. Every way of taking a seat counts them; an offer being accepted doesn't count
+    itself."""
+    statement = select(func.count()).where(SeatOffer.route_id == route_id, *_holding_offers())
+    if excluding is not None:
+        statement = statement.where(SeatOffer.id != excluding)
+    return int(await session.scalar(statement.select_from(SeatOffer)) or 0)
+
+
+async def held_by_offers_on(
+    session: AsyncSession, route_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """`held_by_offers` for several routes at once (one query); a route with none has no key."""
+    if not route_ids:
+        return {}
+    rows = await session.execute(
+        select(SeatOffer.route_id, func.count())
+        .where(SeatOffer.route_id.in_(route_ids), *_holding_offers())
+        .group_by(SeatOffer.route_id)
+    )
+    return {route_id: int(count) for route_id, count in rows}
+
+
+async def taken_with_offers(
+    session: AsyncSession, route_id: uuid.UUID, first_day: date, *, excluding: uuid.UUID | None
+) -> int:
+    """Seats taken on the busiest day from `first_day`, plus those open offers hold."""
+    taken = await peak_taken_from(session, route_id, first_day)
+    return taken + await held_by_offers(session, route_id, excluding=excluding)
+
+
+async def latest_launch_day(session: AsyncSession, route_id: uuid.UUID) -> date | None:
+    """The day the route's launch started its riders (GZ-041's `launched_on`)."""
+    return await session.scalar(
+        select(func.max(RouteAssignment.launched_on)).where(RouteAssignment.route_id == route_id)
+    )
 
 
 async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) -> bool:

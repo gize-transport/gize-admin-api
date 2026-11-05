@@ -115,7 +115,7 @@ async def create(
             source=RiderSource.STAFF,
         )
         session.add(row)
-        await _flush(session)
+        await flush_riders(session)
         row = await repository.reload(session, row)
         audit.record(
             session,
@@ -202,7 +202,7 @@ async def update(
             value = getattr(change, field)
             if value is not None:
                 setattr(row, field, value)
-        await _flush(session)
+        await flush_riders(session)
         row = await repository.reload(session, row)
         audit.record(
             session,
@@ -304,9 +304,7 @@ async def _stay(
     409 ALREADY_ON_ROUTE when that seat isn't ending."""
     if staying.end_date is None:
         raise AppError(ErrorCode.ALREADY_ON_ROUTE)
-    after = staying.end_date + timedelta(days=1)
-    if await routes.peak_taken_from(session, route.id, after) >= route.seats:
-        raise AppError(ErrorCode.ROUTE_FULL)
+    await seats.full_or_raise(session, route, staying.end_date + timedelta(days=1))
     for seat in held:
         if seat.id != staying.id and seat.start_date > today:
             await _end_seat(session, caller, seat, last_day=seat.start_date - timedelta(days=1))
@@ -617,8 +615,9 @@ def _read(row: Rider, held: list[HeldSeat], open_requests: int) -> RiderRead:
     )
 
 
-async def _flush(session: AsyncSession) -> None:
-    """Flush; a phone another request took meanwhile is the same 409 as the check's."""
+async def flush_riders(session: AsyncSession) -> None:
+    """Flush; a phone another request took meanwhile is the same 409 as the check's (also
+    for a rider made from an accepted offer, GZ-040)."""
     try:
         await session.flush()
     except IntegrityError as exc:

@@ -43,12 +43,13 @@ async def take(
     start: date,
     status: AssignmentStatus,
     skip_reason: str | None = None,
+    offer_id: uuid.UUID | None = None,
 ) -> RouteAssignment:
     """A seat on the route (locked by the caller) from `start`, open-ended. 409 ROUTE_FULL
     when a seat isn't free on every day from then: counted per day, so someone leaving at
-    a month's end frees the month after, not that one."""
-    if await repository.peak_taken_from(session, route.id, start) >= route.seats:
-        raise AppError(ErrorCode.ROUTE_FULL)
+    a month's end frees the month after, not that one. Open offers (GZ-040) hold seats too;
+    accepting one (`offer_id`) takes the seat it holds."""
+    await full_or_raise(session, route, start, offer_id=offer_id)
     seat = RouteAssignment(
         route_id=route.id,
         rider_id=rider_id,
@@ -59,3 +60,20 @@ async def take(
     session.add(seat)
     await session.flush()
     return seat
+
+
+async def full_or_raise(
+    session: AsyncSession, route: Route, start: date, *, offer_id: uuid.UUID | None = None
+) -> None:
+    """409 ROUTE_FULL unless a seat is free on every day from `start`."""
+    if await is_full(session, route, start, offer_id=offer_id):
+        raise AppError(ErrorCode.ROUTE_FULL)
+
+
+async def is_full(
+    session: AsyncSession, route: Route, start: date, *, offer_id: uuid.UUID | None = None
+) -> bool:
+    """No seat free on every day from `start`, counting the seats riders hold and those
+    open offers hold (except `offer_id`'s own)."""
+    taken = await repository.taken_with_offers(session, route.id, start, excluding=offer_id)
+    return taken >= route.seats

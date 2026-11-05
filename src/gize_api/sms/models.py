@@ -21,6 +21,7 @@ PROVIDER_ID_MAX_LENGTH = 100
 class SmsPurpose(StrEnum):
     PHONE_VERIFICATION = "phone_verification"  # GZ-031
     ROUTE_LAUNCH = "route_launch"  # GZ-041
+    SEAT_OFFER = "seat_offer"  # GZ-040
 
 
 class SmsStatus(StrEnum):
@@ -48,7 +49,9 @@ class SmsMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             f" AND length(dedup_key) <= {DEDUP_KEY_MAX_LENGTH}",
             name="dedup_key",
         ),
-        CheckConstraint("purpose IN ('phone_verification', 'route_launch')", name="purpose"),
+        CheckConstraint(
+            "purpose IN ('phone_verification', 'route_launch', 'seat_offer')", name="purpose"
+        ),
         CheckConstraint("to_phone ~ '^\\+251[79][0-9]{8}$'", name="to_phone"),
         CheckConstraint(
             "status IN ('sending', 'sent', 'failed')"

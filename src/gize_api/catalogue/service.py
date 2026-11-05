@@ -35,7 +35,8 @@ async def list_areas(session: AsyncSession, params: PublicAreaListParams) -> Pub
 
 
 async def list_routes(session: AsyncSession, params: PublicRouteListParams) -> PublicRoutePage:
-    """Oldest first, with places and whether they're full (four queries per page)."""
+    """Oldest first, with places and whether they're full, open offers counted (five
+    queries per page)."""
     async with session.begin():
         page = await paginate(
             session,
@@ -45,14 +46,19 @@ async def list_routes(session: AsyncSession, params: PublicRouteListParams) -> P
             id=Route.id,
         )
         today = schedule.addis_today()
-        counts = await routes.seat_counts(session, [route.id for route in page.items], today)
+        ids = [route.id for route in page.items]
+        counts = await routes.seat_counts(session, ids, today)
+        offered = await routes.held_by_offers_on(session, ids)  # GZ-040: offers hold seats
         return PublicRoutePage(
-            items=[_read(route, counts[route.id], today) for route in page.items],
+            items=[
+                _read(route, counts[route.id], today, offered.get(route.id, 0))
+                for route in page.items
+            ],
             next_cursor=page.next_cursor,
         )
 
 
-def _read(row: Route, counts: SeatCounts, today: date) -> PublicRoute:
+def _read(row: Route, counts: SeatCounts, today: date, offered: int) -> PublicRoute:
     return PublicRoute(
         id=row.id,
         code=row.code,
@@ -74,5 +80,5 @@ def _read(row: Route, counts: SeatCounts, today: date) -> PublicRoute:
         status=row.status,
         # Judged from the next 1st, the earliest a new rider starts: today's month on the
         # 1st, else next month's busiest day.
-        full=(counts.this_month if today.day == 1 else counts.next_month) >= row.seats,
+        full=(counts.this_month if today.day == 1 else counts.next_month) + offered >= row.seats,
     )

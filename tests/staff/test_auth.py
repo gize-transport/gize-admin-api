@@ -301,6 +301,8 @@ UNGUARDED_ROUTES = frozenset(
         ("GET", "/v1/public/routes"),
         # Adult sign-up (GZ-032): a verified phone instead, PUBLIC_SIGNUP (failing closed).
         ("POST", "/v1/registrations/adult"),
+        # Accepting a seat offer on the website (GZ-040): the same verified phone and limits.
+        ("POST", "/v1/public/offers/{offer_id}/accept"),
     }
 )
 
