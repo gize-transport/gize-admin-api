@@ -11,8 +11,8 @@ from gize_api.integrations.sms import (
     FakeSmsSender,
     SmsSendError,
     UnconfiguredSmsSender,
-    sms_sender_for,
 )
+from gize_api.integrations.sms_senders import sms_sender_for
 from tests.support import SettingsFactory
 
 PHONE = "+251911234567"
@@ -75,8 +75,13 @@ def test_each_environment_gets_its_sender(
     make_settings: SettingsFactory, app_env: Environment, kind: type, echo: bool | None
 ) -> None:
     settings = make_settings().model_copy(update={"app_env": app_env})
-    sender = sms_sender_for(settings)
+    sender = sms_sender_for(settings, telemetry=None)
     assert type(sender) is kind
     if echo is not None:
         assert isinstance(sender, FakeSmsSender)
         assert sender.echo is echo
+
+
+async def test_the_fake_and_unconfigured_senders_have_nothing_to_close() -> None:
+    await FakeSmsSender().aclose()
+    await UnconfiguredSmsSender().aclose()

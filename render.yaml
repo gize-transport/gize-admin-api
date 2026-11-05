@@ -32,6 +32,12 @@ projects:
                 value: https://pahktmbnbyulqkhdruci.supabase.co
               - key: SUPABASE_SECRET_KEY
                 sync: false
+              - key: VERIFIED_PHONE_TOKEN_KEY  # GZ-031: phone verification
+                sync: false
+              - key: AFROMESSAGE_TOKEN  # GZ-038: real SMS
+                sync: false
+              - key: AFROMESSAGE_SENDER_NAME  # not secret; set once AfroMessage approves it
+                sync: false
               - key: DATABASE_URL  # gize_app on the session pooler, ?ssl=verify-full
                 sync: false
               - key: DATABASE_SSL_ROOT_CERT
