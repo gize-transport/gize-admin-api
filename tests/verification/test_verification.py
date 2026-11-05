@@ -146,7 +146,7 @@ async def test_without_redis_no_code_is_sent(
     assert sms.sent == []
 
 
-@pytest.mark.parametrize("kind", ["unavailable", "rejected", "timeout"])
+@pytest.mark.parametrize("kind", ["unavailable", "rejected"])
 async def test_an_sms_that_fails_can_be_retried_with_the_same_key(
     api: httpx.AsyncClient,
     api_app: GizeAPI,
@@ -174,6 +174,38 @@ async def test_an_sms_that_fails_can_be_retried_with_the_same_key(
     assert again.status_code == 201
     assert again.json()["verification_id"] != str(failed.id)
     assert len(sms.sent) == 1
+
+
+async def test_an_sms_that_may_have_gone_out_keeps_its_code(
+    api: httpx.AsyncClient, api_app: GizeAPI, db_session: AsyncSession
+) -> None:
+    """GZ-038: the gateway took the request but its answer was lost. The SMS may arrive,
+    so the code stays valid and the app shows the code screen; if nothing arrives, the
+    person asks again (a new key, a new code)."""
+    texts: list[str] = []
+
+    class Unanswered:
+        async def send(self, to: str, text: str) -> str:
+            texts.append(text)
+            raise SmsSendError("timeout")
+
+        async def aclose(self) -> None:
+            return None
+
+    api_app.state.sms_sender = Unanswered()
+    key = _key()
+    response = await api.post(REQUEST, json={"phone": PHONE}, headers=key)
+    assert response.status_code == 201, response.json()
+    again = await api.post(REQUEST, json={"phone": PHONE}, headers=key)
+    assert again.json() == response.json()  # the same verification, replayed
+    assert len(texts) == 1
+    code = re.search(r"\b(\d{6})\b", texts[0])
+    assert code is not None
+    checked = await api.post(
+        VERIFY,
+        json={"verification_id": response.json()["verification_id"], "code": code.group(1)},
+    )
+    assert checked.status_code == 200, checked.json()
 
 
 async def test_without_the_signing_key_nothing_is_sent(

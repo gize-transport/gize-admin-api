@@ -59,6 +59,12 @@ class SmsDelivery:
     id: uuid.UUID
     status: SmsStatus
     first_attempt: bool
+    error: str | None = None  # failed: why (`timeout`: it may have gone out)
+
+    @property
+    def maybe_sent(self) -> bool:
+        """Sent, or no answer after sending (GZ-038): the person may have it."""
+        return self.status is SmsStatus.SENT or self.error == "timeout"
 
 
 Sessions = Callable[[], AbstractAsyncContextManager[AsyncSession]]
@@ -92,18 +98,22 @@ async def send_once(
         if claimed is None:
             earlier = (
                 await session.execute(
-                    select(SmsMessage.id, SmsMessage.status).where(SmsMessage.dedup_key == key)
+                    select(SmsMessage.id, SmsMessage.status, SmsMessage.error).where(
+                        SmsMessage.dedup_key == key
+                    )
                 )
             ).one()
             _measure(telemetry, purpose, "duplicate", 0.0)
-            return SmsDelivery(id=earlier.id, status=earlier.status, first_attempt=False)
+            return SmsDelivery(
+                id=earlier.id, status=earlier.status, first_attempt=False, error=earlier.error
+            )
 
     started = time.monotonic()
     try:
         provider_id = await sender.send(to, text)
     except SmsSendError as exc:
         await _fail(sessions, telemetry, claimed, purpose, exc.kind, started)
-        return SmsDelivery(id=claimed, status=SmsStatus.FAILED, first_attempt=True)
+        return SmsDelivery(id=claimed, status=SmsStatus.FAILED, first_attempt=True, error=exc.kind)
     except asyncio.CancelledError:
         # May have gone out: record it as a timeout, even while being cancelled.
         await asyncio.shield(_fail(sessions, telemetry, claimed, purpose, "timeout", started))

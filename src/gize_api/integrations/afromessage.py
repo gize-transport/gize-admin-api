@@ -9,10 +9,11 @@ answer's body decides. Mapped to GZ-030's outcomes:
 
 - accepted: its `message_id`;
 - refused (an error answer, or a 400/422): `rejected`, the reasons logged (numbers masked);
-- the token refused (401/403), not found, rate limited (429), down (5xx), unreachable:
+- the token refused (401/403), not found, rate limited (429), down (503), unreachable:
   `unavailable`: nothing was sent;
-- no answer in time, the answer lost after sending, or a 2xx we can't read: `timeout`:
-  it may have been sent.
+- no answer in time, the answer lost after sending, a 500/502/504 (it, or a proxy in
+  front, may have acted), or an answer we can't use (too large, compressed, unreadable):
+  `timeout`: it may have been sent.
 
 Sent once through the guarded outbound client (its POSTs are never retried); the token,
 the phone and the text never reach a log or an error.
@@ -30,14 +31,18 @@ from gize_api.core.http import (
     OutboundError,
     OutboundResponse,
     OutboundTimeoutError,
+    ResponseTooLargeError,
 )
-from gize_api.core.scrub import mask_phone_numbers
+from gize_api.core.scrub import scrub_text
 from gize_api.core.telemetry import Telemetry
 from gize_api.integrations.sms import SmsSendError
 from gize_api.sms.models import PROVIDER_ID_MAX_LENGTH
 
 AFROMESSAGE_HOST = "api.afromessage.com"
 SEND_URL = f"https://{AFROMESSAGE_HOST}/api/send"
+# An error from the server, or a gateway in front of it, after it got the request: it may
+# have acted on it.
+MAYBE_SENT_STATUSES = frozenset({500, 502, 504})
 MAX_LOGGED_REASONS = 5
 MAX_REASON_LENGTH = 200
 
@@ -92,7 +97,7 @@ class AfroMessageSender:
                 json=body,
                 headers={"Authorization": f"Bearer {self._token.get_secret_value()}"},
             )
-        except (OutboundTimeoutError, OutboundAnswerLostError):
+        except (OutboundTimeoutError, OutboundAnswerLostError, ResponseTooLargeError):
             raise SmsSendError("timeout") from None  # it may have been sent
         except OutboundError:
             raise SmsSendError("unavailable") from None
@@ -105,6 +110,9 @@ def _outcome(response: OutboundResponse) -> str:
     if response.status in {400, 422} or (200 <= response.status < 300 and acknowledge == "error"):
         logger.warning("afromessage_refused", status=response.status, errors=_reasons(answer))
         raise SmsSendError("rejected")
+    if response.status in MAYBE_SENT_STATUSES:
+        logger.warning("afromessage_unanswered", status=response.status)
+        raise SmsSendError("timeout")
     if not 200 <= response.status < 300:
         logger.warning("afromessage_unavailable", status=response.status)
         raise SmsSendError("unavailable")
@@ -129,11 +137,10 @@ def _body(response: OutboundResponse) -> Any:  # noqa: ANN401 - JSON
 
 
 def _reasons(answer: Any) -> list[str]:  # noqa: ANN401 - JSON
-    """AfroMessage's reasons, bounded, numbers masked (they may name the recipient)."""
+    """AfroMessage's reasons, bounded and scrubbed (they may echo the number or the
+    message, which can hold a code)."""
     details = answer.get("response") if isinstance(answer, dict) else None
     errors = details.get("errors") if isinstance(details, dict) else None
     if not isinstance(errors, list):
         return []
-    return [
-        mask_phone_numbers(str(error))[:MAX_REASON_LENGTH] for error in errors[:MAX_LOGGED_REASONS]
-    ]
+    return [scrub_text(str(error))[:MAX_REASON_LENGTH] for error in errors[:MAX_LOGGED_REASONS]]

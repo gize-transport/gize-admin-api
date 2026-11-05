@@ -38,6 +38,8 @@ projects:
                 sync: false
               - key: AFROMESSAGE_SENDER_NAME  # not secret; set once AfroMessage approves it
                 sync: false
+              - key: AFROMESSAGE_IDENTIFIER_ID  # not secret; only with several short codes
+                sync: false
               - key: DATABASE_URL  # gize_app on the session pooler, ?ssl=verify-full
                 sync: false
               - key: DATABASE_SSL_ROOT_CERT

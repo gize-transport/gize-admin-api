@@ -441,6 +441,24 @@ def test_production_opt_out_still_warns(
     assert len(warnings_logged) == 2
 
 
+@pytest.mark.parametrize(("app_env", "token", "warned"), [
+    ("staging", None, True),
+    ("staging", "afro-test-token-0123456789", False),
+    ("local", None, False),
+])  # fmt: skip
+def test_startup_warns_when_staging_or_production_has_no_sms(
+    make_settings: SettingsFactory,
+    capsys: pytest.CaptureFixture[str],
+    app_env: str,
+    token: str | None,
+    warned: bool,
+) -> None:
+    """GZ-038: without AFROMESSAGE_TOKEN every SMS fails; say so at startup."""
+    create_app(make_settings(app_env=app_env, afromessage_token=token))
+    events = [line["event"] for line in _lines(capsys)]
+    assert ("sms_disabled" in events) is warned
+
+
 def test_no_observability_warning_in_local(
     make_settings: SettingsFactory, capsys: pytest.CaptureFixture[str]
 ) -> None:

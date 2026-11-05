@@ -120,6 +120,9 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     if settings.app_env in {Environment.STAGING, Environment.PRODUCTION}:
         for name in settings.missing_observability():
             structlog.get_logger("gize_api.startup").warning("observability_disabled", setting=name)
+        if settings.afromessage_token is None:
+            # Every SMS fails (phone codes answer 503) until AFROMESSAGE_TOKEN is set.
+            structlog.get_logger("gize_api.startup").warning("sms_disabled")
     app = GizeAPI(
         title="Gize Admin API",
         version="v1",  # each released contract is an api-vX.Y.Z tag (docs/api-contract.md)

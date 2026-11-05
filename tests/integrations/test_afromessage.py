@@ -125,15 +125,21 @@ async def test_without_a_sender_name_or_identifier_they_are_left_out(
         (httpx.Response(401, json={"message": "Unauthenticated."}), "unavailable"),
         (httpx.Response(403), "unavailable"),
         (httpx.Response(429), "unavailable"),
-        (httpx.Response(500), "unavailable"),
+        (httpx.Response(500), "timeout"),  # it, or a proxy in front, may have acted
+        (httpx.Response(502), "timeout"),
+        (httpx.Response(504), "timeout"),
         (httpx.Response(503, text="down"), "unavailable"),
         (httpx.Response(404), "unavailable"),
         (httpx.ConnectError("refused"), "unavailable"),
         (httpx.ConnectTimeout("slow"), "unavailable"),  # never reached: nothing sent
         (httpx.ReadTimeout("slow"), "timeout"),  # sent, no answer: maybe sent
+        (httpx.WriteTimeout("slow"), "timeout"),
+        (httpx.ReadError("reset"), "timeout"),
         (httpx.RemoteProtocolError("dropped"), "timeout"),
         # Accepted, maybe sent, but we can't tell: as uncertain as a timeout.
         (httpx.Response(200, text="<html>maintenance</html>"), "timeout"),
+        (httpx.Response(200, content=b"x" * (1024 * 1024 + 1)), "timeout"),  # too large
+        (httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=b"x"), "timeout"),
         (httpx.Response(200, json={"acknowledge": "success", "response": {}}), "timeout"),
         (_success(message_id=None), "timeout"),
         (_success(message_id="x" * 101), "timeout"),
@@ -141,8 +147,9 @@ async def test_without_a_sender_name_or_identifier_they_are_left_out(
         (httpx.Response(200, json={"acknowledge": "maybe"}), "timeout"),
     ],
     ids=[
-        "error answer", "400", "422", "token refused", "403", "429", "500", "503", "404",
-        "unreachable", "connect timed out", "read timed out", "dropped", "not json",
+        "error answer", "400", "422", "token refused", "403", "429", "500", "502", "504",
+        "503", "404", "unreachable", "connect timed out", "read timed out",
+        "write timed out", "read error", "dropped", "not json", "too large", "compressed",
         "no response", "no message id", "message id too long", "not an object",
         "unknown acknowledge",
     ],
@@ -162,13 +169,16 @@ async def test_a_refusal_is_logged_with_its_reason_masked(
     sender_with: Callable[..., AfroMessageSender],
 ) -> None:
     """The reason helps fix a bad number or sender name; a number in it is masked."""
-    answer = _error(f"Invalid recipient {PHONE}", "Sender name not approved")
+    answer = _error(
+        f"Invalid recipient {PHONE}", "Sender name not approved", f"Could not send: {TEXT}"
+    )
     with structlog.testing.capture_logs() as logs, pytest.raises(SmsSendError):
         await sender_with(answer).send(PHONE, TEXT)
     (entry,) = [log for log in logs if log["event"] == "afromessage_refused"]
     assert entry["log_level"] == "warning"
     assert "Sender name not approved" in entry["errors"]
     assert PHONE not in repr(entry)
+    assert "123456" not in repr(entry)  # an echoed code is scrubbed too
 
 
 async def test_a_post_is_never_retried(

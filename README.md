@@ -446,6 +446,8 @@ The public app's first step (GZ-031). Both endpoints are public, with no sign-in
 
 **How it's stored:** codes only as an HMAC keyed by `VERIFIED_PHONE_TOKEN_KEY`; checking one locks its row, so parallel guesses can't exceed five.
 
+**If the gateway took the SMS but its answer was lost** (a timeout), the request still answers `201`: the code may arrive, so it stays valid. If it doesn't, the person asks for a new one.
+
 **Where you see the code:**
 - **Locally:** in the API's terminal (the fake SMS sender).
 - **On staging:** no SMS provider yet, so requests answer `503 SMS_UNAVAILABLE`.

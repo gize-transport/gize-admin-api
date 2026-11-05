@@ -10,7 +10,8 @@ failing closed):
    success. A send left `sending` counts as not sent, and so does anything that stops the
    send (the database failing, a bug, the request cancelled): the key is released and the
    code expired before the error goes on, so a stored "sent" never outlives an SMS that
-   wasn't.
+   wasn't. A `timeout` (sent, but no answer from the gateway, GZ-038) counts as sent: the
+   code may arrive, so it stays valid; if it doesn't, the person asks again (a new code).
 
 Every request counts against the limits, replays included (a retried success uses one of
 the phone's three codes an hour): the safe direction.
@@ -38,7 +39,7 @@ from gize_api.core.idempotency import IdempotentRequest, claim, record, replay_r
 from gize_api.core.ratelimit import SMS, RateLimiter
 from gize_api.core.telemetry import Telemetry
 from gize_api.integrations.sms import SmsSender
-from gize_api.sms.models import SmsPurpose, SmsStatus
+from gize_api.sms.models import SmsPurpose
 from gize_api.sms.service import send_once
 from gize_api.verification.models import MAX_ATTEMPTS, PhoneVerification
 from gize_api.verification.schemas import (
@@ -103,7 +104,7 @@ async def request_code(
         # Not known to be sent: forget the success, even while being cancelled.
         await asyncio.shield(_withdraw(session, scope, idempotent, verification_id))
         raise
-    if delivery.status is not SmsStatus.SENT:
+    if not delivery.maybe_sent:
         await _withdraw(session, scope, idempotent, verification_id)
         raise AppError(ErrorCode.SMS_UNAVAILABLE, headers={"Retry-After": SMS_RETRY_AFTER_SECONDS})
     return JSONResponse(payload, status_code=201)

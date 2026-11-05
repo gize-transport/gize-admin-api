@@ -282,7 +282,8 @@ class OutboundClient:
                 extensions={"sni_hostname": target.host},
             ) as response:
                 if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-                    raise OutboundUnavailableError("the service sent a compressed response")
+                    # Answered, but not in a form we read: it may have acted on it.
+                    raise OutboundAnswerLostError("the service sent a compressed response")
                 declared = response.headers.get("Content-Length", "")
                 if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
                     raise ResponseTooLargeError("response too large")
