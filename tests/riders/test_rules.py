@@ -25,7 +25,7 @@ async def test_only_the_phone_index_is_reported_as_a_rider_existing(
             rider = await RiderFactory().create(db_session)
             for field, value in values.items():
                 setattr(rider, field, value)  # skipping the service's own checks
-            await service._flush(db_session)
+            await service.flush_riders(db_session)
 
     with pytest.raises(AppError) as taken:
         await change_a_rider(phone=PHONE)

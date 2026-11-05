@@ -274,7 +274,9 @@ async def update(
         minimum = _new(change.launch_minimum, row.launch_minimum)
         if minimum is not None and minimum > seats:
             raise AppError(ErrorCode.SEATS_BELOW_LAUNCH_MINIMUM)
-        if seats < row.seats and seats < await repository.peak_taken_from(session, row.id, today):
+        if seats < row.seats and seats < await repository.taken_with_offers(
+            session, row.id, today, excluding=None
+        ):  # open offers (GZ-040) hold seats too
             raise AppError(ErrorCode.SEATS_BELOW_TAKEN)
         if change.code not in (None, row.code) and await repository.code_taken(
             session, change.code, except_id=row.id

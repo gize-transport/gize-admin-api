@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gize_api.core.db import get_session
 from gize_api.core.errors import ErrorCode, problem_responses
 from gize_api.core.idempotency import IdempotentRequest, idempotent_request
-from gize_api.core.ratelimit import PUBLIC_SIGNUP, RateLimiter, rate_limited
+from gize_api.core.ratelimit import PUBLIC_SIGNUP, rate_limited
 from gize_api.core.security import CurrentStaff, current_staff, staff_router
 from gize_api.offers import service
 from gize_api.offers.schemas import (
@@ -209,11 +209,15 @@ async def accept_on_website(
     """Public: the phone the request gave, verified (GZ-031; the token is spent). Requires
     `Idempotency-Key`. 404 for an offer that isn't theirs, as for one that doesn't exist.
     Limits: 5 an hour per caller, 3 a day per phone."""
-    proved = prove(body.verified_phone_token, key)
-    limiter: RateLimiter = request.app.state.rate_limiter
-    await limiter.check(PUBLIC_SIGNUP, phone=proved.phone)
+    # Signed by us, expired or not: enough to find an acceptance this retries.
+    proved = prove(body.verified_phone_token, key, check_expiry=False)
     response = await service.accept_on_website(
-        session, offer_id, proved, scope=phone_scope(proved.phone, key=key), idempotent=idempotent
+        session,
+        offer_id,
+        proved,
+        scope=phone_scope(proved.phone, key=key),
+        idempotent=idempotent,
+        limiter=request.app.state.rate_limiter,
     )
     response.headers["Cache-Control"] = "no-store"
     return response

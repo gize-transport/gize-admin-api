@@ -65,9 +65,15 @@ async def take(
 async def full_or_raise(
     session: AsyncSession, route: Route, start: date, *, offer_id: uuid.UUID | None = None
 ) -> None:
-    """409 ROUTE_FULL unless a seat is free on every day from `start`, counting the seats
-    riders hold and those open offers hold (except `offer_id`'s own)."""
-    taken = await repository.peak_taken_from(session, route.id, start)
-    held = await repository.held_by_offers(session, route.id, excluding=offer_id)
-    if taken + held >= route.seats:
+    """409 ROUTE_FULL unless a seat is free on every day from `start`."""
+    if await is_full(session, route, start, offer_id=offer_id):
         raise AppError(ErrorCode.ROUTE_FULL)
+
+
+async def is_full(
+    session: AsyncSession, route: Route, start: date, *, offer_id: uuid.UUID | None = None
+) -> bool:
+    """No seat free on every day from `start`, counting the seats riders hold and those
+    open offers hold (except `offer_id`'s own)."""
+    taken = await repository.taken_with_offers(session, route.id, start, excluding=offer_id)
+    return taken >= route.seats

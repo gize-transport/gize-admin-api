@@ -123,7 +123,7 @@ async def own_requests_for(
     )
     statement = (
         select(RouteRequest)
-        .where(*_waiting_for(route_id), or_(RouteRequest.rider_id == rider_id, recorded_for_them))
+        .where(*waiting_for(route_id), or_(RouteRequest.rider_id == rider_id, recorded_for_them))
         .order_by(RouteRequest.created_at, RouteRequest.id)
         .with_for_update()
     )
@@ -139,18 +139,27 @@ async def others_waiting(
 ) -> bool:
     """Someone else's open request waits for this route (asked for it, or matched to it):
     any, or only those made `before` (the rider's own oldest request)."""
-    statement = exists().where(*_waiting_for(route_id), RouteRequest.id.not_in(exclude))
+    statement = exists().where(*waiting_for(route_id), RouteRequest.id.not_in(exclude))
     if before is not None:
         statement = statement.where(RouteRequest.created_at < before)
     return bool(await session.scalar(select(statement)))
 
 
-async def waiting_without_offer(session: AsyncSession, route_id: uuid.UUID) -> list[RouteRequest]:
+MAX_QUEUE = 200  # requests read for one offer; the oldest are offered first
+
+
+async def waiting_without_offer(
+    session: AsyncSession, route_id: uuid.UUID, *, also: uuid.UUID | None = None
+) -> list[RouteRequest]:
     """Adults' requests waiting for this route with no open offer (GZ-040): the queue a
     free seat is offered from. Oldest first, except that a request already offered a seat
     on this route that expired or was withdrawn goes behind the others (the seat passes to
-    the next request). Locked (`FOR UPDATE`, after the route's lock): two staff offering at
-    once see the same queue in turn. Bounded: the route's requests still open."""
+    the next request). The first MAX_QUEUE, and `also` (the one staff name) wherever it
+    stands, last when beyond them.
+
+    Locked (`FOR UPDATE`, after the route's lock) in id order, whatever the queue's order:
+    a request can wait for two routes, and two offers locking it in different orders could
+    deadlock. The lock re-checks each row, so one closed meanwhile drops out."""
     in_time = SeatOffer.expires_at > func.now()
     open_offer = exists().where(
         SeatOffer.request_id == RouteRequest.id, SeatOffer.status == OfferStatus.OPEN, in_time
@@ -163,16 +172,25 @@ async def waiting_without_offer(session: AsyncSession, route_id: uuid.UUID) -> l
             and_(SeatOffer.status == OfferStatus.OPEN, ~in_time),
         ),
     )
-    statement = (
-        select(RouteRequest)
-        .where(*_waiting_for(route_id), RouteRequest.rider_type == RiderType.ADULT, ~open_offer)
+    waiting = (*waiting_for(route_id), RouteRequest.rider_type == RiderType.ADULT, ~open_offer)
+    queue = await session.scalars(
+        select(RouteRequest.id)
+        .where(*waiting)
         .order_by(passed_over, RouteRequest.created_at, RouteRequest.id)
+        .limit(MAX_QUEUE)
+    )
+    place = {request_id: index for index, request_id in enumerate(queue)}
+    wanted = [*place, *([also] if also is not None and also not in place else [])]
+    locked = await session.scalars(
+        select(RouteRequest)
+        .where(RouteRequest.id.in_(wanted), *waiting)
+        .order_by(RouteRequest.id)
         .with_for_update()
     )
-    return list((await session.scalars(statement)).all())
+    return sorted(locked, key=lambda request: place.get(request.id, len(place)))
 
 
-def _waiting_for(route_id: uuid.UUID) -> tuple[ColumnElement[bool], ...]:
+def waiting_for(route_id: uuid.UUID) -> tuple[ColumnElement[bool], ...]:
     """Live, open, and for this route: asked for it (`route`) or matched to it."""
     return (
         RouteRequest.not_deleted(),

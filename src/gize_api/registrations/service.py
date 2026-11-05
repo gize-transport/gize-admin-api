@@ -138,9 +138,8 @@ async def _no_route_takes_them(session: AsyncSession, registration: AdultRegistr
     for route in await routes.fitting_public_routes(
         session, registration.home_area_id, registration.destination_area_id, limit=MAX_FITTING
     ):
-        if (
-            route.status is not RouteStatus.FORMING
-            or await routes.peak_taken_from(session, route.id, start) < route.seats
+        if route.status is not RouteStatus.FORMING or not await seats.is_full(
+            session, route, start
         ):
             raise invalid_field("body", "route_id")
 

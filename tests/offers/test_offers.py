@@ -11,6 +11,7 @@ offers can't be accepted.
 """
 
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -20,12 +21,14 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.audit import REDACTED
+from gize_api.core.db import get_session
 from gize_api.integrations.sms import FakeSmsSender, SmsSendError
 from gize_api.main import GizeAPI
+from gize_api.offers import service as offers_service
 from gize_api.offers.models import SeatOffer
 from gize_api.riders.models import Rider
 from gize_api.route_requests.models import RequestKind, RequestStatus, RouteRequest
-from gize_api.routes.models import AssignmentStatus, RouteAssignment, RouteStatus
+from gize_api.routes.models import AssignmentStatus, Route, RouteAssignment, RouteStatus
 from tests.factories import RiderFactory, RouteRequestFactory
 from tests.registrations.support import Trip, add_route, add_trip, verified
 from tests.staff.support import add_staff, audit_entries, signed_in, with_key
@@ -348,8 +351,9 @@ async def test_someone_already_riding_elsewhere_is_moved_by_staff_instead(
     other = await _running(db_session, trip, code="OTHER-01")
     async with db_session.begin():
         rider = await RiderFactory().create(
-            db_session, phone=PHONE, home_area_id=trip.bole, destination_area_id=trip.mexico
-        )
+            db_session, phone=PHONE, full_name="asker 1",  # the asker, any case
+            home_area_id=trip.bole, destination_area_id=trip.mexico,
+        )  # fmt: skip
         db_session.add(RouteAssignment(route_id=other, rider_id=rider.id,
                                        start_date=date(2026, 11, 1),
                                        status=AssignmentStatus.ACTIVE))  # fmt: skip
@@ -518,3 +522,232 @@ async def test_the_public_catalogue_counts_an_offered_seat_as_taken(
     assert await full() is False
     await _offer(api, member, route)
     assert await full() is True
+
+
+# From review: what changed since the offer was made
+
+
+async def _offered(api: httpx.AsyncClient, staff: uuid.UUID, route: uuid.UUID) -> str:
+    response = await _offer(api, staff, route)
+    assert response.status_code == 201, response.json()
+    return str(response.json()["id"])
+
+
+@pytest.mark.parametrize("change", ["declined", "deleted", "fulfilled", "matched elsewhere"])
+async def test_a_request_closed_meanwhile_closes_its_offer(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID, change: str
+) -> None:
+    """And it stops holding the seat."""
+    route = await _running(db_session, trip)
+    request = await _request(db_session, route, day=1, kind=RequestKind.NEW_AREAS,
+                             route_id=None, from_area_id=trip.bole, to_area_id=trip.mexico,
+                             status=RequestStatus.MATCHED, matched_route_id=route)  # fmt: skip
+    offer = await _offered(api, member, route)
+    other = await _running(db_session, trip, code="OTHER-01")
+    values: dict[str, dict[str, object]] = {
+        "declined": {"status": RequestStatus.DECLINED, "decline_reason": "No longer needed."},
+        "deleted": {"deleted_at": datetime.now(UTC)},
+        "fulfilled": {"status": RequestStatus.FULFILLED},
+        "matched elsewhere": {"matched_route_id": other},
+    }
+    async with db_session.begin():
+        await db_session.execute(
+            update(RouteRequest).where(RouteRequest.id == request).values(**values[change])
+        )
+    response = await _accept(api, member, offer)
+    assert (response.status_code, response.json()["code"]) == (409, "OFFER_CLOSED")
+    params = {"from_area_id": str(trip.bole), "to_area_id": str(trip.mexico)}
+    listed = (await api.get("/v1/public/routes", params=params)).json()["items"]
+    assert [item["full"] for item in listed if item["code"] == "BOLE-MEX-01"] == [False]
+
+
+@pytest.mark.parametrize("status", [RouteStatus.DRAFT, RouteStatus.PAUSED])
+async def test_a_route_no_longer_taking_riders_closes_its_offers(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    trip: Trip,
+    member: uuid.UUID,
+    status: RouteStatus,
+) -> None:
+    route = await _running(db_session, trip)
+    await _request(db_session, route, day=1)
+    offer = await _offered(api, member, route)
+    async with db_session.begin():
+        await db_session.execute(update(Route).where(Route.id == route).values(status=status))
+    response = await _accept(api, member, offer)
+    assert (response.status_code, response.json()["code"]) == (409, "OFFER_CLOSED")
+
+
+async def test_a_route_launched_meanwhile_starts_the_seat_with_it(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    """Offered while forming (a reservation from 1 December); launched for 1 February
+    before the answer: the place starts in February, when the van runs."""
+    route = await add_route(db_session, trip, seats=3, launch_minimum=1)
+    async with db_session.begin():
+        await RouteRequestFactory().create(
+            db_session, status=RequestStatus.MATCHED, matched_route_id=route
+        )
+        rider = await RiderFactory().create(
+            db_session, home_area_id=trip.bole, destination_area_id=trip.mexico
+        )
+        db_session.add(RouteAssignment(route_id=route, rider_id=rider.id,
+                                       start_date=date(2027, 2, 1),
+                                       status=AssignmentStatus.ACTIVE,
+                                       launched_on=date(2027, 2, 1)))  # fmt: skip
+    offer = await _offered(api, member, route)
+    async with db_session.begin():
+        await db_session.execute(
+            update(Route).where(Route.id == route).values(status=RouteStatus.ACTIVE)
+        )
+    accepted = await _accept(api, member, offer)
+    assert accepted.status_code == 200, accepted.json()
+    seat = await _one(db_session, RouteAssignment, rider_id=uuid.UUID(accepted.json()["rider_id"]))
+    assert (seat.status, seat.start_date) == (AssignmentStatus.ACTIVE, date(2027, 2, 1))
+
+
+async def test_someone_else_with_the_phone_is_not_the_asker(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    """A relative rides on the phone the asker gave: staff sort out who is who."""
+    route = await _running(db_session, trip)
+    async with db_session.begin():
+        await RiderFactory().create(
+            db_session, phone=PHONE, full_name="Her Husband",
+            home_area_id=trip.bole, destination_area_id=trip.mexico,
+        )  # fmt: skip
+    await _request(db_session, route, day=1)
+    offer = await _offered(api, member, route)
+    response = await _accept(api, member, offer)
+    assert (response.status_code, response.json()["code"]) == (409, "RIDER_EXISTS")
+
+
+async def test_a_deleted_linked_rider_is_replaced_by_a_new_one(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    route = await _running(db_session, trip)
+    async with db_session.begin():
+        gone = await RiderFactory().create(
+            db_session, phone=PHONE, deleted_at=datetime.now(UTC),
+            home_area_id=trip.bole, destination_area_id=trip.mexico,
+        )  # fmt: skip
+        gone_id = gone.id
+    await _request(db_session, route, day=1, rider_id=gone_id)
+    offer = await _offered(api, member, route)
+    accepted = await _accept(api, member, offer)
+    assert accepted.status_code == 200, accepted.json()
+    assert accepted.json()["rider_id"] != str(gone_id)
+
+
+async def test_a_lapsed_offer_elsewhere_doesnt_block_the_request(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    """Asked for X, matched to Y: X's offer lapsed, so Y can offer to them."""
+    route_x = await _running(db_session, trip)
+    route_y = await _running(db_session, trip, code="ROUTE-Y")
+    request = await _request(db_session, route_x, day=1, status=RequestStatus.MATCHED,
+                             matched_route_id=route_y)  # fmt: skip
+    await _offered(api, member, route_x)
+    async with db_session.begin():
+        await db_session.execute(
+            update(SeatOffer).values(expires_at=datetime(2026, 1, 1, tzinfo=UTC))
+        )
+    response = await _offer(api, member, route_y)
+    assert (response.status_code, response.json()["request_id"]) == (201, str(request))
+
+
+async def test_an_unexpected_sms_error_keeps_the_offer(
+    api: httpx.AsyncClient,
+    api_app: GizeAPI,
+    db_session: AsyncSession,
+    trip: Trip,
+    member: uuid.UUID,
+) -> None:
+    class Broken:
+        async def send(self, to: str, text: str) -> str:
+            raise RuntimeError("bug in the gateway client")
+
+        async def aclose(self) -> None:
+            return None
+
+    api_app.state.sms_sender = Broken()
+    route = await _running(db_session, trip)
+    await _request(db_session, route, day=1)
+    response = await _offer(api, member, route)
+    assert response.status_code == 201
+
+
+async def test_the_website_replays_an_acceptance_after_the_token_expires(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    trip: Trip,
+    member: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = await _running(db_session, trip)
+    await _request(db_session, route, day=1)
+    offer = await _offered(api, member, route)
+    body = {"verified_phone_token": await verified(db_session, PHONE)}
+    key = {"Idempotency-Key": str(uuid.uuid4())}
+    first = await api.post(f"/v1/public/offers/{offer}/accept", json=body, headers=key)
+    assert first.status_code == 200
+    monkeypatch.setattr(offers_service, "_now", lambda: datetime(2030, 1, 1, tzinfo=UTC))
+    again = await api.post(f"/v1/public/offers/{offer}/accept", json=body, headers=key)
+    assert (again.status_code, again.json()) == (200, first.json())
+    fresh = await api.post(f"/v1/public/offers/{offer}/accept", json=body,
+                           headers={"Idempotency-Key": str(uuid.uuid4())})  # fmt: skip
+    assert (fresh.status_code, fresh.json()["code"]) == (401, "PHONE_NOT_VERIFIED")
+
+
+async def test_a_spent_token_accepts_nothing_more(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    route = await _running(db_session, trip)
+    other = await _running(db_session, trip, code="OTHER-01")
+    await _request(db_session, route, day=1)
+    await _request(db_session, other, day=2, rider_name="Asker 1")  # the same person again
+    first, second = await _offered(api, member, route), await _offered(api, member, other)
+    body = {"verified_phone_token": await verified(db_session, PHONE)}
+    ok = await api.post(f"/v1/public/offers/{first}/accept", json=body,
+                        headers={"Idempotency-Key": str(uuid.uuid4())})  # fmt: skip
+    assert ok.status_code == 200
+    spent = await api.post(f"/v1/public/offers/{second}/accept", json=body,
+                           headers={"Idempotency-Key": str(uuid.uuid4())})  # fmt: skip
+    assert (spent.status_code, spent.json()["code"]) == (401, "PHONE_NOT_VERIFIED")
+
+
+@pytest.mark.parametrize("public", [False, True])
+async def test_the_database_down_is_503(
+    api: httpx.AsyncClient,
+    api_app: GizeAPI,
+    db_session: AsyncSession,
+    unreachable_sessions: AsyncSession,
+    member: uuid.UUID,
+    public: bool,
+) -> None:
+    token = await verified(db_session, PHONE)
+
+    async def down() -> AsyncIterator[AsyncSession]:
+        yield unreachable_sessions
+
+    api_app.dependency_overrides[get_session] = down
+    if public:
+        response = await api.post(
+            f"/v1/public/offers/{uuid.uuid4()}/accept",
+            json={"verified_phone_token": token},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+    else:
+        response = await _offer(api, member, uuid.uuid4())
+    assert (response.status_code, response.json()["code"]) == (503, "SERVICE_UNAVAILABLE")
+
+
+async def test_seats_never_drop_below_riders_and_offers(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    route = await _running(db_session, trip)  # 2 riding, 1 offered below
+    await _request(db_session, route, day=1)
+    await _offered(api, member, route)
+    response = await api.patch(f"/v1/routes/{route}", json={"seats": 2},
+                               headers=signed_in(member))  # fmt: skip
+    assert (response.status_code, response.json()["code"]) == (409, "SEATS_BELOW_TAKEN")

@@ -19,18 +19,20 @@ Lock order (architecture.md): rider, route, offers and requests.
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
+import structlog
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import Row, Select, func, select, update
+from sqlalchemy import Row, Select, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core import audit, schedule
 from gize_api.core.db import borrowed, violated_unique_constraint
 from gize_api.core.errors import AppError, ErrorCode, invalid_field
-from gize_api.core.idempotency import IdempotentRequest, claim, record, replay_response
+from gize_api.core.idempotency import IdempotentRequest, claim, peek, record, replay_response
 from gize_api.core.pagination import paginate
+from gize_api.core.ratelimit import PUBLIC_SIGNUP, RateLimiter
 from gize_api.core.security import CurrentStaff
 from gize_api.core.telemetry import Telemetry
 from gize_api.integrations.sms import SmsSender
@@ -43,7 +45,14 @@ from gize_api.offers.schemas import (
     PublicOfferAccepted,
 )
 from gize_api.riders import repository as riders
-from gize_api.riders.models import RIDER_AUDIT, Rider, RiderPlan, RiderSource, RiderType
+from gize_api.riders import service as rider_service
+from gize_api.riders.models import (
+    RIDER_AUDIT,
+    Rider,
+    RiderPlan,
+    RiderSource,
+    RiderType,
+)
 from gize_api.route_requests import repository as route_requests
 from gize_api.route_requests.models import ROUTE_REQUEST_AUDIT, RequestStatus, RouteRequest
 from gize_api.routes import repository as routes
@@ -61,6 +70,12 @@ from gize_api.verification.service import spend
 from gize_api.verification.tokens import VerifiedPhone
 
 OFFER_LIFETIME = timedelta(hours=48)
+
+logger = structlog.get_logger("gize_api.offers")
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 def message(code: str, start: date) -> str:
@@ -125,15 +140,18 @@ async def create(
         location = f"/v1/offers/{offer.id}"
         await record(session, claimed, status=201, body=payload, headers={"Location": location})
         phone, text = request.contact_phone, message(route.code, start)
-    await send_once(
-        borrowed(session),
-        sender,
-        key=f"offer:{offer.id}",
-        purpose=SmsPurpose.SEAT_OFFER,
-        to=phone,
-        text=text,
-        telemetry=telemetry,
-    )
+    try:
+        await send_once(
+            borrowed(session),
+            sender,
+            key=f"offer:{offer.id}",
+            purpose=SmsPurpose.SEAT_OFFER,
+            to=phone,
+            text=text,
+            telemetry=telemetry,
+        )
+    except Exception:
+        logger.warning("offer_sms_failed", offer_id=str(offer.id), exc_info=True)
     return JSONResponse(payload, status_code=201, headers={"Location": location})
 
 
@@ -188,8 +206,17 @@ async def accept_on_website(
     *,
     scope: str,
     idempotent: IdempotentRequest,
+    limiter: RateLimiter,
 ) -> Response:
-    """200 with what the asker may see, or the stored response for a retry."""
+    """200 with what the asker may see, or the stored response for a retry: replayed
+    before the token's expiry and the phone's count are checked, as for a sign-up."""
+    async with session.begin():
+        stored = await peek(session, scope=scope, request=idempotent)
+    if stored is not None:
+        return replay_response(stored)
+    if proved.expires_at <= _now():
+        raise AppError(ErrorCode.PHONE_NOT_VERIFIED)
+    await limiter.check(PUBLIC_SIGNUP, phone=proved.phone)
     async with session.begin():
         claimed = await claim(session, scope=scope, request=idempotent)
         if claimed.stored is not None:
@@ -248,20 +275,21 @@ async def _accept(
     rider = await _askers_rider(session, request)
     route = await _route(session, offer.route_id)  # live: its open request keeps it so
     offer = await _locked_open(session, offer_id)
-    await session.execute(
-        select(RouteRequest.id).where(RouteRequest.id == request.id).with_for_update()
-    )
+    request = await _still_waiting(session, request.id, route.id)
+    if route.status not in (RouteStatus.FORMING, RouteStatus.ACTIVE):
+        raise AppError(ErrorCode.OFFER_CLOSED)  # back to draft, or paused, meanwhile
     today = schedule.addis_today()
     if rider is not None and await riders.held_seats(session, [rider.id], today):
         raise AppError(ErrorCode.RIDER_HAS_SEAT)
     if rider is None:
         rider = await _new_rider(session, route, request, caller=caller)
-    status = AssignmentStatus.RESERVED
-    if route.status is not RouteStatus.FORMING:
+    status, start = AssignmentStatus.RESERVED, offer.start_date
+    if route.status is RouteStatus.ACTIVE:
+        # Launched meanwhile, perhaps for a later month: riding starts when it runs.
+        launched = await routes.latest_launch_day(session, route.id)
         status = AssignmentStatus.ACTIVE
-    seat = await seats.take(
-        session, route, rider.id, start=offer.start_date, status=status, offer_id=offer.id
-    )
+        start = max(start, routes.next_launch_day(today), launched or start)
+    seat = await seats.take(session, route, rider.id, start=start, status=status, offer_id=offer.id)
     offer_before = audit.snapshot(SEAT_OFFER_AUDIT, offer)
     request_before = audit.snapshot(ROUTE_REQUEST_AUDIT, request)
     offer.status, offer.rider_id = OfferStatus.ACCEPTED, rider.id
@@ -287,26 +315,49 @@ async def _accept(
 
 
 async def _askers_rider(session: AsyncSession, request: RouteRequest) -> Rider | None:
-    """Their rider record, locked (riders before routes): linked to the request, or the
-    live adult with its phone."""
-    rider_id = request.rider_id
-    if rider_id is None:
-        rider_id = await session.scalar(
-            select(Rider.id).where(
-                Rider.phone == request.contact_phone,
-                Rider.rider_type == RiderType.ADULT,
-                Rider.not_deleted(),
-            )
+    """Their rider record, locked (riders before routes): the one linked to the request,
+    else the live adult with its phone and name (ignoring case: someone else asking with
+    a relative's phone isn't that relative, GZ-035's rule)."""
+    if request.rider_id is not None:
+        linked = await riders.get_live_rider(session, request.rider_id, for_update=True)
+        if linked is not None:
+            return linked
+    rider_id = await session.scalar(
+        select(Rider.id).where(
+            Rider.phone == request.contact_phone,
+            func.lower(Rider.full_name) == func.lower(request.rider_name),
+            Rider.rider_type == RiderType.ADULT,
+            Rider.not_deleted(),
         )
+    )
     if rider_id is None:
         return None
     return await riders.get_live_rider(session, rider_id, for_update=True)
 
 
+async def _still_waiting(
+    session: AsyncSession, request_id: uuid.UUID, route_id: uuid.UUID
+) -> RouteRequest:
+    """The request, locked, still live, open and waiting for this route (staff may have
+    declined, fulfilled or re-matched it meanwhile); 409 OFFER_CLOSED otherwise."""
+    request = await session.scalar(
+        select(RouteRequest)
+        .where(RouteRequest.id == request_id, *route_requests.waiting_for(route_id))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if request is None:
+        raise AppError(ErrorCode.OFFER_CLOSED)
+    return request
+
+
 async def _new_rider(
     session: AsyncSession, route: Route, request: RouteRequest, *, caller: CurrentStaff | None
 ) -> Rider:
-    """The asker as a rider: the request's name and phone, A to B, round trip."""
+    """The asker as a rider: the request's name and phone, A to B, round trip. 409
+    RIDER_EXISTS when another live adult has the phone (staff sort out who is who)."""
+    if await riders.phone_taken(session, request.contact_phone, company_id=None, except_id=None):
+        raise AppError(ErrorCode.RIDER_EXISTS)
     rider = Rider(
         rider_type=RiderType.ADULT,
         full_name=request.rider_name,
@@ -317,7 +368,7 @@ async def _new_rider(
         source=RiderSource.STAFF if caller is not None else RiderSource.APP,
     )
     session.add(rider)
-    await session.flush()
+    await rider_service.flush_riders(session)  # the same phone, signed up meanwhile: 409
     await session.refresh(rider)
     if caller is not None:
         audit.record(
@@ -336,7 +387,7 @@ async def _whom(
     session: AsyncSession, route_id: uuid.UUID, body: OfferCreate
 ) -> tuple[RouteRequest, str | None]:
     """The request to offer to, and the skip reason when older ones were passed over."""
-    waiting = await route_requests.waiting_without_offer(session, route_id)
+    waiting = await route_requests.waiting_without_offer(session, route_id, also=body.request_id)
     if body.request_id is None:
         if not waiting:
             raise AppError(ErrorCode.NO_WAITING_REQUESTS)
@@ -385,13 +436,16 @@ async def _route(session: AsyncSession, route_id: uuid.UUID) -> Route:
 
 
 async def _expire_stale(session: AsyncSession, route_id: uuid.UUID) -> None:
-    """Open offers past their time are expired (under the route's lock)."""
+    """Open offers past their time are stored expired (under the route's lock): this
+    route's, and those of requests waiting for it (an offer on another route that lapsed
+    would otherwise still count as the request's one open offer)."""
+    waiting = select(RouteRequest.id).where(*route_requests.waiting_for(route_id))
     await session.execute(
         update(SeatOffer)
         .where(
-            SeatOffer.route_id == route_id,
             SeatOffer.status == OfferStatus.OPEN,
             SeatOffer.expires_at <= func.now(),
+            or_(SeatOffer.route_id == route_id, SeatOffer.request_id.in_(waiting)),
         )
         .values(status=OfferStatus.EXPIRED)
     )
