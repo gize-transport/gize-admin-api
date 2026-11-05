@@ -8,7 +8,7 @@ event finds the row and sends nothing (`uq_sms_messages_dedup_key`).
 
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, Enum, Index, String
+from sqlalchemy import CheckConstraint, Enum, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gize_api.core.contact import MOBILE_E164_LENGTH
@@ -58,6 +58,12 @@ class SmsMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         Index("uq_sms_messages_dedup_key", "dedup_key", unique=True),
         Index("ix_sms_messages_created_at", "created_at"),
+        # GZ-041's launch messages, read by seat (`launches.service._attempts`).
+        Index(
+            "ix_sms_messages_route_launch",
+            "dedup_key",
+            postgresql_where=text("purpose = 'route_launch'"),
+        ),
     )
 
     dedup_key: Mapped[str] = mapped_column(String(DEDUP_KEY_MAX_LENGTH))

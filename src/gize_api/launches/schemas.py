@@ -12,8 +12,10 @@ from gize_api.routes.models import MAX_SEATS
 
 class LaunchMessageStatus(StrEnum):
     SENT = "sent"  # the gateway accepted it
+    SENDING = "sending"  # being sent right now: retry leaves it alone
+    UNCONFIRMED = "unconfirmed"  # sent, but no answer from the gateway: it may have arrived
     FAILED = "failed"  # the latest attempt failed (or stopped midway): retry resends it
-    PENDING = "pending"  # not attempted yet: sending, or stopped before it
+    PENDING = "pending"  # not tried yet (the launch's run stopped before it): retry sends it
 
 
 class LaunchMessage(BaseModel):
@@ -35,6 +37,8 @@ class LaunchMessages(BaseModel):
     launch_date: LocalDate | None
     total: int
     sent: int
+    sending: int
+    unconfirmed: int = Field(description="May have arrived: not resent; call if unsure.")
     failed: int
     pending: int
     riders: list[LaunchMessage] = Field(max_length=MAX_SEATS)

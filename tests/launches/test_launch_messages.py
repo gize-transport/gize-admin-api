@@ -10,7 +10,7 @@ the failed ones with `POST .../launch-messages/retry`. Company routes send nothi
 
 import re
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
@@ -20,11 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.integrations.sms import FakeSmsSender, SmsSendError
 from gize_api.main import GizeAPI
+from gize_api.riders.models import Rider
 from gize_api.routes.models import AssignmentStatus, RouteAssignment, RouteStatus, RouteType
 from gize_api.sms.models import SmsMessage, SmsPurpose, SmsStatus
 from tests.factories import CompanyFactory, RiderFactory
 from tests.registrations.support import Trip, add_route, add_trip
-from tests.staff.support import add_staff, signed_in
+from tests.staff.support import add_staff, signed_in, with_key
 
 LAUNCH = {"status": "active", "launch_date": "2026-12-01"}
 
@@ -67,6 +68,12 @@ async def _launch(api: httpx.AsyncClient, staff: uuid.UUID, route: uuid.UUID) ->
 
 def _messages(route: uuid.UUID) -> str:
     return f"/v1/routes/{route}/launch-messages"
+
+
+async def _retry(
+    api: httpx.AsyncClient, staff: uuid.UUID, route: uuid.UUID, key: uuid.UUID | None = None
+) -> httpx.Response:
+    return await api.post(f"{_messages(route)}/retry", headers=with_key(staff, key))
 
 
 async def _rows(session: AsyncSession) -> list[SmsMessage]:
@@ -157,7 +164,7 @@ async def test_riders_placed_after_the_launch_get_no_launch_sms(
     assert placed.status_code == 200, placed.json()
     status = (await api.get(_messages(route), headers=signed_in(member))).json()
     assert status["total"] == 1
-    retried = await api.post(f"{_messages(route)}/retry", headers=signed_in(member))
+    retried = await _retry(api, member, route)
     assert retried.status_code == 202
     assert len(sms.sent) == 1
 
@@ -231,13 +238,13 @@ async def test_staff_see_each_riders_message_and_resend_the_failed_ones(
     assert {rider["attempts"] for rider in body["riders"]} == {1}
     assert set(body["riders"][0]) == {"rider_id", "full_name", "start_date", "status", "attempts"}
 
-    retried = await api.post(f"{_messages(route)}/retry", headers=signed_in(member))
+    retried = await _retry(api, member, route)
     assert retried.status_code == 202
     assert len(sms.sent) == 2
     after = (await api.get(_messages(route), headers=signed_in(member))).json()
     assert (after["sent"], after["failed"]) == (2, 0)
     assert {rider["attempts"] for rider in after["riders"]} == {2}
-    again = await api.post(f"{_messages(route)}/retry", headers=signed_in(member))
+    again = await _retry(api, member, route)
     assert again.status_code == 202
     assert len(sms.sent) == 2  # the sent ones are never sent again
     keys = sorted(row.dedup_key.rsplit(":", 1)[1] for row in await _rows(db_session))
@@ -288,7 +295,7 @@ async def test_a_message_never_attempted_is_pending_and_retried(
     assert (status["pending"], status["riders"][0]["status"], status["riders"][0]["attempts"]) == (
         1, "pending", 0,
     )  # fmt: skip
-    await api.post(f"{_messages(route)}/retry", headers=signed_in(member))
+    await _retry(api, member, route)
     assert len(sms.sent) == 1
 
 
@@ -298,7 +305,8 @@ async def test_a_route_never_launched_has_no_launch_messages(
     route = await _forming(db_session, trip, ("+251911000001", date(2026, 12, 1)))
     status = (await api.get(_messages(route), headers=signed_in(member))).json()
     assert status == {
-        "launch_date": None, "total": 0, "sent": 0, "failed": 0, "pending": 0, "riders": [],
+        "launch_date": None, "total": 0, "sent": 0, "sending": 0, "unconfirmed": 0,
+        "failed": 0, "pending": 0, "riders": [],
     }  # fmt: skip
 
 
@@ -307,5 +315,137 @@ async def test_an_unknown_route_is_404(
     api: httpx.AsyncClient, member: uuid.UUID, method: str
 ) -> None:
     path = _messages(uuid.uuid4()) + ("/retry" if method == "POST" else "")
-    response = await api.request(method, path, headers=signed_in(member))
+    response = await api.request(method, path, headers=with_key(member))
     assert (response.status_code, response.json()["code"]) == (404, "NOT_FOUND")
+
+
+# From review: in-flight, unconfirmed, keys, who is left out
+
+
+async def _row(session: AsyncSession, key: str, **values: object) -> None:
+    async with session.begin():
+        session.add(
+            SmsMessage(dedup_key=key, purpose=SmsPurpose.ROUTE_LAUNCH,
+                       to_phone="+251911000001", **values)
+        )  # fmt: skip
+
+
+async def _launched_seat(session: AsyncSession, route: uuid.UUID) -> uuid.UUID:
+    async with session.begin():
+        return (
+            await session.scalars(
+                select(RouteAssignment.id).where(RouteAssignment.route_id == route)
+            )
+        ).one()
+
+
+@pytest.mark.parametrize(
+    ("row", "shown", "resent"),
+    [
+        ({"status": SmsStatus.SENDING}, "sending", False),  # under way right now
+        ({"status": SmsStatus.SENDING, "updated_at": datetime(2026, 1, 1, tzinfo=UTC)},
+         "failed", True),  # left behind by a stopped process
+        ({"status": SmsStatus.FAILED, "error": "timeout"}, "unconfirmed", False),
+        ({"status": SmsStatus.FAILED, "error": "rejected"}, "failed", True),
+    ],
+    ids=["sending", "stale sending", "unconfirmed", "rejected"],
+)  # fmt: skip
+async def test_a_retry_resends_only_what_surely_did_not_arrive(
+    api: httpx.AsyncClient,
+    api_app: GizeAPI,
+    db_session: AsyncSession,
+    sms: FakeSmsSender,
+    trip: Trip,
+    member: uuid.UUID,
+    row: dict[str, object],
+    shown: str,
+    resent: bool,
+) -> None:
+    """Never twice: a message being sent right now, or that may have arrived, is left."""
+    route = await _forming(db_session, trip, ("+251911000001", date(2026, 12, 1)))
+    del api_app.state.sms_sender  # the launch's own run sends nothing
+    await _launch(api, member, route)
+    api_app.state.sms_sender = sms
+    await _row(db_session, f"launch:{await _launched_seat(db_session, route)}:1", **row)
+    status = (await api.get(_messages(route), headers=signed_in(member))).json()
+    assert status["riders"][0]["status"] == shown
+    assert status[shown] == 1
+    await _retry(api, member, route)
+    assert len(sms.sent) == (1 if resent else 0)
+
+
+async def test_a_retried_retry_replays_without_resending(
+    api: httpx.AsyncClient,
+    api_app: GizeAPI,
+    db_session: AsyncSession,
+    sms: FakeSmsSender,
+    trip: Trip,
+    member: uuid.UUID,
+) -> None:
+    route = await _forming(db_session, trip, ("+251911000001", date(2026, 12, 1)))
+    api_app.state.sms_sender = Failing()
+    await _launch(api, member, route)
+    api_app.state.sms_sender = sms
+    key = uuid.uuid4()
+    first = await _retry(api, member, route, key)
+    again = await _retry(api, member, route, key)
+    assert (first.status_code, again.status_code) == (202, 202)
+    assert again.json() == first.json()
+    assert len(sms.sent) == 1
+
+
+async def test_a_retry_needs_an_idempotency_key(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    route = await _forming(db_session, trip, ("+251911000001", date(2026, 12, 1)))
+    response = await api.post(f"{_messages(route)}/retry", headers=signed_in(member))
+    assert (response.status_code, response.json()["code"]) == (428, "IDEMPOTENCY_KEY_REQUIRED")
+
+
+@pytest.mark.parametrize("left", ["ended seat", "deleted rider"])
+async def test_riders_who_left_get_no_launch_sms(
+    api: httpx.AsyncClient,
+    api_app: GizeAPI,
+    db_session: AsyncSession,
+    sms: FakeSmsSender,
+    trip: Trip,
+    member: uuid.UUID,
+    left: str,
+) -> None:
+    route = await _forming(
+        db_session, trip, ("+251911000001", date(2026, 12, 1)), ("+251911000002", date(2026, 12, 1))
+    )
+    del api_app.state.sms_sender
+    await _launch(api, member, route)
+    api_app.state.sms_sender = sms
+    async with db_session.begin():
+        seat = (
+            await db_session.scalars(
+                select(RouteAssignment).where(RouteAssignment.route_id == route).limit(1)
+            )
+        ).one()
+        if left == "ended seat":
+            seat.status = AssignmentStatus.ENDED
+        else:
+            (await db_session.get_one(Rider, seat.rider_id)).deleted_at = datetime.now(UTC)
+    status = (await api.get(_messages(route), headers=signed_in(member))).json()
+    assert status["total"] == 1
+    await _retry(api, member, route)
+    assert len(sms.sent) == 1
+
+
+async def test_a_launch_whose_riders_all_left_has_no_messages(
+    api: httpx.AsyncClient,
+    api_app: GizeAPI,
+    db_session: AsyncSession,
+    trip: Trip,
+    member: uuid.UUID,
+) -> None:
+    route = await _forming(db_session, trip, ("+251911000001", date(2026, 12, 1)))
+    del api_app.state.sms_sender
+    await _launch(api, member, route)
+    seat_id = await _launched_seat(db_session, route)
+    async with db_session.begin():
+        (await db_session.get_one(RouteAssignment, seat_id)).status = AssignmentStatus.ENDED
+    status = (await api.get(_messages(route), headers=signed_in(member))).json()
+    assert (status["launch_date"], status["total"], status["riders"]) == ("2026-12-01", 0, [])

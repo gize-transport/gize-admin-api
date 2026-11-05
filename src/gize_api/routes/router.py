@@ -316,8 +316,9 @@ async def launch_messages(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> LaunchMessages:
     """Each rider the latest launch started, and their SMS: `sent` (the gateway took it),
-    `failed` (resend it with `POST .../retry`) or `pending` (not tried yet). A route never
-    launched has none."""
+    `sending` (right now), `unconfirmed` (no answer from the gateway: it may have arrived),
+    `failed` or `pending` (not tried yet; both resent by `POST .../retry`). Check it after
+    a launch: a restart midway leaves the rest `pending`. A route never launched has none."""
     response.headers["Cache-Control"] = "no-store"
     return await launches.status(session, route_id)
 
@@ -327,22 +328,31 @@ async def launch_messages(
     operation_id="routes_retry_launch_messages",
     summary="Resend a launch's failed SMS",
     status_code=202,
-    responses=problem_responses(ErrorCode.NOT_FOUND),
+    response_model=LaunchMessages,
+    responses=problem_responses(
+        ErrorCode.NOT_FOUND,
+        ErrorCode.IDEMPOTENCY_IN_PROGRESS,
+        ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+        ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+    ),
 )
 async def retry_launch_messages(
     route_id: uuid.UUID,
     request: Request,
-    response: Response,
     background: BackgroundTasks,
-    _: CurrentStaff = Depends(current_staff),  # noqa: B008
+    caller: CurrentStaff = Depends(current_staff),  # noqa: B008
+    idempotent: IdempotentRequest = Depends(idempotent_request),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
-) -> LaunchMessages:
-    """Sends, after this answer, each failed or pending message again (never one that was
-    sent): 202 with the messages as they were. Safe to repeat."""
+) -> Response:
+    """Requires `Idempotency-Key` (a retried request replays, starting nothing more).
+    Sends, after this answer, each `failed` or `pending` message again: never one `sent`,
+    `sending`, or `unconfirmed` (it may have arrived: call the rider if unsure). 202 with
+    the messages as they were."""
+    response, started = await launches.retry(session, caller, route_id, idempotent)
+    if started:
+        background.add_task(launches.send_in_background, request.app, route_id, retry_failed=True)
     response.headers["Cache-Control"] = "no-store"
-    before = await launches.status(session, route_id)
-    background.add_task(launches.send_in_background, request.app, route_id, retry_failed=True)
-    return before
+    return response
 
 
 @router.delete(

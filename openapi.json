@@ -894,6 +894,8 @@
       "LaunchMessageStatus": {
         "enum": [
           "sent",
+          "sending",
+          "unconfirmed",
           "failed",
           "pending"
         ],
@@ -933,6 +935,10 @@
             "title": "Riders",
             "type": "array"
           },
+          "sending": {
+            "title": "Sending",
+            "type": "integer"
+          },
           "sent": {
             "title": "Sent",
             "type": "integer"
@@ -940,12 +946,19 @@
           "total": {
             "title": "Total",
             "type": "integer"
+          },
+          "unconfirmed": {
+            "description": "May have arrived: not resent; call if unsure.",
+            "title": "Unconfirmed",
+            "type": "integer"
           }
         },
         "required": [
           "launch_date",
           "total",
           "sent",
+          "sending",
+          "unconfirmed",
           "failed",
           "pending",
           "riders"
@@ -10009,7 +10022,7 @@
     },
     "/v1/routes/{route_id}/launch-messages": {
       "get": {
-        "description": "Each rider the latest launch started, and their SMS: `sent` (the gateway took it),\n`failed` (resend it with `POST .../retry`) or `pending` (not tried yet). A route never\nlaunched has none.",
+        "description": "Each rider the latest launch started, and their SMS: `sent` (the gateway took it),\n`sending` (right now), `unconfirmed` (no answer from the gateway: it may have arrived),\n`failed` or `pending` (not tried yet; both resent by `POST .../retry`). Check it after\na launch: a restart midway leaves the rest `pending`. A route never launched has none.",
         "operationId": "routes_launch_messages",
         "parameters": [
           {
@@ -10139,7 +10152,7 @@
     },
     "/v1/routes/{route_id}/launch-messages/retry": {
       "post": {
-        "description": "Sends, after this answer, each failed or pending message again (never one that was\nsent): 202 with the messages as they were. Safe to repeat.",
+        "description": "Requires `Idempotency-Key` (a retried request replays, starting nothing more).\nSends, after this answer, each `failed` or `pending` message again: never one `sent`,\n`sending`, or `unconfirmed` (it may have arrived: call the rider if unsure). 202 with\nthe messages as they were.",
         "operationId": "routes_retry_launch_messages",
         "parameters": [
           {
@@ -10149,6 +10162,16 @@
             "schema": {
               "format": "uuid",
               "title": "Route Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "One per user action, reused on every retry of it (api-contract.md).",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -10203,17 +10226,51 @@
               "NOT_FOUND"
             ]
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Request In Progress",
+            "x-error-codes": [
+              "IDEMPOTENCY_IN_PROGRESS"
+            ]
+          },
           "422": {
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ValidationProblem"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ValidationProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
                 }
               }
             },
-            "description": "Validation Failed",
+            "description": "Idempotency Key Mismatch, Validation Failed",
             "x-error-codes": [
+              "IDEMPOTENCY_KEY_MISMATCH",
               "VALIDATION_FAILED"
+            ]
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Idempotency Key Required",
+            "x-error-codes": [
+              "IDEMPOTENCY_KEY_REQUIRED"
             ]
           },
           "429": {
