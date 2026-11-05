@@ -484,6 +484,20 @@ Staff manage riders (GZ-034) and their seats (GZ-035); admins delete them. Phone
 
 Every change is in the audit log, with names and phones redacted.
 
+## Drivers
+
+Who drives the vans (GZ-050): basic information only for the MVP. Staff manage them; admins delete them. Phones never go in URLs.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/drivers` (`drivers_create`) | `{full_name, phone, address, plate}`. The phone typed any usual way (stored `+2519…`), the plate any case or spacing (stored `AA 3-B12345`). Requires `Idempotency-Key`. `409 DRIVER_EXISTS` (a live driver has the phone), `409 PLATE_TAKEN`. |
+| `GET /v1/drivers` (`drivers_list`) | Newest first, paginated. `q` finds a name or a plate starting with it; `is_active` filters. |
+| `GET /v1/drivers/{driver_id}` (`drivers_get`) | One driver. |
+| `PATCH /v1/drivers/{driver_id}` (`drivers_update`) | Change any field; `is_active: false` deactivates them. |
+| `DELETE /v1/drivers/{driver_id}` (`drivers_delete`) | Admins only, soft: the phone and plate are free again. |
+
+Every change is in the audit log, with the name, phone and address redacted.
+
 ## Seat offers
 
 A free seat goes to the oldest request waiting for the route (GZ-040). Staff offer it, the person has **48 hours** to accept, and meanwhile the offer holds the seat: nobody else can take it.

@@ -88,6 +88,12 @@ ACCESS: dict[tuple[str, str], Access] = {
     ("POST", "/v1/routes/{route_id}/offers"): STAFF,
     ("GET", "/v1/routes/{route_id}/offers"): STAFF,
     ("GET", "/v1/offers/{offer_id}"): STAFF,
+    # Drivers (GZ-050): staff manage them; admins delete.
+    ("GET", "/v1/drivers"): STAFF,
+    ("POST", "/v1/drivers"): STAFF,
+    ("GET", "/v1/drivers/{driver_id}"): STAFF,
+    ("PATCH", "/v1/drivers/{driver_id}"): STAFF,
+    ("DELETE", "/v1/drivers/{driver_id}"): ADMIN,
     ("POST", "/v1/offers/{offer_id}/accept"): STAFF,
     ("POST", "/v1/offers/{offer_id}/withdraw"): STAFF,
     ("POST", "/v1/routes/{route_id}/launch-messages/retry"): STAFF,

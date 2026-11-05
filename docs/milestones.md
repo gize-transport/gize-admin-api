@@ -295,7 +295,7 @@ Status: done · Depends on: GZ-024, GZ-030, GZ-035
 - From review: a retry never sends twice: a message `sending` right now (younger than 2 minutes) is left alone, one older counts as `failed`; a `timeout` is `unconfirmed` (it may have arrived) and isn't resent; the retry requires `Idempotency-Key` (a replay starts nothing more); deleted riders are left out; `ix_sms_messages_route_launch` (partial) keeps the status view off the phone-code rows; 0016's downgrade refuses while launch records exist (tested). Staff check the view after a launch: a restart midway leaves the rest `pending` until someone retries.
 
 ### GZ-042 · Company days without service
-Status: todo · Depends on: GZ-029, GZ-024
+Status: deferred (owner decision, 2026-11-05: not in the MVP) · Depends on: GZ-029, GZ-024
 - Staff record dates a company's route does not run (date, reason, who asked); listed per route and company, for drivers and later postpaid billing. Notice rule and charging basis to confirm with the owner first.
 
 ---
@@ -303,20 +303,24 @@ Status: todo · Depends on: GZ-029, GZ-024
 ## M5 – Drivers
 
 ### GZ-050 · Drivers and vehicles
-Status: todo · Depends on: GZ-012
+Status: done · Depends on: GZ-012
 - Staff create/list/read/update driver applications and vehicles (plate unique, seats range). Status `applied`.
+- Owner decisions (M5 plan, 2026-11-05): basic information only for the MVP: full name, phone, address and the plate number of the van they drive; no documents, inspection or approval (GZ-051, GZ-052 deferred); a driver is active or inactive.
+- Built: `gize.drivers` (migration 0018: name, phone E.164, address, plate in capitals with single spaces, `is_active`, soft delete; `uq_drivers_phone` and `uq_drivers_plate` among live drivers; RLS). `/v1/drivers` (staff_router): `drivers_create` (Idempotency-Key; `DRIVER_EXISTS`, `PLATE_TAKEN`), `drivers_list` (newest first; `q` matches a name or a plate typed any case or spacing; `is_active`), `drivers_get`, `drivers_update` (PATCH, deactivation included), `drivers_delete` (admins). Audit `driver.created`/`updated`/`deleted`, name, phone and address redacted (the plate shown). No phone in URLs.
+- From review: the search uses the shared `SearchText` (control characters refused, names matched however typed); the address is measured again after normalising; plates must be ASCII (never silently rewritten); tests for wildcards, keeping one's own phone or plate, the table's refusal of other spellings, and two adds of one phone at once.
 
 ### GZ-051 · Driver documents
-Status: todo · Depends on: GZ-050
+Status: deferred (owner decision, 2026-11-05: not in the MVP) · Depends on: GZ-050
 - Signed upload URLs to Supabase Storage; server verifies content type (JPEG/PNG/WebP/PDF) and size ≤ 5 MB; short-lived signed download URLs for staff.
 
 ### GZ-052 · Inspection and approval
-Status: todo · Depends on: GZ-051
+Status: deferred with GZ-051 (owner decision, 2026-11-05) · Depends on: GZ-051
 - Record inspection (pass/fail, notes); state machine `applied → approved | rejected`, `approved → inactive`; approval requires a passed inspection and required documents.
 
 ### GZ-053 · Assign driver to route
-Status: todo · Depends on: GZ-052, GZ-021
+Status: todo · Depends on: GZ-050, GZ-021
 - Only approved drivers with a passed inspection and enough seats; one active route per driver per time slot.
+- Rescoped (owner decision, 2026-11-05): no approval or vehicle seats in the MVP: only active drivers; one driver per route; a driver may cover several routes whose times don't overlap.
 
 ---
 

@@ -90,6 +90,8 @@ class ErrorCode(StrEnum):
     OFFER_OPEN = "OFFER_OPEN"
     OFFER_CLOSED = "OFFER_CLOSED"
     NO_WAITING_REQUESTS = "NO_WAITING_REQUESTS"
+    DRIVER_EXISTS = "DRIVER_EXISTS"
+    PLATE_TAKEN = "PLATE_TAKEN"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -163,6 +165,8 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.OFFER_OPEN: ErrorSpec(409, "Offer Open"),
     ErrorCode.OFFER_CLOSED: ErrorSpec(409, "Offer Closed"),
     ErrorCode.NO_WAITING_REQUESTS: ErrorSpec(409, "No Waiting Requests"),
+    ErrorCode.DRIVER_EXISTS: ErrorSpec(409, "Driver Exists"),
+    ErrorCode.PLATE_TAKEN: ErrorSpec(409, "Plate Taken"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

@@ -35,6 +35,7 @@ from gize_api.core.security import TokenVerifier
 from gize_api.core.sentry import configure_sentry
 from gize_api.core.telemetry import Telemetry, configure_telemetry
 from gize_api.corridors.router import router as corridor_routes
+from gize_api.drivers.router import router as driver_routes
 from gize_api.health.readiness import Readiness
 from gize_api.health.router import router as health_router
 from gize_api.integrations.sms import SmsSender
@@ -153,6 +154,7 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     app.include_router(registration_routes)
     app.include_router(rider_routes)
     app.include_router(offer_routes)
+    app.include_router(driver_routes)
     app.include_router(public_offer_routes)
     return app
 
