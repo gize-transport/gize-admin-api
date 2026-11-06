@@ -288,7 +288,7 @@ async def peak_taken_from(session: AsyncSession, route_id: uuid.UUID, today: dat
     return 0 if row is None else int(row[1])
 
 
-def _holding_offers() -> tuple[ColumnElement[bool], ...]:
+def holding_offers() -> tuple[ColumnElement[bool], ...]:
     """Open offers in time whose request is still live, open and waiting for the offer's
     route (asked for it, or matched to it): they hold a seat."""
     return (
@@ -315,7 +315,7 @@ async def held_by_offers(
     """Seats open offers hold on the route (GZ-040): open, in time, their request still
     open. Every way of taking a seat counts them; an offer being accepted doesn't count
     itself."""
-    statement = select(func.count()).where(SeatOffer.route_id == route_id, *_holding_offers())
+    statement = select(func.count()).where(SeatOffer.route_id == route_id, *holding_offers())
     if excluding is not None:
         statement = statement.where(SeatOffer.id != excluding)
     return int(await session.scalar(statement.select_from(SeatOffer)) or 0)
@@ -329,7 +329,7 @@ async def held_by_offers_on(
         return {}
     rows = await session.execute(
         select(SeatOffer.route_id, func.count())
-        .where(SeatOffer.route_id.in_(route_ids), *_holding_offers())
+        .where(SeatOffer.route_id.in_(route_ids), *holding_offers())
         .group_by(SeatOffer.route_id)
     )
     return {route_id: int(count) for route_id, count in rows}
@@ -354,6 +354,25 @@ async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) ->
     """Someone holds a seat today or later."""
     statement = exists().where(RouteAssignment.route_id == route_id, *holds_a_seat_from(today))
     return bool(await session.scalar(select(statement)))
+
+
+async def ready_to_launch(session: AsyncSession, today: date) -> int:
+    """Forming routes whose riders reserved for the next launch day reach their launch
+    minimum (GZ-064): launch progress's rule (`_reserved_for`), one query."""
+    launch_day = next_launch_day(today)
+    reserved = (
+        select(func.count())
+        .where(RouteAssignment.route_id == Route.id, *_reserved_for(launch_day))
+        .correlate(Route)
+        .scalar_subquery()
+    )
+    statement = select(func.count()).where(
+        Route.not_deleted(),
+        Route.status == RouteStatus.FORMING,
+        Route.launch_minimum.is_not(None),
+        reserved >= Route.launch_minimum,
+    )
+    return int(await session.scalar(statement) or 0)
 
 
 async def reserved_for(session: AsyncSession, route_id: uuid.UUID, launch_day: date) -> int:

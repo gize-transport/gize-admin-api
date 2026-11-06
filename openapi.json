@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "ActiveCount": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active"
+        ],
+        "title": "ActiveCount",
+        "type": "object"
+      },
       "AdultRegistered": {
         "additionalProperties": false,
         "properties": {
@@ -1404,6 +1418,59 @@
         "title": "OfferStatus",
         "type": "string"
       },
+      "OpenCount": {
+        "additionalProperties": false,
+        "properties": {
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "open"
+        ],
+        "title": "OpenCount",
+        "type": "object"
+      },
+      "Overview": {
+        "additionalProperties": false,
+        "description": "Counts for the admin home page, live records only, as of `as_of` (Addis Ababa).",
+        "properties": {
+          "as_of": {
+            "format": "date",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "title": "As Of",
+            "type": "string"
+          },
+          "drivers": {
+            "$ref": "#/components/schemas/ActiveCount"
+          },
+          "riders": {
+            "$ref": "#/components/schemas/RiderCounts"
+          },
+          "route_requests": {
+            "$ref": "#/components/schemas/OpenCount",
+            "description": "New or matched."
+          },
+          "routes": {
+            "$ref": "#/components/schemas/RouteCounts"
+          },
+          "seat_offers": {
+            "$ref": "#/components/schemas/OpenCount",
+            "description": "Open, within their 48 hours, their request still waiting: the seats offers hold."
+          }
+        },
+        "required": [
+          "as_of",
+          "routes",
+          "riders",
+          "route_requests",
+          "seat_offers",
+          "drivers"
+        ],
+        "title": "Overview",
+        "type": "object"
+      },
       "PhoneVerified": {
         "additionalProperties": false,
         "properties": {
@@ -1787,6 +1854,32 @@
         ],
         "title": "RequestStatus",
         "type": "string"
+      },
+      "RiderCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "reserved": {
+            "description": "Holding a reservation on a forming route.",
+            "title": "Reserved",
+            "type": "integer"
+          },
+          "riding": {
+            "description": "Holding an active seat today.",
+            "title": "Riding",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "riding",
+          "reserved"
+        ],
+        "title": "RiderCounts",
+        "type": "object"
       },
       "RiderCreate": {
         "additionalProperties": false,
@@ -2303,6 +2396,46 @@
           "seats"
         ],
         "title": "RouteCopy",
+        "type": "object"
+      },
+      "RouteCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "active_without_driver": {
+            "title": "Active Without Driver",
+            "type": "integer"
+          },
+          "draft": {
+            "title": "Draft",
+            "type": "integer"
+          },
+          "forming": {
+            "title": "Forming",
+            "type": "integer"
+          },
+          "paused": {
+            "title": "Paused",
+            "type": "integer"
+          },
+          "ready_to_launch": {
+            "description": "Forming routes whose riders reserved for the next launch day reach their launch minimum.",
+            "title": "Ready To Launch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "draft",
+          "forming",
+          "active",
+          "paused",
+          "ready_to_launch",
+          "active_without_driver"
+        ],
+        "title": "RouteCounts",
         "type": "object"
       },
       "RouteCreate": {
@@ -7713,6 +7846,98 @@
         "summary": "Withdraw an offer",
         "tags": [
           "offers"
+        ]
+      }
+    },
+    "/v1/overview": {
+      "get": {
+        "description": "Live records only: routes by status (forming ones ready to launch, active ones with\nno driver), riders (riding today, reserved), open route requests and seat offers,\nactive drivers. A snapshot: counts can move a moment later.",
+        "operationId": "overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Overview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthenticated",
+            "x-error-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-error-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-error-codes": [
+              "RATE_LIMITED"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-error-codes": [
+              "INTERNAL_ERROR"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-error-codes": [
+              "SERVICE_UNAVAILABLE"
+            ]
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Counts for the home page",
+        "tags": [
+          "overview"
         ]
       }
     },

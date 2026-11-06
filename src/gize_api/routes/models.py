@@ -260,6 +260,13 @@ class RouteAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("status IN ('reserved', 'active', 'ended')", name="status"),
         CheckConstraint("end_date IS NULL OR end_date >= start_date", name="dates"),
         Index("ix_route_assignments_route_id_start_date", "route_id", "start_date"),
+        # Seats not ended, by status and end (GZ-064's riding and reserved counts).
+        Index(
+            "ix_route_assignments_held",
+            "status",
+            "end_date",
+            postgresql_where=text("status <> 'ended'"),
+        ),
         # One ongoing (open-ended) seat per rider (GZ-035): a move keeps the old seat to
         # the day before the new one starts; the service keeps a rider's seats apart.
         Index(
