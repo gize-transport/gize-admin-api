@@ -86,6 +86,7 @@ async def get(
     _: CurrentStaff = Depends(current_staff),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> AreaRead:
+    """A live area by ID. 404 NOT_FOUND for one that never existed or was deleted."""
     response.headers["Cache-Control"] = "no-store"
     return await service.get(session, area_id)
 

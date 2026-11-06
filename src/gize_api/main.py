@@ -36,6 +36,7 @@ from gize_api.core.sentry import configure_sentry
 from gize_api.core.telemetry import Telemetry, configure_telemetry
 from gize_api.corridors.router import router as corridor_routes
 from gize_api.drivers.router import router as driver_routes
+from gize_api.examples import contract_examples
 from gize_api.health.readiness import Readiness
 from gize_api.health.router import router as health_router
 from gize_api.integrations.sms import SmsSender
@@ -80,9 +81,10 @@ class GizeAPI(FastAPI):
     telemetry: Telemetry | None = None
 
     def openapi(self) -> dict[str, Any]:
-        """The contract: FastAPI's schema with our error responses (core/contract.py)."""
+        """The contract: FastAPI's schema with our error responses and examples
+        (core/contract.py, examples.py)."""
         if self.openapi_schema is None:
-            self.openapi_schema = finish_contract(super().openapi())
+            self.openapi_schema = finish_contract(super().openapi(), contract_examples())
         return self.openapi_schema
 
     def build_middleware_stack(self) -> ASGIApp:

@@ -10,6 +10,10 @@ so every operation's error responses are rewritten here:
   413 PAYLOAD_TOO_LARGE wherever there is a body, and 500 INTERNAL_ERROR everywhere;
 - `ErrorCode`, `Problem`, `ValidationProblem` and their parts are components, and
   FastAPI's `HTTPValidationError`/`ValidationError` are gone;
+- every error response shows one example per code it lists, built from the `Problem` the
+  API answers with (GZ-061);
+- every 2xx JSON response shows its model's example from `examples` (gize_api/examples.py,
+  by component name); a page (`items`, and `next_cursor` if it pages) shows one item;
 - the `Idempotency-Key` header is required, a UUID. In the code it is optional, so that a
   missing key is answered with 428 IDEMPOTENCY_KEY_REQUIRED rather than a validation error.
 
@@ -23,11 +27,19 @@ and the 413 the body-size middleware can also return for an operation without a 
 Adding them later is an additive change.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from pydantic.json_schema import models_json_schema
 
-from gize_api.core.errors import ERROR_SPECS, ErrorCode, Problem, ValidationProblem
+from gize_api.core.errors import (
+    ERROR_SPECS,
+    ErrorCode,
+    FieldError,
+    Problem,
+    ValidationProblem,
+    ValidationReason,
+)
 
 REF = "#/components/schemas/{model}"
 PROBLEM_REF = REF.format(model="Problem")
@@ -36,10 +48,15 @@ PROBLEM_JSON = "application/problem+json"
 FASTAPI_ERROR_SCHEMAS = ("HTTPValidationError", "ValidationError")
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
+# Error examples carry a request ID, as every real answer does (a made-up one).
+EXAMPLE_REQUEST_ID = "4b1f0c3e9a2d4e7f8c6b5a4d3e2f1a0b"
 
 
-def finish_contract(schema: dict[str, Any]) -> dict[str, Any]:
-    """Rewrite FastAPI's schema in place into the contract, and return it."""
+def finish_contract(
+    schema: dict[str, Any], examples: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Rewrite FastAPI's schema in place into the contract, and return it. `examples`: a
+    JSON example per component name, shown on the 2xx responses that return it."""
     components = schema.setdefault("components", {}).setdefault("schemas", {})
     for name in FASTAPI_ERROR_SCHEMAS:
         components.pop(name, None)
@@ -48,6 +65,7 @@ def finish_contract(schema: dict[str, Any]) -> dict[str, Any]:
         for method, operation in path_item.items():
             if method in HTTP_METHODS:
                 _finish_operation(operation)
+                _show_examples(operation, components, examples or {})
     return schema
 
 
@@ -106,3 +124,73 @@ def _problem_schema(codes: list[ErrorCode]) -> dict[str, Any]:
     if ErrorCode.VALIDATION_FAILED in codes:  # e.g. with INVALID_CURSOR: either shape
         return {"anyOf": [{"$ref": VALIDATION_PROBLEM_REF}, {"$ref": PROBLEM_REF}]}
     return {"$ref": PROBLEM_REF}
+
+
+def _show_examples(
+    operation: dict[str, Any], components: dict[str, Any], examples: Mapping[str, Any]
+) -> None:
+    for status, response in operation["responses"].items():
+        if status.startswith("2"):
+            media = response.get("content", {}).get("application/json")
+            if media is not None and (example := _success_example(media, components, examples)):
+                media["example"] = example
+        elif status.isdigit() and not status.startswith(("1", "3")):
+            response["content"][PROBLEM_JSON]["examples"] = {
+                code: _error_example(ErrorCode(code), operation)
+                for code in response["x-error-codes"]
+            }
+
+
+def _success_example(
+    media: dict[str, Any], components: dict[str, Any], examples: Mapping[str, Any]
+) -> Any | None:  # noqa: ANN401 (JSON)
+    name = _ref_name(media.get("schema", {}))
+    if name is None:
+        return None
+    if name in examples:
+        return examples[name]
+    properties = components.get(name, {}).get("properties", {})
+    item = _ref_name(properties.get("items", {}).get("items", {}))
+    if item is None or item not in examples or not set(properties) <= {"items", "next_cursor"}:
+        return None
+    page: dict[str, Any] = {"items": [examples[item]]}
+    if "next_cursor" in properties:
+        page["next_cursor"] = None
+    return page
+
+
+def _ref_name(schema: dict[str, Any]) -> str | None:
+    ref = schema.get("$ref")
+    return ref.rsplit("/", 1)[-1] if isinstance(ref, str) else None
+
+
+def _error_example(code: ErrorCode, operation: dict[str, Any]) -> dict[str, Any]:
+    spec = ERROR_SPECS[code]
+    problem: Problem
+    if code == ErrorCode.VALIDATION_FAILED:
+        problem = ValidationProblem(
+            title=spec.title,
+            status=spec.status,
+            code=code,
+            request_id=EXAMPLE_REQUEST_ID,
+            errors=[_field_error(operation)],
+            errors_truncated=False,
+        )
+    else:
+        problem = Problem(
+            title=spec.title, status=spec.status, code=code, request_id=EXAMPLE_REQUEST_ID
+        )
+    return {"summary": spec.title, "value": problem.model_dump(mode="json")}
+
+
+def _field_error(operation: dict[str, Any]) -> FieldError:
+    """A body's missing field, the first parameter refused, or else an unknown parameter."""
+    parameters = operation.get("parameters", [])
+    if "requestBody" in operation:
+        return FieldError(location="body", field="/name", reason=ValidationReason.MISSING)
+    if not parameters:
+        return FieldError(location="query", field="/since", reason=ValidationReason.UNKNOWN_FIELD)
+    first = parameters[0]
+    return FieldError(
+        location=first["in"], field=f"/{first['name']}", reason=ValidationReason.INVALID
+    )

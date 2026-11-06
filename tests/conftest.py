@@ -23,6 +23,7 @@ from gize_api.core.ratelimit import RateLimiter
 from gize_api.core.rls import row_level_security_statements
 from gize_api.integrations.sms import FakeSmsSender
 from gize_api.main import GizeAPI, create_app
+from tests.raised_codes import recording
 from tests.supabase import FakeSupabase
 from tests.support import (
     SETTINGS_ENV_VARS,
@@ -40,6 +41,20 @@ from tests.support import (
 from tests.tokens import fake_verifier
 
 ROOT = Path(__file__).resolve().parent.parent
+LAST = "test_raised_codes.py::test_every_error_the_suite_returned_is_documented"
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """GZ-061: check the error codes the suite saw once every other test has run."""
+    items.sort(key=lambda item: item.nodeid.endswith(LAST))  # stable: the rest keep order
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _record_returned_errors() -> Iterator[None]:
+    """Every error any app returns is recorded with its operation (tests/raised_codes.py)."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(GizeAPI, "__call__", recording(GizeAPI.__call__))
+        yield
 
 
 class ServiceUrls(BaseSettings):

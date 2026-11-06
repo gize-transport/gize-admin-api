@@ -138,6 +138,8 @@ async def get_member(
     _: CurrentStaff = Depends(require_admin),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> StaffRead:
+    """Admins only (403 FORBIDDEN otherwise). A staff member by ID, active or not. 404
+    NOT_FOUND for an ID that isn't staff."""
     response.headers["Cache-Control"] = "no-store"  # personal data
     return await service.get_member(session, staff_id)
 

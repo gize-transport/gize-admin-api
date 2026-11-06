@@ -110,6 +110,8 @@ async def list_offers(
     params: OfferListParams = Depends(offer_list_params),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> OfferPage:
+    """Every offer the route made, whatever its status (`expired` once its 48 hours pass),
+    newest first. 404 NOT_FOUND for a route that never existed or was deleted."""
     response.headers["Cache-Control"] = "no-store"
     return await service.list_offers(session, route_id, params)
 
@@ -139,6 +141,7 @@ async def get(
     responses=problem_responses(
         ErrorCode.NOT_FOUND,
         ErrorCode.OFFER_CLOSED,
+        ErrorCode.RIDER_EXISTS,
         ErrorCode.RIDER_HAS_SEAT,
         ErrorCode.ROUTE_FULL,
         *_KEYED,
@@ -156,6 +159,8 @@ async def accept(
 
     - 409 OFFER_CLOSED: accepted, withdrawn, or past its 48 hours.
     - 409 RIDER_HAS_SEAT: they ride another route: move them instead (`PUT /v1/riders/{id}/seat`).
+    - 409 RIDER_EXISTS: another adult rider has the request's phone (staff sort out who is
+      who).
     """
     response = await service.accept_by_staff(session, caller, offer_id, idempotent)
     response.headers["Cache-Control"] = "no-store"
@@ -188,6 +193,7 @@ async def withdraw(
     responses=problem_responses(
         ErrorCode.NOT_FOUND,
         ErrorCode.OFFER_CLOSED,
+        ErrorCode.RIDER_EXISTS,
         ErrorCode.RIDER_HAS_SEAT,
         ErrorCode.ROUTE_FULL,
         ErrorCode.PHONE_NOT_VERIFIED,
@@ -207,8 +213,9 @@ async def accept_on_website(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
     """Public: the phone the request gave, verified (GZ-031; the token is spent). Requires
-    `Idempotency-Key`. 404 for an offer that isn't theirs, as for one that doesn't exist.
-    Limits: 5 an hour per caller, 3 a day per phone."""
+    `Idempotency-Key`. 404 for an offer that isn't theirs, as for one that doesn't exist;
+    409 RIDER_EXISTS when another rider has their phone (call Gize). Limits: 5 an hour per
+    caller, 3 a day per phone."""
     # Signed by us, expired or not: enough to find an acceptance this retries.
     proved = prove(body.verified_phone_token, key, check_expiry=False)
     response = await service.accept_on_website(
