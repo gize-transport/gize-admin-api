@@ -44,5 +44,8 @@ class Overview(BaseModel):
     routes: RouteCounts
     riders: RiderCounts
     route_requests: OpenCount = Field(description="New or matched.")
-    seat_offers: OpenCount = Field(description="Open and within their 48 hours.")
+    seat_offers: OpenCount = Field(
+        description="Open, within their 48 hours, their request still waiting: the seats "
+        "offers hold."
+    )
     drivers: ActiveCount

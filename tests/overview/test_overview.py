@@ -8,10 +8,13 @@ active routes without a driver take their place.
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import httpx
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gize_api.core import schedule
 from gize_api.core.db import get_session
 from gize_api.drivers.models import Driver
 from gize_api.main import GizeAPI
@@ -91,7 +94,9 @@ async def test_the_overview_counts_what_staff_act_on(
                 start_date=date(2026, 10, 1), end_date=date(2026, 10, 31))  # fmt: skip
     async with db_session.begin():
         await RiderFactory().create(db_session, deleted_at=datetime.now(UTC))
-        open_request = await RouteRequestFactory().create(db_session)
+        open_request = await RouteRequestFactory().create(  # waiting for `driven`
+            db_session, kind="route", route_id=driven, from_area_name=None, to_area_name=None
+        )
         await RouteRequestFactory().create(
             db_session, status=RequestStatus.MATCHED, matched_route_id=ready
         )
@@ -144,3 +149,63 @@ async def test_the_database_down_is_503(
     api_app.dependency_overrides[get_session] = down
     response = await api.get(OVERVIEW, headers=signed_in(member))
     assert (response.status_code, response.json()["code"]) == (503, "SERVICE_UNAVAILABLE")
+
+
+async def _counts(api: httpx.AsyncClient, staff: uuid.UUID) -> dict[str, Any]:
+    response = await api.get(OVERVIEW, headers=signed_in(staff))
+    assert response.status_code == 200, response.json()
+    return dict(response.json())
+
+
+async def test_open_offers_are_those_holding_a_seat(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """Past its time though still stored open, or its request declined: it holds nothing."""
+    member = (await add_staff(db_session)).id
+    route = await add_route(db_session, status=RouteStatus.ACTIVE)
+    now = datetime.now(UTC)
+    async with db_session.begin():
+        waiting, declined, lapsed = [
+            await RouteRequestFactory().create(
+                db_session, kind="route", route_id=route, from_area_name=None,
+                to_area_name=None, **values,
+            )
+            for values in (
+                {}, {"status": RequestStatus.DECLINED, "decline_reason": "Moved."}, {},
+            )
+        ]  # fmt: skip
+    async with db_session.begin():
+        for request, expires in (
+            (waiting, now + timedelta(hours=1)),
+            (declined, now + timedelta(hours=1)),
+            (lapsed, now - timedelta(hours=1)),  # never stored expired yet
+        ):
+            db_session.add(SeatOffer(route_id=route, request_id=request.id,
+                                     start_date=date(2026, 12, 1), expires_at=expires))  # fmt: skip
+    assert (await _counts(api, member))["seat_offers"] == {"open": 1}
+
+
+async def test_ready_to_launch_counts_who_a_launch_would_start(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """Launch progress's rule: reserved from the launch day or earlier, not gone before."""
+    member = (await add_staff(db_session)).id
+    route = await add_route(db_session, status=RouteStatus.FORMING, launch_minimum=2)
+    await _seat(db_session, route)
+    await _seat(db_session, route, start_date=date(2027, 1, 1))  # after 1 December
+    await _seat(db_session, route, start_date=date(2026, 11, 1),
+                end_date=date(2026, 11, 30))  # gone before it  # fmt: skip
+    assert (await _counts(api, member))["routes"]["ready_to_launch"] == 0
+    await _seat(db_session, route, start_date=date(2026, 11, 1))
+    assert (await _counts(api, member))["routes"]["ready_to_launch"] == 1
+
+
+async def test_on_the_1st_the_launch_day_is_today(
+    api: httpx.AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    member = (await add_staff(db_session)).id
+    route = await add_route(db_session, status=RouteStatus.FORMING, launch_minimum=1)
+    await _seat(db_session, route, start_date=date(2026, 12, 1))
+    monkeypatch.setattr(schedule, "addis_today", lambda: date(2026, 12, 1))
+    counts = await _counts(api, member)
+    assert (counts["as_of"], counts["routes"]["ready_to_launch"]) == ("2026-12-01", 1)

@@ -1,12 +1,14 @@
-"""The admin home page's summary (GZ-064): counts only, one query each, whatever the size
-of the data (each an aggregate, never a list)."""
+"""The admin home page's summary (GZ-064): counts only, each one aggregate query (never a
+list), each on an index: routes by status and riders over their live rows, held seats on
+`ix_route_assignments_held`, offers and requests on their partial indexes. Read committed:
+the figures may come from moments a few milliseconds apart."""
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core import schedule
 from gize_api.drivers.models import Driver
-from gize_api.offers.models import OfferStatus, SeatOffer
+from gize_api.offers.models import SeatOffer
 from gize_api.overview.schemas import (
     ActiveCount,
     OpenCount,
@@ -61,11 +63,8 @@ async def overview(session: AsyncSession) -> Overview:
                 RouteRequest.not_deleted(), RouteRequest.status.in_(OPEN_STATUSES)
             ),
         )
-        open_offers = await _count(
-            session,
-            select(func.count()).where(
-                and_(SeatOffer.status == OfferStatus.OPEN, SeatOffer.expires_at > func.now())
-            ),
+        open_offers = await _count(  # the seats offers hold (GZ-040's rule)
+            session, select(func.count()).select_from(SeatOffer).where(*routes.holding_offers())
         )
         active_drivers = await _count(
             session,

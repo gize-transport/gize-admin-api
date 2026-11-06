@@ -1457,7 +1457,7 @@
           },
           "seat_offers": {
             "$ref": "#/components/schemas/OpenCount",
-            "description": "Open and within their 48 hours."
+            "description": "Open, within their 48 hours, their request still waiting: the seats offers hold."
           }
         },
         "required": [
