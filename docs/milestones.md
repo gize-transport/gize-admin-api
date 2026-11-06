@@ -355,8 +355,9 @@ Status: done (brought forward before M3; GZ-061 stays where it is) · Depends on
 - Found during setup: a value pasted into Render with extra characters fails startup with a `database_url` format error (the value itself is never logged). RUNBOOK's copy command avoids it. The first admin's name on staging is the placeholder "Your Name"; staff names can't be changed through the API yet (follow-up).
 
 ### GZ-064 · Overview summary endpoint
-Status: todo · Depends on: GZ-040, GZ-041, GZ-052
+Status: done · Depends on: GZ-040, GZ-041, GZ-053
 - `GET /v1/overview` (staff): counts of active routes, riders, forming routes ready to launch, open route requests, driver applications awaiting review; one bounded query each, no N+1.
+- Built: `GET /v1/overview` (`overview_get`, staff): `as_of` (Addis Ababa), routes by status plus `ready_to_launch` (`routes.repository.ready_to_launch`: launch progress's rule, one correlated count) and `active_without_driver` (in place of driver applications, which went with GZ-052), riders (`total`, `riding` today, `reserved`), open route requests, open seat offers (within 48 hours), active drivers. Live records only; each figure an aggregate (eight small queries in one read transaction); unknown parameters refused.
 
 ### GZ-065 · Automated dependency and image updates
 Status: todo · Depends on: GZ-002

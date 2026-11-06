@@ -356,6 +356,25 @@ async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) ->
     return bool(await session.scalar(select(statement)))
 
 
+async def ready_to_launch(session: AsyncSession, today: date) -> int:
+    """Forming routes whose riders reserved for the next launch day reach their launch
+    minimum (GZ-064): launch progress's rule (`_reserved_for`), one query."""
+    launch_day = next_launch_day(today)
+    reserved = (
+        select(func.count())
+        .where(RouteAssignment.route_id == Route.id, *_reserved_for(launch_day))
+        .correlate(Route)
+        .scalar_subquery()
+    )
+    statement = select(func.count()).where(
+        Route.not_deleted(),
+        Route.status == RouteStatus.FORMING,
+        Route.launch_minimum.is_not(None),
+        reserved >= Route.launch_minimum,
+    )
+    return int(await session.scalar(statement) or 0)
+
+
 async def reserved_for(session: AsyncSession, route_id: uuid.UUID, launch_day: date) -> int:
     """Riders a launch on `launch_day` would start (`_reserved_for`)."""
     statement = select(func.count()).where(

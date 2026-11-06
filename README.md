@@ -484,6 +484,10 @@ Staff manage riders (GZ-034) and their seats (GZ-035); admins delete them. Phone
 
 Every change is in the audit log, with names and phones redacted.
 
+## Overview
+
+`GET /v1/overview` (`overview_get`, staff): the admin home page's counts, as of today in Addis Ababa. Routes by status, forming ones ready to launch and active ones with no driver; riders (total, riding today, reserved); open route requests and seat offers; active drivers. Live records only, and a snapshot: a count may move a moment later.
+
 ## Drivers
 
 Who drives the vans (GZ-050): basic information only for the MVP. Staff manage them; admins delete them. Phones never go in URLs.
