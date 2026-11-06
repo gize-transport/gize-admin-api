@@ -57,6 +57,7 @@ Status: done · Depends on: GZ-006
 - `/health/live` (no dependencies) and `/health/ready` (Postgres within its timeout; Redis checked, logged and alerted on, but never fails readiness: see the Health rule in `engineering-standards.md`).
 - Settle the session pattern for handlers and dependencies (from GZ-006 review): a dependency that reads (e.g. auth) autobegins a transaction, after which a service's `session.begin()` raises. Decide one rule (e.g. services use `session.begin()` only on a fresh session, or dependencies read in their own short transaction) and test it with `app_with_db_session`.
 - Acceptance: ready returns 503 with Postgres stopped; with Redis stopped, ready stays 200 and Redis being down is logged and counted; live is 200 in both cases; no versions or internals exposed. (Changed from "ready returns 503 with Redis stopped" by owner decision at planning: a shared Redis outage must not take the whole API offline.)
+- Found after GZ-061's merge (CI on `main`, 2026-11-06): `test_an_outage_is_logged_when_it_starts_and_when_it_ends` was racy. Redis is checked in the background and a probe starts no new check while one runs, so a check still failing against the old Redis could leave the recovery unseen. The test now waits for each background check; the assertion is unchanged.
 
 ### GZ-008 · Shared building blocks
 Status: done · Depends on: GZ-006
