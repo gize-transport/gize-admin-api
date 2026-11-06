@@ -105,7 +105,10 @@ async def get(
     operation_id="drivers_update",
     summary="Change a driver, or deactivate them",
     responses=problem_responses(
-        ErrorCode.NOT_FOUND, ErrorCode.DRIVER_EXISTS, ErrorCode.PLATE_TAKEN
+        ErrorCode.NOT_FOUND,
+        ErrorCode.DRIVER_EXISTS,
+        ErrorCode.PLATE_TAKEN,
+        ErrorCode.DRIVER_ASSIGNED,
     ),
 )
 async def update(
@@ -115,7 +118,8 @@ async def update(
     caller: CurrentStaff = Depends(current_staff),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> DriverRead:
-    """Leave out what stays. Setting what is there changes nothing."""
+    """Leave out what stays. Setting what is there changes nothing. 409 DRIVER_ASSIGNED:
+    deactivating them while they drive a route (take them off it first)."""
     response.headers["Cache-Control"] = "no-store"
     return await service.update(session, caller, driver_id, change)
 
@@ -126,13 +130,14 @@ async def update(
     summary="Delete a driver (admins only)",
     status_code=204,
     response_class=Response,
-    responses=problem_responses(ErrorCode.NOT_FOUND),
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.DRIVER_ASSIGNED),
 )
 async def delete(
     driver_id: uuid.UUID,
     caller: CurrentStaff = Depends(require_admin),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
-    """Soft delete: hidden from lists, their phone and plate free again."""
+    """Soft delete: hidden from lists, their phone and plate free again. 409
+    DRIVER_ASSIGNED while they drive a route."""
     await service.delete(session, caller, driver_id)
     return Response(status_code=204)

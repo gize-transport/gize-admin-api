@@ -92,6 +92,8 @@ class ErrorCode(StrEnum):
     NO_WAITING_REQUESTS = "NO_WAITING_REQUESTS"
     DRIVER_EXISTS = "DRIVER_EXISTS"
     PLATE_TAKEN = "PLATE_TAKEN"
+    DRIVER_BUSY = "DRIVER_BUSY"
+    DRIVER_ASSIGNED = "DRIVER_ASSIGNED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
@@ -167,6 +169,8 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.NO_WAITING_REQUESTS: ErrorSpec(409, "No Waiting Requests"),
     ErrorCode.DRIVER_EXISTS: ErrorSpec(409, "Driver Exists"),
     ErrorCode.PLATE_TAKEN: ErrorSpec(409, "Plate Taken"),
+    ErrorCode.DRIVER_BUSY: ErrorSpec(409, "Driver Busy"),
+    ErrorCode.DRIVER_ASSIGNED: ErrorSpec(409, "Driver Assigned"),
     ErrorCode.INTERNAL_ERROR: ErrorSpec(500, "Internal Server Error"),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorSpec(503, "Service Unavailable"),
 }

@@ -1,12 +1,14 @@
 """Driver queries: live (not deleted) drivers only."""
 
 import uuid
+from datetime import time
 
 from sqlalchemy import Select, exists, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.db import LIKE_ESCAPE, escape_like
 from gize_api.drivers.models import Driver
+from gize_api.routes.models import Route
 
 
 async def get_live_driver(
@@ -44,3 +46,55 @@ def live_drivers(*, q: str | None, plate_q: str | None, is_active: bool | None) 
     if is_active is not None:
         statement = statement.where(Driver.is_active.is_(is_active))
     return statement
+
+
+Times = tuple[time, time | None, time, time | None]
+
+
+async def drives_a_route(session: AsyncSession, driver_id: uuid.UUID) -> bool:
+    """A live route has this driver (index: ix_routes_driver_id)."""
+    statement = exists().where(Route.driver_id == driver_id, Route.not_deleted())
+    return bool(await session.scalar(select(statement)))
+
+
+async def busy(
+    session: AsyncSession, driver_id: uuid.UUID, times: Times, *, excluding: uuid.UUID
+) -> bool:
+    """The driver's other live routes have a run overlapping one of these (GZ-053): the
+    morning run (leaves A to arrives B) or the return run (leaves B to arrives A). Runs
+    that only touch (one arrives as the other leaves) don't overlap."""
+    rows = await session.execute(
+        select(
+            Route.morning_time,
+            Route.morning_arrival_time,
+            Route.return_time,
+            Route.return_arrival_time,
+        ).where(Route.driver_id == driver_id, Route.not_deleted(), Route.id != excluding)
+    )
+    mine = _runs(times)
+    return any(
+        _overlap(run, theirs)
+        for other in rows
+        for theirs in _runs(tuple(other))  # type: ignore[arg-type]
+        for run in mine
+    )
+
+
+def _overlap(a: tuple[time, time], b: tuple[time, time]) -> bool:
+    """Runs share a moment. A run without an arrival time is its departure alone: it
+    clashes with a run under way then (from its start, until before its end), or another
+    departure alone at the same time. Runs that only touch don't overlap."""
+    (a_start, a_end), (b_start, b_end) = a, b
+    if a_start == a_end and b_start == b_end:
+        return a_start == b_start
+    if a_start == a_end:
+        return b_start <= a_start < b_end
+    if b_start == b_end:
+        return a_start <= b_start < a_end
+    return a_start < b_end and b_start < a_end
+
+
+def _runs(times: Times) -> tuple[tuple[time, time], tuple[time, time]]:
+    """A route made before arrival times existed (null) runs from its departure only."""
+    leaves_a, arrives_b, leaves_b, arrives_a = times
+    return (leaves_a, arrives_b or leaves_a), (leaves_b, arrives_a or leaves_b)

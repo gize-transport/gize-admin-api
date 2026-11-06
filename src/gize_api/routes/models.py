@@ -38,6 +38,7 @@ from gize_api.core.audit import AuditedEntity
 from gize_api.core.models import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH
 from gize_api.corridors.models import Corridor
+from gize_api.drivers.models import Driver
 
 ROUTE_CODE_UNIQUE = "uq_routes_code"
 ROUTE_CODE_MAX_LENGTH = 20
@@ -166,6 +167,7 @@ class Route(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         Index("ix_routes_corridor_id", "corridor_id"),  # filter, "corridor in use"
         Index("ix_routes_company_id", "company_id"),  # filter, "company in use"
         Index("ix_routes_created_at_id", "created_at", "id"),  # the list's order
+        Index("ix_routes_driver_id", "driver_id"),  # a driver's routes (GZ-053)
     )
 
     code: Mapped[str] = mapped_column(String(ROUTE_CODE_MAX_LENGTH))
@@ -194,9 +196,14 @@ class Route(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     copied_from_route_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("gize.routes.id", ondelete="RESTRICT")
     )
+    # Who drives it (GZ-053): an active driver whose other routes' runs don't overlap.
+    driver_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("gize.drivers.id", ondelete="RESTRICT")
+    )
     # Loaded with the route where needed (repository); never lazily, which async can't do.
     corridor: Mapped[Corridor] = relationship(lazy="raise")
     company: Mapped[Company | None] = relationship(lazy="raise")
+    driver: Mapped[Driver | None] = relationship(lazy="raise")
     route_areas: Mapped[list["RouteArea"]] = relationship(
         lazy="raise", order_by="RouteArea.position"
     )
@@ -213,6 +220,9 @@ ROUTE_LAUNCH_AUDIT = AuditedEntity(
 MAX_SERVED_AREAS = 20
 
 # The served areas are recorded as one ordered list on the route.
+ROUTE_DRIVER_AUDIT = AuditedEntity(
+    type="route", fields=("driver_id",), visible=frozenset({"driver_id"})
+)
 ROUTE_AREAS_AUDIT = AuditedEntity(
     type="route", fields=("served_area_ids",), visible=frozenset({"served_area_ids"})
 )

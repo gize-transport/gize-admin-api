@@ -94,6 +94,12 @@ async def update(
     """Setting what is already there changes and records nothing."""
     async with session.begin():
         row = await _live(session, driver_id, for_update=True)
+        if (
+            change.is_active is False
+            and row.is_active
+            and await repository.drives_a_route(session, row.id)
+        ):
+            raise AppError(ErrorCode.DRIVER_ASSIGNED)  # GZ-053: take them off it first
         await _free_or_raise(session, phone=change.phone, plate=change.plate, except_id=row.id)
         before = audit.snapshot(DRIVER_AUDIT, row)
         for field in ("full_name", "phone", "address", "plate", "is_active"):
@@ -116,9 +122,11 @@ async def update(
 
 async def delete(session: AsyncSession, caller: CurrentStaff, driver_id: uuid.UUID) -> None:
     """Soft delete (admins: the route's require_role); their phone and plate are free
-    again. GZ-053 refuses it while they drive a route."""
+    again. 409 DRIVER_ASSIGNED while they drive a route (GZ-053)."""
     async with session.begin():
         row = await _live(session, driver_id, for_update=True)
+        if await repository.drives_a_route(session, row.id):
+            raise AppError(ErrorCode.DRIVER_ASSIGNED)
         before = audit.snapshot(DRIVER_AUDIT, row)
         row.deleted_at = func.now()  # the database's clock, like every other timestamp
         await session.flush()
