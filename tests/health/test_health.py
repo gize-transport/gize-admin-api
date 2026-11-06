@@ -278,11 +278,21 @@ async def test_an_outage_is_logged_when_it_starts_and_when_it_ends(
     monkeypatch.setattr("gize_api.health.readiness.READINESS_CACHE_SECONDS", 0.0)
     app = create_app(make_settings(database_url=database.app))  # unreachable Redis
     async with app.router.lifespan_context(app), _client(app) as client:
-        for _ in range(3):
+        readiness = app.state.readiness
+
+        async def probe() -> None:
+            # Redis is checked in the background (a probe waits for Postgres only), and a
+            # probe starts no new check while one runs: let each finish, or one still
+            # failing against the old Redis would leave the recovery unseen (a CI flake).
             await client.get("/health/ready")
-        app.state.readiness._redis = Redis.from_url(test_redis_url)  # Redis is back
-        await client.get("/health/ready")
-        await client.get("/health/ready")
+            assert readiness._redis_check is not None
+            await readiness._redis_check
+
+        for _ in range(3):
+            await probe()
+        readiness._redis = Redis.from_url(test_redis_url)  # Redis is back
+        await probe()
+        await probe()
     events = [
         (entry["event"], entry["dependency"])
         for entry in _log_lines(capsys)
