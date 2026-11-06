@@ -5,8 +5,8 @@ tests/test_raised_codes.py's last test compares what was returned with what each
 documents (`x-error-codes`), so an undocumented code fails the run rather than surprising
 the frontend. Only problem+json responses of a matched operation are recorded: a 404 for an
 unknown path, a 405, a CORS refusal or a body refused before routing belongs to no operation
-(docs/api-contract.md, "Errors any request gets"). Nor is an app with tracing on, whose
-outer layer routes a copy of the scope: the few telemetry tests, which add no operations.
+(docs/api-contract.md, "Errors any request gets"). Nor is a request with trace headers to
+an app with tracing on, whose outer layer routes a copy of the scope (core/telemetry.py).
 """
 
 import json
@@ -85,3 +85,11 @@ def undocumented(returned: Iterable[Returned], contract: dict[str, Any]) -> list
         if answer.code not in response.get("x-error-codes", []):
             found.add(f"{operation['operationId']}: {answer.status} {answer.code}")
     return sorted(found)
+
+
+def matched(returned: Iterable[Returned], contract: dict[str, Any]) -> int:
+    """How many answers were an operation's: none, after a suite of API tests, means the
+    recorder stopped recording."""
+    return sum(
+        answer.method.lower() in contract["paths"].get(answer.path, {}) for answer in returned
+    )

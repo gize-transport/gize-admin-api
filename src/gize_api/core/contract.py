@@ -136,7 +136,7 @@ def _show_examples(
                 media["example"] = example
         elif status.isdigit() and not status.startswith(("1", "3")):
             response["content"][PROBLEM_JSON]["examples"] = {
-                code: _error_example(ErrorCode(code), operation)
+                code: _error_example(ErrorCode(code), operation, components)
                 for code in response["x-error-codes"]
             }
 
@@ -164,7 +164,9 @@ def _ref_name(schema: dict[str, Any]) -> str | None:
     return ref.rsplit("/", 1)[-1] if isinstance(ref, str) else None
 
 
-def _error_example(code: ErrorCode, operation: dict[str, Any]) -> dict[str, Any]:
+def _error_example(
+    code: ErrorCode, operation: dict[str, Any], components: dict[str, Any]
+) -> dict[str, Any]:
     spec = ERROR_SPECS[code]
     problem: Problem
     if code == ErrorCode.VALIDATION_FAILED:
@@ -173,7 +175,7 @@ def _error_example(code: ErrorCode, operation: dict[str, Any]) -> dict[str, Any]
             status=spec.status,
             code=code,
             request_id=EXAMPLE_REQUEST_ID,
-            errors=[_field_error(operation)],
+            errors=[_field_error(operation, components)],
             errors_truncated=False,
         )
     else:
@@ -183,14 +185,38 @@ def _error_example(code: ErrorCode, operation: dict[str, Any]) -> dict[str, Any]
     return {"summary": spec.title, "value": problem.model_dump(mode="json")}
 
 
-def _field_error(operation: dict[str, Any]) -> FieldError:
-    """A body's missing field, the first parameter refused, or else an unknown parameter."""
-    parameters = operation.get("parameters", [])
+def _field_error(operation: dict[str, Any], components: dict[str, Any]) -> FieldError:
+    """A field error the operation can really answer with: the body's first required field
+    missing (an unknown one when none is required: bodies forbid extras), else its first
+    parameter refused as its schema refuses it, else an unknown parameter."""
     if "requestBody" in operation:
-        return FieldError(location="body", field="/name", reason=ValidationReason.MISSING)
+        content = operation["requestBody"].get("content", {}).get("application/json", {})
+        body = components.get(_ref_name(content.get("schema", {})) or "", {})
+        required = body.get("required", [])
+        if required:
+            return FieldError(
+                location="body", field=f"/{required[0]}", reason=ValidationReason.MISSING
+            )
+        return FieldError(location="body", field="/unknown", reason=ValidationReason.UNKNOWN_FIELD)
+    parameters = [p for p in operation.get("parameters", []) if p.get("in") in {"path", "query"}]
     if not parameters:
-        return FieldError(location="query", field="/since", reason=ValidationReason.UNKNOWN_FIELD)
+        return FieldError(location="query", field="/unknown", reason=ValidationReason.UNKNOWN_FIELD)
     first = parameters[0]
     return FieldError(
-        location=first["in"], field=f"/{first['name']}", reason=ValidationReason.INVALID
+        location=first["in"], field=f"/{first['name']}", reason=_refused(first.get("schema", {}))
     )
+
+
+def _refused(schema: dict[str, Any]) -> ValidationReason:
+    """Why a bad value for this parameter schema is refused (errors.reason_for's mapping)."""
+    for option in [schema, *schema.get("anyOf", [])]:
+        if option.get("format") in {"uuid", "date", "date-time"} or "pattern" in option:
+            return ValidationReason.INVALID_FORMAT
+        if "enum" in option or "$ref" in option:
+            return ValidationReason.NOT_ALLOWED
+        if option.get("type") in {"integer", "number"}:
+            bounded = "minimum" in option or "maximum" in option
+            return ValidationReason.OUT_OF_RANGE if bounded else ValidationReason.INVALID_TYPE
+        if "maxLength" in option:
+            return ValidationReason.TOO_LONG
+    return ValidationReason.INVALID

@@ -4217,7 +4217,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -4788,7 +4788,7 @@
                         {
                           "field": "/area_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -5014,7 +5014,7 @@
                         {
                           "field": "/area_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -5598,7 +5598,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -5883,7 +5883,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -6460,7 +6460,7 @@
                         {
                           "field": "/company_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -6692,7 +6692,7 @@
                         {
                           "field": "/company_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -6993,9 +6993,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -7273,7 +7273,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -7576,7 +7576,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/origin_area_id",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -7851,7 +7851,7 @@
                         {
                           "field": "/corridor_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -8084,7 +8084,7 @@
                         {
                           "field": "/corridor_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -8386,9 +8386,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -8663,7 +8663,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -8974,7 +8974,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/full_name",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -9249,7 +9249,7 @@
                         {
                           "field": "/driver_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -9479,7 +9479,7 @@
                         {
                           "field": "/driver_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -9789,9 +9789,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -10028,7 +10028,7 @@
                         {
                           "field": "/offer_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -10354,7 +10354,7 @@
                         {
                           "field": "/offer_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -10649,7 +10649,7 @@
                         {
                           "field": "/offer_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -10857,7 +10857,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/since",
+                          "field": "/unknown",
                           "location": "query",
                           "reason": "unknown_field"
                         }
@@ -11062,7 +11062,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -11389,7 +11389,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/verified_phone_token",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -11649,7 +11649,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -11932,7 +11932,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/verified_phone_token",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -12289,7 +12289,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -12608,7 +12608,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/full_name",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -12894,7 +12894,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/phone",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -13136,7 +13136,7 @@
                         {
                           "field": "/rider_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -13385,7 +13385,7 @@
                         {
                           "field": "/rider_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -13692,9 +13692,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -14078,7 +14078,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/route_id",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -14453,9 +14453,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -14810,7 +14810,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -15126,7 +15126,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/kind",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -15555,7 +15555,7 @@
                         {
                           "field": "/request_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -15801,7 +15801,7 @@
                         {
                           "field": "/request_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -16105,9 +16105,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -16413,7 +16413,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/status",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -16790,7 +16790,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -17141,7 +17141,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/code",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -17427,7 +17427,7 @@
                         {
                           "field": "/route_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -17535,7 +17535,7 @@
         ]
       },
       "get": {
-        "description": "A live route by ID: seats taken and free (this month and next), launch progress, and\nthe status changes allowed now (`status_changes`). 404 NOT_FOUND for one that never\nexisted or was deleted.",
+        "description": "A live route by ID: seats taken and free (this month and next), launch progress, and\nthe status changes possible from here, each ready or blocked (`status_changes`). 404\nNOT_FOUND for one that never existed or was deleted.",
         "operationId": "routes_get",
         "parameters": [
           {
@@ -17708,7 +17708,7 @@
                         {
                           "field": "/route_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -18113,9 +18113,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -18456,7 +18456,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/area_ids",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -18849,7 +18849,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/code",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -19225,7 +19225,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/driver_id",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -19467,7 +19467,7 @@
                         {
                           "field": "/route_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -19752,7 +19752,7 @@
                         {
                           "field": "/route_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -20023,7 +20023,7 @@
                         {
                           "field": "/route_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -20304,7 +20304,7 @@
                         {
                           "field": "/route_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -20688,9 +20688,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -21075,7 +21075,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/round_trip",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -21451,7 +21451,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/status",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -21726,7 +21726,7 @@
                         {
                           "field": "/limit",
                           "location": "query",
-                          "reason": "invalid"
+                          "reason": "out_of_range"
                         }
                       ],
                       "errors_truncated": false,
@@ -22046,7 +22046,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/email",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -22471,7 +22471,7 @@
                         {
                           "field": "/staff_id",
                           "location": "path",
-                          "reason": "invalid"
+                          "reason": "invalid_format"
                         }
                       ],
                       "errors_truncated": false,
@@ -22759,9 +22759,9 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/unknown",
                           "location": "body",
-                          "reason": "missing"
+                          "reason": "unknown_field"
                         }
                       ],
                       "errors_truncated": false,
@@ -22980,7 +22980,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/phone",
                           "location": "body",
                           "reason": "missing"
                         }
@@ -23218,7 +23218,7 @@
                       "code": "VALIDATION_FAILED",
                       "errors": [
                         {
-                          "field": "/name",
+                          "field": "/verification_id",
                           "location": "body",
                           "reason": "missing"
                         }

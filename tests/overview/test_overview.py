@@ -133,7 +133,7 @@ async def test_unknown_parameters_are_422(api: httpx.AsyncClient, db_session: As
     member = (await add_staff(db_session)).id
     response = await api.get(OVERVIEW, params={"since": "2026-01-01"}, headers=signed_in(member))
     assert (response.status_code, response.json()["code"]) == (422, "VALIDATION_FAILED")
-    # As the contract's example shows it (GZ-061).
+    # The shape the contract's 422 example shows (GZ-061).
     assert response.json()["errors"] == [
         {"location": "query", "field": "/since", "reason": "unknown_field"}
     ]

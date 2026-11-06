@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from gize_api.main import create_app
-from tests.raised_codes import RETURNED, Returned, undocumented
+from tests.raised_codes import RETURNED, Returned, matched, undocumented
 from tests.support import SettingsFactory
 
 CONTRACT: dict[str, Any] = {
@@ -65,7 +65,14 @@ async def test_the_api_s_problems_are_recorded_with_their_route(api: httpx.Async
     assert RETURNED[before:] == [Returned("GET", "/v1/overview", 401, "UNAUTHENTICATED")]
 
 
-def test_every_error_the_suite_returned_is_documented(make_settings: SettingsFactory) -> None:
+def test_every_error_the_suite_returned_is_documented(
+    make_settings: SettingsFactory, request: pytest.FixtureRequest
+) -> None:
+    # Reordered (`--ff`, `--nf`), it would check before the others had returned anything.
+    assert request.session.items[-1] is request.node, "run the suite in its own order"
     contract = create_app(make_settings()).openapi()
+    used = (set(getattr(item, "fixturenames", ())) for item in request.session.items)
+    if any({"api", "committed_api"} & names for names in used):
+        assert matched(RETURNED, contract), "API tests ran, yet nothing was recorded"
     found = undocumented(RETURNED, contract)
     assert not found, "returned but not documented:\n" + "\n".join(found)

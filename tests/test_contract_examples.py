@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from gize_api.core.contract import finish_contract
 from gize_api.core.errors import ERROR_SPECS, ErrorCode, Problem, ValidationProblem
-from gize_api.examples import EXAMPLES, contract_examples
+from gize_api.examples import contract_examples, examples
 from gize_api.main import GizeAPI, create_app
 from tests.support import ROOT, SettingsFactory
 
@@ -72,14 +72,19 @@ def test_every_success_shows_an_example_its_model_answers_with(app: GizeAPI) -> 
     assert shown >= 59
 
 
-def test_every_example_is_shown_somewhere(app: GizeAPI) -> None:
-    text = json.dumps(app.openapi())
+def test_every_example_is_shown_as_a_response_or_a_page_item(app: GizeAPI) -> None:
+    shown = []
+    for _, operation in _operations(app.openapi()):
+        for status, response in operation["responses"].items():
+            if status.startswith("2") and "content" in response:
+                example = response["content"]["application/json"]["example"]
+                shown.extend([example, *example.get("items", [])])
     for name, example in contract_examples().items():
-        assert json.dumps(example) in text, f"{name}'s example is shown nowhere"
+        assert example in shown, f"{name}'s example is shown nowhere"
 
 
 def test_the_examples_are_one_per_model() -> None:
-    names = [type(example).__name__ for example in EXAMPLES]
+    names = [type(example).__name__ for example in examples()]
     assert len(names) == len(set(names))
 
 
@@ -96,20 +101,86 @@ def test_every_error_shows_an_example_for_each_of_its_codes(app: GizeAPI) -> Non
                 problem = shape.model_validate(example["value"])
                 assert (problem.code, problem.status) == (code, int(status)), where
                 assert problem.request_id, where
+                if isinstance(problem, ValidationProblem):
+                    [error] = problem.errors
+                    assert error.field.lstrip("/") in _inputs(operation, error.location) or (
+                        error.reason == "unknown_field"
+                    ), f"{where}: {error}"
 
 
-def test_a_validation_example_names_a_field() -> None:
+def _inputs(operation: dict[str, Any], location: str) -> set[str]:
+    """The fields an operation takes there: a field error can name only these."""
+    if location != "body":
+        return {p["name"] for p in operation.get("parameters", []) if p["in"] == location}
+    return set(_BODIES[_body_name(operation)]["properties"])
+
+
+_BODIES: dict[str, Any] = {}
+
+
+def _body_name(operation: dict[str, Any]) -> str:
+    ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    return str(ref.rsplit("/", 1)[-1])
+
+
+@pytest.fixture(autouse=True)
+def _bodies(app: GizeAPI) -> None:
+    _BODIES.update(app.openapi()["components"]["schemas"])
+
+
+def _validation_example(operation: dict[str, Any], **schemas: Any) -> dict[str, Any]:  # noqa: ANN401
     schema = finish_contract(
         {
-            "paths": {
-                "/v1/a": {"post": {"operationId": "a_create", "requestBody": {}, "responses": {}}}
-            }
+            "paths": {"/v1/a": {"post": {"operationId": "a_create", **operation, "responses": {}}}},
+            "components": {"schemas": schemas},
         }
     )
     response = schema["paths"]["/v1/a"]["post"]["responses"]["422"]
-    value = response["content"][PROBLEM_JSON]["examples"]["VALIDATION_FAILED"]["value"]
-    assert value["errors"] == [{"location": "body", "field": "/name", "reason": "missing"}]
+    value: dict[str, Any] = response["content"][PROBLEM_JSON]["examples"]["VALIDATION_FAILED"][
+        "value"
+    ]
     assert value["errors_truncated"] is False
+    [error] = value["errors"]
+    return dict(error)
+
+
+BODY = {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/ABody"}}}}
+
+
+def test_a_body_example_names_its_first_required_field() -> None:
+    body = {"properties": {"note": {}, "plate": {}}, "required": ["plate"]}
+    error = _validation_example({"requestBody": BODY}, ABody=body)
+    assert error == {"location": "body", "field": "/plate", "reason": "missing"}
+
+
+def test_a_body_without_required_fields_shows_an_unknown_one() -> None:
+    error = _validation_example({"requestBody": BODY}, ABody={"properties": {"note": {}}})
+    assert error == {"location": "body", "field": "/unknown", "reason": "unknown_field"}
+
+
+@pytest.mark.parametrize(
+    ("schema", "reason"),
+    [
+        ({"type": "string", "format": "uuid"}, "invalid_format"),
+        ({"type": "string", "pattern": "^[A-Z]+$"}, "invalid_format"),
+        ({"anyOf": [{"type": "string", "format": "date"}, {"type": "null"}]}, "invalid_format"),
+        ({"$ref": "#/components/schemas/RouteStatus"}, "not_allowed"),
+        ({"type": "string", "enum": ["a"]}, "not_allowed"),
+        ({"type": "integer", "minimum": 1, "maximum": 100}, "out_of_range"),
+        ({"type": "integer"}, "invalid_type"),
+        ({"type": "string", "maxLength": 200}, "too_long"),
+        ({"type": "boolean"}, "invalid"),
+    ],
+)
+def test_a_parameter_example_is_refused_as_its_schema_refuses(
+    schema: dict[str, Any], reason: str
+) -> None:
+    parameters = [
+        {"in": "header", "name": "Idempotency-Key", "schema": {}},  # 428, never a 422
+        {"in": "query", "name": "q", "schema": schema},
+    ]
+    error = _validation_example({"parameters": parameters})
+    assert error == {"location": "query", "field": "/q", "reason": reason}
 
 
 def test_a_page_shows_one_item_and_no_next_page() -> None:
