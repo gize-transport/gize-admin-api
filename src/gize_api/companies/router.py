@@ -95,6 +95,8 @@ async def get(
     _: CurrentStaff = Depends(current_staff),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> CompanyRead:
+    """A live company by ID, active or not. 404 NOT_FOUND for one that never existed or was
+    deleted."""
     response.headers["Cache-Control"] = "no-store"
     return await service.get(session, company_id)
 

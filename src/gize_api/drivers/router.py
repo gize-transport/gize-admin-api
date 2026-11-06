@@ -96,6 +96,8 @@ async def get(
     _: CurrentStaff = Depends(current_staff),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> DriverRead:
+    """A live driver by ID, active or not; their phone in full. 404 NOT_FOUND for one that
+    never existed or was deleted."""
     response.headers["Cache-Control"] = "no-store"
     return await service.get(session, driver_id)
 

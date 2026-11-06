@@ -38,7 +38,9 @@ def route_list_params(
     "/areas",
     operation_id="public_areas_list",
     summary="Areas to choose from",
-    responses=problem_responses(ErrorCode.INVALID_CURSOR, ErrorCode.RATE_LIMITED),
+    responses=problem_responses(
+        ErrorCode.INVALID_CURSOR, ErrorCode.RATE_LIMITED, ErrorCode.SERVICE_UNAVAILABLE
+    ),
 )
 async def list_areas(
     response: Response,
@@ -55,7 +57,9 @@ async def list_areas(
     "/routes",
     operation_id="public_routes_list",
     summary="Public routes for a trip",
-    responses=problem_responses(ErrorCode.INVALID_CURSOR, ErrorCode.RATE_LIMITED),
+    responses=problem_responses(
+        ErrorCode.INVALID_CURSOR, ErrorCode.RATE_LIMITED, ErrorCode.SERVICE_UNAVAILABLE
+    ),
 )
 async def list_routes(
     response: Response,

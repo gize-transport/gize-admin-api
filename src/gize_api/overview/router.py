@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.db import get_session
+from gize_api.core.errors import ErrorCode, problem_responses
 from gize_api.core.security import CurrentStaff, current_staff, staff_router
 from gize_api.overview import service
 from gize_api.overview.schemas import Overview
@@ -24,7 +25,13 @@ def no_params(params: Annotated[_NoParams, Query()]) -> None:
     return None
 
 
-@router.get("", operation_id="overview_get", summary="Counts for the home page")
+@router.get(
+    "",
+    operation_id="overview_get",
+    summary="Counts for the home page",
+    # No parameters, so FastAPI implies no 422; an unknown one is refused all the same.
+    responses=problem_responses(ErrorCode.VALIDATION_FAILED),
+)
 async def get(
     response: Response,
     _: CurrentStaff = Depends(current_staff),  # noqa: B008
@@ -33,6 +40,7 @@ async def get(
 ) -> Overview:
     """Live records only: routes by status (forming ones ready to launch, active ones with
     no driver), riders (riding today, reserved), open route requests and seat offers,
-    active drivers. A snapshot: counts can move a moment later."""
+    active drivers. A snapshot: counts can move a moment later. It takes no parameters:
+    422 VALIDATION_FAILED for any."""
     response.headers["Cache-Control"] = "no-store"
     return await service.overview(session)
