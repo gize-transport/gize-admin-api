@@ -25,7 +25,7 @@ concurrency:
 env:
   # Keep in step with ci.yml (checked by tests/test_deploy_config.py).
   UV_PYTHON: "3.12.16"
-  UV_VERSION: "0.11.30"
+  UV_VERSION: "0.13.7"
 
 defaults:
   run:

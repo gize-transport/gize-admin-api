@@ -143,15 +143,21 @@ Dependabot (`.github/dependabot.yml`) opens update PRs on Mondays.
 
 **Bumps CI fails on purpose:** some versions live in two places, so CI fails until both match. Finish these on the PR's branch, push, and CI runs again.
 - **Python image:** set `UV_PYTHON` to the new patch release in every workflow (`ci.yml`, `contract-release.yml`, `deploy-staging.yml`, `pin-check.yml`).
-- **uv image:** set `UV_VERSION` in `ci.yml`, `contract-release.yml` and `deploy-staging.yml`, and raise the lower bound of `required-version` and of `uv_build` in `pyproject.toml`.
+- **uv image:** set `UV_VERSION` in `ci.yml`, `contract-release.yml` and `deploy-staging.yml`. In `pyproject.toml`, set the floor of `required-version` (a floor only: Dependabot runs its own, newer uv, which a ceiling would refuse) and the range of `uv_build`. Then run `uv lock`.
 - **gitleaks hook:** set `GITLEAKS_VERSION` and `GITLEAKS_SHA256` in `ci.yml`.
+- **Compose services (Postgres, Redis):** copy the new `image:` lines into the `services:` of `ci.yml`, so CI tests what developers run.
 
-**The "Stale tool pins (weekly check)" issue:** the pin-check workflow reports uv, gitleaks and oasdiff, which no Dependabot ecosystem sees.
-- Bump each on a `chore/deps-<tool>-<version>` branch, through a normal PR, everywhere the issue says.
-- A checksum (`GITLEAKS_SHA256`, `OASDIFF_SHA256`) is the Linux amd64 tarball's line in that release's checksums file on GitHub.
-- The issue closes itself on the next Monday run, or run the workflow by hand from the Actions tab.
+**Normal parts of a Python package update:**
+- **Raised minimums:** Dependabot's uv updates also raise the minimum versions in `pyproject.toml` (`alembic>=…`).
+- **A changed contract:** a FastAPI or Pydantic update can change `openapi.json`. Regenerate it on the branch (`uv run python scripts/export_openapi.py`) and commit it; the contract check still refuses a breaking change.
+- **Anything more** (code changes, a breaking contract change) needs a ticket: close the PR.
 
-**Versions Dependabot ignores:** Python 3.13+, uv 0.12+, Postgres 18+ and Redis 8+. These are decisions, not updates: each needs a ticket.
+**The "Stale pins (weekly check)" issue:** the pin-check workflow reports the two pins no Dependabot ecosystem sees. It counts only releases at least 5 days old.
+- **oasdiff:** `OASDIFF_VERSION` and `OASDIFF_SHA256` in `ci.yml` and `contract-release.yml`. The checksum is the `linux_amd64` tarball's line in the release's checksums file on GitHub.
+- **Dockerfile frontend:** the digest on the first line (`# syntax=docker/dockerfile:1@sha256:…`); the issue shows the new one.
+- Bump them on a `chore/deps-<what>` branch, through a normal PR. The issue closes itself on the next Monday run, or run the workflow by hand from the Actions tab.
+
+**Versions Dependabot ignores:** Python 3.13+, Postgres 18+ and Redis 8+. These are decisions, not updates: each needs a ticket.
 
 **Security updates:** they come as soon as an advisory is published, whatever the cooldown, once *Dependabot alerts* and *Dependabot security updates* are on (Settings → Advanced Security).
 

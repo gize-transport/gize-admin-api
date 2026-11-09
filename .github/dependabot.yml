@@ -6,8 +6,11 @@
 # Minor and patch updates are grouped into one PR per ecosystem; a major comes alone.
 # A release must be a few days old: time for a bad or hijacked one to be pulled.
 # The versions we can't take yet are ignored, each with its reason.
-# The tool pins written in workflows (uv, gitleaks, oasdiff) are no ecosystem's: the
-# weekly pin-check workflow reports them.
+# A version also written elsewhere fails CI until it follows (the Python and uv images, the
+# gitleaks hook, the Compose services: RUNBOOK.md, "Dependency updates"). oasdiff and the
+# Dockerfile's `# syntax` frontend are no ecosystem's: the weekly pin-check reports them.
+# pyproject's [tool.uv] required-version has a floor only: Dependabot runs its own uv,
+# usually newer than ours, and a ceiling would fail every run (dependabot-core#13199).
 version: 2
 updates:
   - package-ecosystem: "uv"
@@ -62,9 +65,6 @@ updates:
       # pyproject: requires-python >=3.12,<3.13.
       - dependency-name: "python"
         versions: [">=3.13"]
-      # pyproject: [tool.uv] required-version <0.12.
-      - dependency-name: "ghcr.io/astral-sh/uv"
-        versions: [">=0.12"]
     commit-message:
       prefix: "deps"
 

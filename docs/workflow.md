@@ -19,8 +19,8 @@ Every piece of work is a ticket in `docs/milestones.md` (IDs like `GZ-012`). Wor
 
 Dependabot's PRs (`deps:` titles, `dependabot/…` branches; GZ-065) are the one exception to "one ticket per PR": they need no ticket.
 - **Merging:** the merge rule still applies in full. Every check must be green, a person merges with a squash, and nothing auto-merges.
-- **Pins CI insists on:** finishing a bump on the PR's branch is part of the update (RUNBOOK, "Dependency updates").
-- **Code changes:** if an update needs anything more than those pins, close the PR and open a ticket.
+- **Finishing it on the branch:** this is part of the update, as RUNBOOK's "Dependency updates" lists: the pins CI insists on, a regenerated `openapi.json`, and the raised minimums Dependabot writes into `pyproject.toml`.
+- **Code changes:** if an update needs anything more, close the PR and open a ticket.
 
 ## Plan template (post this before coding)
 

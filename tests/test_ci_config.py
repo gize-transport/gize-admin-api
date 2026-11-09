@@ -55,7 +55,9 @@ def test_uv_version_matches_dockerfile_and_pyproject() -> None:
     assert _one(r"^FROM ghcr\.io/astral-sh/uv:([\d.]+)@sha256:[0-9a-f]{64} AS uv$", DOCKERFILE) == (
         ci_uv
     )
-    assert _one(r'^required-version = ">=([\d.]+),', pyproject) == ci_uv
+    # A floor only: Dependabot runs its own, newer uv, which a ceiling refuses (GZ-065).
+    assert _one(r'^required-version = ">=([\d.]+)"$', pyproject) == ci_uv
+    assert _one(r'^requires = \["uv_build>=([\d.]+),<[\d.]+"\]$', pyproject) == ci_uv
 
 
 def test_gitleaks_version_matches_pre_commit_hook() -> None:
@@ -178,7 +180,6 @@ def test_each_ecosystem_is_weekly_grouped_and_cooled_down(ecosystem: str) -> Non
     ("ecosystem", "dependency", "versions"),
     [
         ("docker", "python", ">=3.13"),  # pyproject: >=3.12,<3.13
-        ("docker", "ghcr.io/astral-sh/uv", ">=0.12"),  # pyproject: required-version <0.12
         ("docker-compose", "postgres", ">=18"),  # Supabase runs 17
         ("docker-compose", "redis", ">=8"),  # Render's Key Value runs 7.4
     ],

@@ -1,6 +1,6 @@
-# Reports the tools pinned inside our workflows that are behind their latest release
-# (GZ-065): uv, gitleaks and oasdiff, which no Dependabot ecosystem sees. Keeps one open
-# issue listing them, and closes it once every pin is current. It changes no file.
+# Reports the pins no Dependabot ecosystem sees (GZ-065): oasdiff, written in two
+# workflows, and the Dockerfile's `# syntax` frontend digest. Keeps one open issue listing
+# the stale ones, and closes it once every pin is current. It changes no file.
 # Two jobs: `report` works it out with a read-only token; only `issue`, which runs no
 # project code, may write (issues only). Third-party actions are pinned to commit SHAs.
 name: Pin check
@@ -19,7 +19,7 @@ concurrency:
 
 env:
   UV_PYTHON: "3.12.16"
-  TITLE: "Stale tool pins (weekly check)"
+  TITLE: "Stale pins (weekly check)"
 
 defaults:
   run:
@@ -27,7 +27,7 @@ defaults:
 
 jobs:
   report:
-    name: Compare the pins with the latest releases
+    name: Compare the pins with what is published
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -46,12 +46,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          latest() { gh api "repos/$1/releases/latest" --jq .tag_name; }
-          uv="$(latest astral-sh/uv)"
-          gitleaks="$(latest gitleaks/gitleaks)"
-          oasdiff="$(latest oasdiff/oasdiff)"
-          python -m scripts.stale_pins --latest "uv=${uv}" "gitleaks=${gitleaks}" "oasdiff=${oasdiff}" \
-            > "${RUNNER_TEMP}/report.md"
+          gh api "repos/oasdiff/oasdiff/releases?per_page=30" > "${RUNNER_TEMP}/oasdiff.json"
+          curl --fail --silent --show-error --max-time 30 --output "${RUNNER_TEMP}/frontend.json" \
+            "https://hub.docker.com/v2/repositories/docker/dockerfile/tags/1"
+          python -m scripts.stale_pins --oasdiff "${RUNNER_TEMP}/oasdiff.json" \
+            --frontend "${RUNNER_TEMP}/frontend.json" > "${RUNNER_TEMP}/report.md"
           cat "${RUNNER_TEMP}/report.md"
           delimiter="body-$(openssl rand -hex 16)"
           {
@@ -73,13 +72,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BODY: ${{ needs.report.outputs.body }}
         run: |
-          open="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open \
-            --search "in:title \"${TITLE}\"" --json number,title \
-            --jq "map(select(.title == env.TITLE)) | .[0].number // empty")"
+          # By exact title over the open issues (not search, whose index lags a new issue).
+          open="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 200 \
+            --json number,title --jq "map(select(.title == env.TITLE)) | .[0].number // empty")"
           if [[ -z "${BODY}" ]]; then
             if [[ -n "${open}" ]]; then
               gh issue close "${open}" --repo "${GITHUB_REPOSITORY}" \
-                --comment "Every tool pin is current."
+                --comment "Every pin is current."
             fi
             exit 0
           fi

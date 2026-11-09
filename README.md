@@ -6,7 +6,7 @@ Start with [`CLAUDE.md`](CLAUDE.md) and the documents in [`docs/`](docs/). [`doc
 
 ## Prerequisites
 
-- [uv](https://docs.astral.sh/uv/) 0.11.30 or newer within 0.11 (it installs Python 3.12 for you)
+- [uv](https://docs.astral.sh/uv/) 0.13.7 or newer (`uv self update`; it installs Python 3.12 for you). CI uses exactly the version in `.github/workflows/ci.yml`
 - Docker with Compose v2
 - GitHub CLI (`gh auth login`) to open pull requests
 
@@ -578,6 +578,8 @@ The image declares a Docker `HEALTHCHECK` (every 10 s, 3 retries, 20 s start per
 There is no branch protection on our plan, so CLAUDE.md's merge rules are the protection. Before merging, confirm **all six checks above are listed and green** on the PR: `gh pr checks` only shows checks that ran, so a job deleted from the workflow would not show up as failing. `tests/test_ci_config.py` pins the job list, and any change under `.github/workflows/` needs an explicit reviewer look.
 
 **Coverage ratchet.** `.coverage-baseline` holds `main`'s total coverage. CI fails when coverage drops and also when it rises without the baseline being raised, so a later PR cannot quietly give the gain back. When coverage improves, run `uv run python -m scripts.check_coverage_baseline --update` and commit the file. Lowering it is a hand edit the PR must justify.
+
+**Dependency updates.** Dependabot (`.github/dependabot.yml`) opens update PRs every Monday. Each runs these six checks and is merged by a person only when all are green; nothing auto-merges. `.github/workflows/pin-check.yml` reports, in one issue, the pins Dependabot can't see. RUNBOOK.md, "Dependency updates", says how to finish each kind.
 
 **Deploying.** `.github/workflows/deploy-staging.yml` is not a PR check: after CI passes on `main`, it migrates the staging database and deploys that commit to Render (`render.yaml`). Setup, rollback, secrets and backups are in [RUNBOOK.md](RUNBOOK.md); `tests/test_deploy_config.py` guards both files.
 

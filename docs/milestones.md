@@ -372,11 +372,16 @@ Status: done · Depends on: GZ-002
 - Acceptance: a stale pin produces an update PR that passes CI; nothing auto-merges.
 - Built: `.github/dependabot.yml` covers five ecosystems weekly (Mondays 06:00 Addis Ababa): `uv`, `github-actions`, `docker`, `docker-compose`, `pre-commit`.
   - Minor and patch updates are grouped into one PR per ecosystem; a major comes alone. 5-day cooldown, `deps` prefix.
-  - Ignored: Python 3.13+, uv 0.12+, Postgres 18+, Redis 8+, each with its reason.
+  - Ignored: Python 3.13+, Postgres 18+, Redis 8+, each with its reason.
   - The Dockerfile's images moved from ARGs to literal digest-pinned `FROM` lines, which Dependabot can read; the image is unchanged.
-  - `.github/workflows/pin-check.yml` (weekly and on demand) compares the uv, gitleaks and oasdiff pins with their latest releases (`scripts/stale_pins.py`) and keeps one issue, closed once they're current. Only its second job, which runs no project code, may write, and only issues.
-  - Docs: RUNBOOK "Dependency updates" (finishing a Python, uv or gitleaks bump, which CI fails until the workflows follow) and workflow.md (Dependabot PRs need no ticket; same merge rule).
+  - `.github/workflows/pin-check.yml` (weekly and on demand) covers the two pins no ecosystem sees, oasdiff and the Dockerfile's `# syntax` frontend digest (`scripts/stale_pins.py`). Like the cooldown, it counts only what is at least 5 days old. It keeps one issue, closed once they're current. Only its second job, which runs no project code, may write, and only issues.
+  - Docs: RUNBOOK "Dependency updates" (finishing a Python, uv, gitleaks or Compose bump, which CI fails until the other copy follows; regenerating `openapi.json`) and workflow.md (Dependabot PRs need no ticket; same merge rule).
   - Tests: every image a literal pin, every action a commit SHA, every workflow on CI's Python and actions, nothing auto-merges.
+- From review (owner decision, 2026-11-09): uv moved 0.11.30 → 0.13.7, and `[tool.uv] required-version` keeps a floor only. Dependabot runs its own uv (0.13.7) and refuses a project whose `required-version` excludes it (dependabot-core#13199): with `<0.12`, no `uv.lock` update or Python security PR would ever have come.
+  - Also from review: the uv image needed no ignore rule once the ceiling went (the rule's name was wrong besides: Dependabot calls it `astral-sh/uv`).
+  - The pin check no longer reports uv or gitleaks, whose Dependabot PRs already force the workflow pins.
+  - The issue is found by exact title, not search.
+  - The Compose comments name only the major version.
 - Owner, after merge: turn on Dependabot alerts and security updates (Settings → Advanced Security). Acceptance is seen at the first Monday run.
 
 ### GZ-066 · Ship logs and route alerts
