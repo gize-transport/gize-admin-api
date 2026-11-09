@@ -109,7 +109,8 @@ def log_security_event(
     **fields: Any,  # noqa: ANN401 - log fields
 ) -> None:
     """Failed auth, permission denials, rate-limit hits, OTP abuse: logged at WARNING and
-    sent to Sentry as a warning event (the alert route until logs are shipped, GZ-066).
+    sent to Sentry as a warning event, and alerted on from Grafana once shipped (GZ-066:
+    ops/grafana/logs.rules.yaml).
 
     `sentry=False` logs only: for events that can come in floods (rate-limit hits), the
     caller sends one now and then rather than every one.

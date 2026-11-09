@@ -135,7 +135,7 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     app.telemetry = configure_telemetry(settings)
     if app.telemetry is not None:
         app.telemetry.ship_logs()  # GZ-066: from here on, every line reaches Grafana Cloud
-    # Logged once shipping runs: both alert (ops/grafana/alerts.yaml). Production without
+    # Logged once shipping runs: both alert (ops/grafana/logs.rules.yaml). Production without
     # the observability settings refuses to start (config.py) unless explicitly opted out.
     if settings.app_env in {Environment.STAGING, Environment.PRODUCTION}:
         for name in settings.missing_observability():

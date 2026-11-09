@@ -82,7 +82,7 @@ def test_values_that_are_not_scalars_are_kept_readable(
 ) -> None:
     structlog.get_logger("gize_api.test").info(
         "shapes", count=3, ratio=0.5, ok=True, frames=["a.py:1", "b.py:2"], nested={"k": 1},
-        missing=None, mixed=[1, "x"],
+        missing=None, mixed=[1, "x"], huge=10**30, edge=2**63 - 1,
     )  # fmt: skip
     attributes = dict(_one(exported, "shapes").log_record.attributes or {})
     assert (attributes["count"], attributes["ratio"], attributes["ok"]) == (3, 0.5, True)
@@ -90,6 +90,8 @@ def test_values_that_are_not_scalars_are_kept_readable(
     assert json.loads(str(attributes["nested"])) == {"k": 1}
     assert json.loads(str(attributes["mixed"])) == [1, "x"]
     assert "missing" not in attributes
+    # OTLP integers are 64-bit: a bigger one would fail the whole export, so it goes as text.
+    assert (attributes["huge"], attributes["edge"]) == (str(10**30), 2**63 - 1)
 
 
 def test_a_line_inside_a_request_span_carries_its_trace(

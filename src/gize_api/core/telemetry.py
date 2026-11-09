@@ -388,7 +388,9 @@ class Telemetry:
         ]
         logs = self.logger_provider
         if logs is not None:
-            steps[2:2] = [("log_flush", lambda: logs.force_flush(remaining_ms()))]
+            # Last: the SDK's log flush ignores its timeout, so it must not use up the
+            # budget before traces and metrics are out.
+            steps.append(("log_flush", lambda: logs.force_flush(remaining_ms())))
             steps.append(("log_shutdown", logs.shutdown))
         for name, step in steps:
             if name.endswith("_flush") and remaining_ms() == 0:
@@ -473,11 +475,9 @@ def configure_telemetry(
             otlp_logs = OTLPLogExporter(
                 endpoint=f"{endpoint}/v1/logs", headers=headers, timeout=EXPORT_TIMEOUT_SECONDS
             )
-            logger_provider.add_log_record_processor(
-                BatchLogRecordProcessor(
-                    otlp_logs, export_timeout_millis=EXPORT_TIMEOUT_SECONDS * 1000
-                )
-            )
+            # Each export is bounded by the exporter's own timeout (the processor's
+            # export_timeout_millis is unused in SDK 1.45).
+            logger_provider.add_log_record_processor(BatchLogRecordProcessor(otlp_logs))
     return Telemetry(
         tracer_provider=tracer_provider,
         meter_provider=meter_provider,
@@ -492,8 +492,10 @@ def _log_attributes(fields: dict[str, Any]) -> dict[str, Any]:
     for key, value in fields.items():
         if value is None or key == "timestamp":
             continue
-        if isinstance(value, str | bool | int | float):
-            attributes[key] = value
+        if isinstance(value, bool | float | str) or (
+            isinstance(value, int) and -(2**63) <= value < 2**63
+        ):
+            attributes[key] = value  # OTLP integers are 64-bit: a bigger one goes as JSON
         elif isinstance(value, list) and value and all(isinstance(v, str) for v in value):
             attributes[key] = tuple(value)
         else:

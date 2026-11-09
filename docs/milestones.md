@@ -405,6 +405,14 @@ Status: done · Depends on: GZ-062 (hosting chosen)
   - Cause: FastAPI 0.162 wraps included routers (`_IncludedRouter`), so matching `app.routes` before routing found only routes added on the app itself, and the tests used only those.
   - Fix: spans now take the template of the route FastAPI chose, when the response starts (the instrumentation ends the span with the response's last part).
   - Tested on real router routes. Metrics were never affected: they read the route after routing.
+- From review:
+  - Each rule except the production-only ones counts staging and production apart and names the environment (`sum by (deployment_environment_name)`, `and on (…)`).
+  - `first_admin_created` was taken out of the staff-access rule: the first-admin command ships nothing; stderr and Sentry have it.
+  - Missing and expired tokens no longer count toward the security spike.
+  - Integers beyond 64 bits are shipped as text (OTLP would drop them with an error per line).
+  - The log flush runs last at shutdown: the SDK's flush ignores its timeout.
+  - Stricter tests: events must appear as call arguments; environment grouping; the status label; no router included with a prefix (it would drop out of span, log and metric names).
+  - RUNBOOK: a manual fallback in case the logs data source isn't offered for a file import.
 
 ### GZ-063 · Load and failure drill
 Status: todo · Depends on: GZ-062

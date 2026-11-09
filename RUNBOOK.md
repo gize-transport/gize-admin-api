@@ -201,6 +201,9 @@ The rules are files in the repo: `ops/grafana/logs.rules.yaml` and `ops/grafana/
 2. **Logs file:** choose "YAML file" and `ops/grafana/logs.rules.yaml`. Set the data source to `grafanacloud-maroonstarfish2393-logs` and the folder to `gize-api`, then import.
 3. **Metrics file:** the same with `ops/grafana/metrics.rules.yaml` and `grafanacloud-maroonstarfish2393-prom`.
 4. **When updating:** delete the old rules in the `gize-api` folder first, so none is left behind twice.
+5. **If the logs data source isn't offered for a file import:** create the log rules by hand. Use **New alert rule**, the logs data source and the `gize-api` folder, then copy each rule's `expr`, `for`, labels and annotations from the file. The metrics file imports either way.
+
+Every rule except the two production-only ones counts each environment separately and names it in the alert's summary, so a staging problem never reads like a production outage.
 
 **Where alerts go:** **Alerting → Contact points**. The default email contact point gets everything. Set it to the address that should be woken, then press **Test**.
 
@@ -216,12 +219,12 @@ The rules are files in the repo: `ops/grafana/logs.rules.yaml` and `ops/grafana/
 - `sms_disabled`: AfroMessage isn't set.
 
 ### GizeApiSecurityEventsSpike
-More than 20 rejected tokens, refused staff, denied requests or rate-limit hits in 5 minutes.
+More than 20 forged or wrong tokens, refused staff, denied requests or rate-limit hits in 5 minutes, in one environment. Missing and expired tokens are left out: a tab left open after its session ends sends those.
 - **Look:** in Explore, run `{service_name="gize-admin-api"} | category="security"` and look at `reason`, `route` and `staff_id`. One staff member with a stale token is noise; many reasons across routes is someone probing.
 - **Do:** if it's an attack, the rate limits already slow it, and a deactivated account (`staff_access_denied reason=inactive`) stays locked out. If one account is the source and looks taken over, deactivate it.
 
 ### GizeApiStaffAccessChanged
-A staff account was invited, re-activated, de-activated or changed role.
+A staff account was invited, re-activated, de-activated or changed role. The first admin, made with the command line at setup, isn't covered: that command ships nothing, so its `first_admin_created` line is in its own output and in Sentry.
 - **Look:** the line's `actor_staff_id` (who) and `staff_id` (whom), and the role.
 - **Do:** confirm it was meant with the admin who did it. If not, reverse it from the portal, and rotate that admin's password in Supabase.
 
@@ -236,7 +239,7 @@ A request failed with an error nothing handled: a bug.
 - **Do:** open a fix ticket with that detail. If it blocks riders or staff, roll back to the previous deploy ("Rolling back").
 
 ### GizeApiMisconfigured
-Production started without a setting it needs: `observability_disabled` names it, and `sms_disabled` means `AFROMESSAGE_TOKEN` is missing.
+Production started without a setting it needs: `observability_disabled` names it, and `sms_disabled` means `AFROMESSAGE_TOKEN` is missing. A missing Grafana endpoint can't alert here, since nothing is shipped then; production refuses to start without it unless explicitly opted out.
 - **Do:** set it on Render and redeploy ("Production secrets" once production exists).
 
 ### GizeApiServerErrors
