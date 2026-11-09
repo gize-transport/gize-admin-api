@@ -366,10 +366,18 @@ Status: done · Depends on: GZ-040, GZ-041, GZ-053
 - From review: open seat offers use GZ-040's holding rule (`routes.repository.holding_offers`: in time, request still waiting), so the overview and the seat checks agree; tests for an offer past its time, a declined request's offer, reservations ending before or starting after the launch day, and the 1st.
 
 ### GZ-065 · Automated dependency and image updates
-Status: todo · Depends on: GZ-002
+Status: done · Depends on: GZ-002
 - Found in GZ-001 review: base images, Compose services, the Dockerfile frontend and pre-commit hooks are pinned by digest/SHA, and `uv.lock` pins Python packages, but nothing proposes updates, so security patches go stale silently.
 - Dependabot (or Renovate) for `uv.lock`, Docker digests (`Dockerfile`, `docker-compose.yml`), GitHub Actions and pre-commit hooks; weekly, grouped, each update a normal PR through CI.
 - Acceptance: a stale pin produces an update PR that passes CI; nothing auto-merges.
+- Built: `.github/dependabot.yml` covers five ecosystems weekly (Mondays 06:00 Addis Ababa): `uv`, `github-actions`, `docker`, `docker-compose`, `pre-commit`.
+  - Minor and patch updates are grouped into one PR per ecosystem; a major comes alone. 5-day cooldown, `deps` prefix.
+  - Ignored: Python 3.13+, uv 0.12+, Postgres 18+, Redis 8+, each with its reason.
+  - The Dockerfile's images moved from ARGs to literal digest-pinned `FROM` lines, which Dependabot can read; the image is unchanged.
+  - `.github/workflows/pin-check.yml` (weekly and on demand) compares the uv, gitleaks and oasdiff pins with their latest releases (`scripts/stale_pins.py`) and keeps one issue, closed once they're current. Only its second job, which runs no project code, may write, and only issues.
+  - Docs: RUNBOOK "Dependency updates" (finishing a Python, uv or gitleaks bump, which CI fails until the workflows follow) and workflow.md (Dependabot PRs need no ticket; same merge rule).
+  - Tests: every image a literal pin, every action a commit SHA, every workflow on CI's Python and actions, nothing auto-merges.
+- Owner, after merge: turn on Dependabot alerts and security updates (Settings → Advanced Security). Acceptance is seen at the first Monday run.
 
 ### GZ-066 · Ship logs and route alerts
 Status: todo · Depends on: GZ-062 (hosting chosen)

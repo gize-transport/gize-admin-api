@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Tests run on the image's exact Python patch release (Dockerfile PYTHON_IMAGE tag).
+  # Tests run on the image's exact Python patch release (the Dockerfile's python FROM lines).
   UV_PYTHON: "3.12.16"
   # Keep in step with the Dockerfile uv image and pyproject's required-version.
   UV_VERSION: "0.11.30"
