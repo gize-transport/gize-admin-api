@@ -19,6 +19,7 @@ import asyncpg
 import pytest
 from alembic import command
 from alembic.config import Config
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 
 from gize_api.core.config import Settings
 
@@ -234,3 +235,8 @@ class StallableProxy:
 async def public_resolver(host: str, port: int) -> list[str]:
     """Resolves every host to a public address: outbound-client tests on a mock transport."""
     return ["93.184.216.34"]
+
+
+def memory_log_exporter() -> InMemoryLogRecordExporter:
+    """The SDK's in-memory log exporter (GZ-066), whose constructor is untyped."""
+    return InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]

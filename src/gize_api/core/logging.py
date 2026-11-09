@@ -6,11 +6,16 @@ libraries, warnings) go through the same pipeline. Scrubbing runs last, after ex
 over every value of every type (core/scrub.py): secrets and personal data are replaced by
 `[REDACTED]`, phone numbers are masked as `+2519••••1234`.
 
+Each line, once written, can also be shipped (GZ-066: core/telemetry.py sends it to Grafana
+Cloud over OTLP): the very line stderr got, scrubbed. The OpenTelemetry libraries' own lines
+stay on stderr only, so an export that fails cannot feed itself.
+
 Exceptions are logged as `exception_type`, `exception_chain` and `exception_frames`
 (`file:line in function`), never their message or source lines: messages carry whatever
 data the failing code held (names, phones, codes), which no pattern can reliably catch.
 """
 
+import contextlib
 import json
 import logging
 import sys
@@ -18,6 +23,7 @@ import threading
 import time
 import traceback
 import warnings
+from collections.abc import Callable
 from contextvars import ContextVar
 from types import TracebackType
 from typing import Any, TextIO
@@ -52,6 +58,7 @@ __all__ = [
     "mask_phone_numbers",
     "scrub_text",
     "scrub_value",
+    "set_log_export",
     "set_staff_id",
 ]
 
@@ -62,6 +69,23 @@ MAX_FRAMES = 30
 MAX_CHAIN = 5
 
 _staff_id: ContextVar[str | None] = ContextVar("staff_id", default=None)
+
+LogExport = Callable[[logging.LogRecord, str], None]
+# Where each written line is also sent (core/telemetry.py), or None.
+_export: LogExport | None = None
+# Loggers whose lines are never shipped: the exporters' own (an export failing, retrying).
+_NOT_SHIPPED = frozenset({"opentelemetry", "urllib3", "requests"})
+
+
+def set_log_export(export: LogExport | None) -> None:
+    """Send every line written from now on to `export` too (None: stop)."""
+    global _export  # one process-wide pipeline, like the root handler
+    _export = export
+
+
+def log_export() -> LogExport | None:
+    """Where lines are shipped now, if anywhere."""
+    return _export
 
 
 def set_staff_id(staff_id: str | None) -> None:
@@ -173,8 +197,22 @@ class _CurrentStderrHandler(logging.StreamHandler[TextIO]):
     """Write to whatever `sys.stderr` is when a line is emitted, not when configured."""
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Write the line, then ship that same line (never a second, unscrubbed rendering)."""
         self.stream = sys.stderr
-        super().emit(record)
+        try:
+            line = self.format(record)
+            self.stream.write(line + self.terminator)
+            self.flush()
+        except RecursionError:
+            raise
+        except Exception:  # noqa: BLE001 - logging's own contract: report, never raise
+            self.handleError(record)
+            return
+        export = _export
+        if export is None or record.name.split(".", 1)[0] in _NOT_SHIPPED:
+            return
+        with contextlib.suppress(Exception):  # shipping must never break logging
+            export(record, line)
 
     def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802 - stdlib name
         """One fixed line instead of logging's own dump of the traceback and arguments."""

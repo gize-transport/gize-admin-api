@@ -42,6 +42,10 @@ projects:
                 sync: false
               - key: DATABASE_URL  # gize_app on the session pooler, ?ssl=verify-full
                 sync: false
+              - key: OTEL_EXPORTER_OTLP_ENDPOINT  # GZ-066: Grafana Cloud's OTLP gateway
+                sync: false
+              - key: OTEL_EXPORTER_OTLP_HEADERS  # its token, as Grafana's snippet writes it
+                sync: false
               - key: DATABASE_SSL_ROOT_CERT
                 value: /app/certs/supabase-root-2021-ca.crt
               - key: REDIS_URL

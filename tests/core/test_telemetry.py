@@ -138,6 +138,31 @@ async def test_request_span_named_by_route_template_without_request_data(
             assert sensitive not in value
 
 
+@pytest.mark.parametrize(
+    ("path", "name"),
+    [
+        (f"/v1/riders/0b6f1d2e-4c3a-4f5e-9a8b-{PHONE}00", "GET /v1/riders/{rider_id}"),
+        ("/v1/overview", "GET /v1/overview"),
+    ],
+)
+async def test_router_routes_name_spans_by_template(
+    instrumented: GizeAPI, spans: InMemorySpanExporter, path: str, name: str
+) -> None:
+    """GZ-066: the app's own routes come through included routers, which FastAPI 0.162 wraps:
+    the span is named from the route it chose, never the raw path."""
+    async with _client(instrumented) as client:
+        await client.get(path)  # refused (no sign-in): the route matched all the same
+    (server,) = _server_spans(spans)
+    template = name.split(" ", 1)[1]
+    assert server.name == name
+    attributes = dict(server.attributes or {})
+    assert attributes["http.route"] == template
+    for key in ("url.path", "http.target"):
+        assert attributes.get(key, template) == template
+    for value in _attribute_values(spans.get_finished_spans()):
+        assert PHONE not in value
+
+
 async def test_500_is_an_error_span_without_exception_text(
     instrumented: GizeAPI, spans: InMemorySpanExporter
 ) -> None:

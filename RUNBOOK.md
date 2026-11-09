@@ -163,7 +163,7 @@ Dependabot (`.github/dependabot.yml`) opens update PRs on Mondays.
 
 ## What the signals mean
 
-There's no alerting yet: shipping logs and alert rules come with GZ-066.
+Logs, metrics and traces are in Grafana Cloud (next section); this table is for what you see without it.
 
 | You see | It means | Do |
 | --- | --- | --- |
@@ -172,4 +172,83 @@ There's no alerting yet: shipping logs and alert rules come with GZ-066.
 | `503` with `Retry-After` | The database was busy or briefly down | Retry. If it persists, check Supabase. |
 | `401` on every request | The token is from another Supabase project, or the project uses the legacy JWT secret | Check `SUPABASE_URL` and the JWT signing keys. |
 | `403` for a signed-in user | They aren't active staff in this database | An admin invites them, or the first-admin step is missing. |
-| `observability_disabled` at startup | Sentry or Grafana isn't configured | Expected on staging. |
+| `observability_disabled` at startup | Sentry or Grafana isn't configured | Expected on staging for Sentry (not set up yet). In production it alerts: GizeApiMisconfigured. |
+
+## Grafana Cloud: logs, metrics, traces
+
+Stack: https://maroonstarfish2393.grafana.net (India region). The API sends all three over OTLP, using `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` on Render. Both come from the stack's **Connections → OpenTelemetry (OTLP)** page.
+
+**Logs:** each line Render's console shows is also sent to Grafana, scrubbed the same way.
+- **Find them:** Explore → the `-logs` data source → `{service_name="gize-admin-api"}`.
+- **What you can filter on:** the line is the event (`unhandled_error`, `token_rejected`, …). Its fields can be filtered after a `|`: `| category="security"`, `| request_id="…"`, `| route="/v1/riders/{rider_id}"`.
+- **Logs and traces are linked:** a line logged during a request carries its trace.
+
+**Metrics:** the `-prom` data source. Requests are `http_server_duration_milliseconds_count` by `http_target` (the route pattern) and `http_status_code`. Database and Redis timings are `db_client_operation_duration_seconds`.
+
+**Traces:** the `-traces` data source. Search by service name `gize-admin-api`; requests are named by their route (`GET /v1/riders/{rider_id}`).
+
+**If nothing arrives:**
+- Check the two Render settings: a wrong value stops the API from starting, and Render keeps the old version.
+- Check the token hasn't been deleted in Grafana.
+- On staging, remember it sleeps when idle: no requests, no data.
+
+## Alerts
+
+The rules are files in the repo: `ops/grafana/logs.rules.yaml` and `ops/grafana/metrics.rules.yaml`. Grafana imports them as Grafana-managed rules you can edit. `tests/test_alert_rules.py` keeps them matching the code: an event renamed in the code fails the tests instead of silencing its alert.
+
+**Installing or updating them, after a merge that changes either file:**
+1. In Grafana: **Alerting → Alert rules → More → Import to Grafana-managed rules**.
+2. **Logs file:** choose "YAML file" and `ops/grafana/logs.rules.yaml`. Set the data source to `grafanacloud-maroonstarfish2393-logs` and the folder to `gize-api`, then import.
+3. **Metrics file:** the same with `ops/grafana/metrics.rules.yaml` and `grafanacloud-maroonstarfish2393-prom`.
+4. **When updating:** delete the old rules in the `gize-api` folder first, so none is left behind twice.
+
+**Where alerts go:** **Alerting → Contact points**. The default email contact point gets everything. Set it to the address that should be woken, then press **Test**.
+
+**Telegram (paused):** no code change is needed.
+1. Create a Telegram group, then message **@BotFather**, send `/newbot`, and keep the token. It's a secret: it goes into Grafana only, never the repo, Render or chat.
+2. Add the bot to the group and send a message there.
+3. Get the chat ID: open `https://api.telegram.org/bot<token>/getUpdates` in your browser and use the `chat.id` of your message (a negative number for groups).
+4. **Contact points → New → Telegram**: enter the token and chat ID, then **Test**.
+5. Under **Notification policies**, send `severity=critical` there too.
+
+**On staging, two gaps are known and alert nowhere.** Startup warnings come again at every wake, so their alert (GizeApiMisconfigured) is production-only:
+- `observability_disabled setting=sentry_dsn`: Sentry isn't set up.
+- `sms_disabled`: AfroMessage isn't set.
+
+### GizeApiSecurityEventsSpike
+More than 20 rejected tokens, refused staff, denied requests or rate-limit hits in 5 minutes.
+- **Look:** in Explore, run `{service_name="gize-admin-api"} | category="security"` and look at `reason`, `route` and `staff_id`. One staff member with a stale token is noise; many reasons across routes is someone probing.
+- **Do:** if it's an attack, the rate limits already slow it, and a deactivated account (`staff_access_denied reason=inactive`) stays locked out. If one account is the source and looks taken over, deactivate it.
+
+### GizeApiStaffAccessChanged
+A staff account was invited, re-activated, de-activated or changed role.
+- **Look:** the line's `actor_staff_id` (who) and `staff_id` (whom), and the role.
+- **Do:** confirm it was meant with the admin who did it. If not, reverse it from the portal, and rotate that admin's password in Supabase.
+
+### GizeApiDependencyUnavailable
+The API can't reach Postgres or Redis (`dependency`). Requests that need it answer 503.
+- **Look:** Supabase status, and whether the project is paused; Render's Key Value service for Redis.
+- **Do:** fix the dependency. Nothing to restart: the API recovers by itself and logs `dependency_recovered`.
+
+### GizeApiUnhandledErrors
+A request failed with an error nothing handled: a bug.
+- **Look:** the line has `route`, `exception_type`, `exception_frames` and `request_id`. Follow the request ID to its trace and the other lines of that request.
+- **Do:** open a fix ticket with that detail. If it blocks riders or staff, roll back to the previous deploy ("Rolling back").
+
+### GizeApiMisconfigured
+Production started without a setting it needs: `observability_disabled` names it, and `sms_disabled` means `AFROMESSAGE_TOKEN` is missing.
+- **Do:** set it on Render and redeploy ("Production secrets" once production exists).
+
+### GizeApiServerErrors
+More than 5% of requests answered 5xx, out of at least 20, for 2 minutes.
+- **Look:**
+  - 503s usually come with GizeApiDependencyUnavailable;
+  - 500s with GizeApiUnhandledErrors;
+  - split by `http_target` to see which route.
+- **Do:** as for those two. After a deploy, roll back first and investigate after.
+
+### GizeApiSilent
+Production sent no telemetry for 15 minutes, having sent some in the last day.
+- **Look:** `/health/ready` from your machine.
+  - If it answers, the export is broken: check the Grafana token and the two Render settings.
+  - If it doesn't, the API is down: check Render's events.

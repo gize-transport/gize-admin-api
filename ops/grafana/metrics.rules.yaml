@@ -1,0 +1,40 @@
+# GZ-066: alert rules on the API's metrics (Grafana Cloud Prometheus), in Prometheus
+# rule-file form. Import into Grafana-managed rules with the metrics data source
+# (`grafanacloud-<stack>-prom`): RUNBOOK.md, "Alerts". tests/test_alert_rules.py checks it.
+groups:
+  - name: gize-api-metrics
+    interval: 1m
+    rules:
+      - alert: GizeApiServerErrors
+        # Over 5% of requests answered 5xx, out of at least 20 in 5 minutes (a single 503
+        # among a handful of requests is not an outage).
+        expr: >-
+          (
+            sum(increase(http_server_duration_milliseconds_count{job="gize-admin-api", http_status_code=~"5.."}[5m]))
+            / sum(increase(http_server_duration_milliseconds_count{job="gize-admin-api"}[5m]))
+          ) > 0.05
+          and sum(increase(http_server_duration_milliseconds_count{job="gize-admin-api"}[5m])) >= 20
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 5% of API requests are failing with 5xx.
+          description: >-
+            503s mean a dependency is down (see GizeApiDependencyUnavailable); 500s are
+            bugs (see GizeApiUnhandledErrors). Split by `http_target` in Explore.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapiservererrors
+
+      - alert: GizeApiSilent
+        # Production only, and only once it has sent data: silent until production exists.
+        expr: >-
+          count(last_over_time(target_info{job="gize-admin-api", deployment_environment_name="production"}[1d]))
+          unless count(last_over_time(target_info{job="gize-admin-api", deployment_environment_name="production"}[15m]))
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Production has sent no telemetry for 15 minutes.
+          description: >-
+            The API is down, or its telemetry export is broken (an expired Grafana token,
+            say). Check /health/ready first.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapisilent

@@ -385,10 +385,26 @@ Status: done · Depends on: GZ-002
 - Owner, after merge: turn on Dependabot alerts and security updates (Settings → Advanced Security). Acceptance is seen at the first Monday run.
 
 ### GZ-066 · Ship logs and route alerts
-Status: todo · Depends on: GZ-062 (hosting chosen)
+Status: done · Depends on: GZ-062 (hosting chosen)
 - Found in GZ-005 review: the JSON logs go to stderr and nothing ships them yet, so security-event alerts rely on Sentry warning events (`log_security_event`).
 - Ship stderr JSON logs to Grafana Cloud (Loki) with the host's log driver or an agent; alert rules for `category=security`, 5xx rate and `observability_disabled` to the Telegram group and email.
 - Acceptance: a forced security event and a forced 500 each reach the Telegram group within 5 minutes.
+- Owner decisions (2026-11-09): Grafana Cloud stack `maroonstarfish2393`, India region; Telegram paused (email first: RUNBOOK says how to add it later). Rules imported by hand, no Grafana token in the repo or on a machine. The misconfiguration alert is production-only, because staging sleeps when idle and logs its known gaps at every wake. PyYAML and its stubs added as dev-only dependencies, for the rule tests.
+- Built:
+  - **Log shipping:** every line written to stderr is shipped over the same OTLP connection as metrics and traces (no agent: Render's free plan can't run one, and no new setting).
+    - It's the very line written, scrubbed: one rendering, passed to `core/logging.set_log_export`. The event is the body and the fields are attributes (non-scalar fields as compact JSON); a line logged in a request carries its trace.
+    - The `opentelemetry`, `urllib3` and `requests` loggers stay on stderr only, so a failing export can't feed itself, and shipping can never break logging.
+    - Batched with a 5 s export timeout, flushed and stopped at shutdown. The worker ships too.
+    - The startup warnings (`observability_disabled`, `sms_disabled`) are now logged once shipping runs, so they reach Grafana.
+  - **Alert rules:** `ops/grafana/logs.rules.yaml` and `ops/grafana/metrics.rules.yaml`, in Prometheus rule-file form for Grafana's import.
+    - Rules: GizeApiSecurityEventsSpike, GizeApiStaffAccessChanged, GizeApiDependencyUnavailable, GizeApiUnhandledErrors, GizeApiMisconfigured (production), GizeApiServerErrors (over 5% 5xx out of at least 20 requests in 5 minutes), GizeApiSilent (production, once it has sent data).
+    - All seven queries checked against the stack's data sources.
+    - `tests/test_alert_rules.py` checks that every rule is complete and in RUNBOOK, that every event a rule waits for is one the code logs, and that every security event is in a security alert.
+  - **RUNBOOK:** "Grafana Cloud" (finding logs, metrics and traces), "Alerts" (import, contact points, Telegram later, staging's known gaps), and a section per alert. `render.yaml` declares the two OTLP settings as dashboard-only.
+- Found while checking staging's traces: request spans were all named `GET`.
+  - Cause: FastAPI 0.162 wraps included routers (`_IncludedRouter`), so matching `app.routes` before routing found only routes added on the app itself, and the tests used only those.
+  - Fix: spans now take the template of the route FastAPI chose, when the response starts (the instrumentation ends the span with the response's last part).
+  - Tested on real router routes. Metrics were never affected: they read the route after routing.
 
 ### GZ-063 · Load and failure drill
 Status: todo · Depends on: GZ-062

@@ -122,13 +122,6 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     if settings is None:
         settings = load_settings()
     configure_logging(settings.log_level)
-    # Production without them refuses to start (config.py) unless explicitly opted out.
-    if settings.app_env in {Environment.STAGING, Environment.PRODUCTION}:
-        for name in settings.missing_observability():
-            structlog.get_logger("gize_api.startup").warning("observability_disabled", setting=name)
-        if settings.afromessage_token is None:
-            # Every SMS fails (phone codes answer 503) until AFROMESSAGE_TOKEN is set.
-            structlog.get_logger("gize_api.startup").warning("sms_disabled")
     app = GizeAPI(
         title="Gize Admin API",
         version="v1",  # each released contract is an api-vX.Y.Z tag (docs/api-contract.md)
@@ -140,6 +133,16 @@ def create_app(settings: Settings | None = None) -> GizeAPI:
     )
     app.state.settings = settings
     app.telemetry = configure_telemetry(settings)
+    if app.telemetry is not None:
+        app.telemetry.ship_logs()  # GZ-066: from here on, every line reaches Grafana Cloud
+    # Logged once shipping runs: both alert (ops/grafana/alerts.yaml). Production without
+    # the observability settings refuses to start (config.py) unless explicitly opted out.
+    if settings.app_env in {Environment.STAGING, Environment.PRODUCTION}:
+        for name in settings.missing_observability():
+            structlog.get_logger("gize_api.startup").warning("observability_disabled", setting=name)
+        if settings.afromessage_token is None:
+            # Every SMS fails (phone codes answer 503) until AFROMESSAGE_TOKEN is set.
+            structlog.get_logger("gize_api.startup").warning("sms_disabled")
     configure_sentry(settings)
     app.cors_allowed_origins = settings.cors_allowed_origins
     install_exception_handlers(app)
