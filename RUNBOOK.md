@@ -196,12 +196,33 @@ Stack: https://maroonstarfish2393.grafana.net (India region). The API sends all 
 
 The rules are files in the repo: `ops/grafana/logs.rules.yaml` and `ops/grafana/metrics.rules.yaml`. Grafana imports them as Grafana-managed rules you can edit. `tests/test_alert_rules.py` keeps them matching the code: an event renamed in the code fails the tests instead of silencing its alert.
 
-**Installing or updating them, after a merge that changes either file:**
-1. In Grafana: **Alerting → Alert rules → More → Import to Grafana-managed rules**.
-2. **Logs file:** choose "YAML file" and `ops/grafana/logs.rules.yaml`. Set the data source to `grafanacloud-maroonstarfish2393-logs` and the folder to `gize-api`, then import.
-3. **Metrics file:** the same with `ops/grafana/metrics.rules.yaml` and `grafanacloud-maroonstarfish2393-prom`.
-4. **When updating:** delete the old rules in the `gize-api` folder first, so none is left behind twice.
-5. **If the logs data source isn't offered for a file import:** create the log rules by hand. Use **New alert rule**, the logs data source and the `gize-api` folder, then copy each rule's `expr`, `for`, labels and annotations from the file. The metrics file imports either way.
+**Installed (2026-11-09):**
+- The seven rules are in the `gize-api` folder, in two subfolders named after their files: `metrics.rules.yaml` and `logs.rules.yaml`.
+- Grafana's folder UID for `gize-api` is `ft62tc`.
+
+**Updating them after a merge that changes a file:** send the file to Grafana's import API. Each file is one rule group, and sending it again replaces that group in place, so nothing needs deleting first. The import form (**Alerting → Alert rules → Import**) handles only the metrics file: it offers no logs (Loki) data source.
+
+1. In Grafana, go to **Administration → Users and access → Service accounts → Add service account**, and create `gize-api-rules` with the **Editor** role. Add a token to it and copy the token.
+2. In a terminal at the repo root, run the command below for the file that changed:
+   - **Logs:** `FILE=logs DS=grafanacloud-logs`
+   - **Metrics:** `FILE=metrics DS=grafanacloud-prom`
+
+   It asks for the token without showing it, and keeps it out of your shell history.
+
+   ```bash
+   read -rs GRAFANA_TOKEN && FILE=logs DS=grafanacloud-logs && \
+   uv run python -c "import json,sys,yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1]))['groups'][0]))" \
+     "ops/grafana/${FILE}.rules.yaml" \
+   | curl --fail-with-body -sS -X POST \
+       "https://maroonstarfish2393.grafana.net/api/convert/prometheus/config/v1/rules/${FILE}.rules.yaml" \
+       -H "Authorization: Bearer ${GRAFANA_TOKEN}" -H "Content-Type: application/json" \
+       -H "X-Grafana-Alerting-Datasource-UID: ${DS}" -H "X-Grafana-Alerting-Folder-UID: ft62tc" \
+       --data-binary @- ; unset GRAFANA_TOKEN
+   ```
+
+   `{"status":"success"…}` means it's done.
+3. **Delete the token** in the service account. Keep the account itself for next time.
+4. In **Alert rules**, check that the `gize-api` rules show **Normal**, with no error, after a minute.
 
 Every rule except the two production-only ones counts each environment separately and names it in the alert's summary, so a staging problem never reads like a production outage.
 
