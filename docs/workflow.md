@@ -15,6 +15,13 @@ Every piece of work is a ticket in `docs/milestones.md` (IDs like `GZ-012`). Wor
 9. **Open the PR** with the template, titled `GZ-012: <ticket title>`. Set the ticket status to `in review`.
 10. After merge, set status to `done` and note any follow-up tickets you discovered (add them to `milestones.md` with new IDs; never silently expand scope).
 
+## Dependency updates (Dependabot)
+
+Dependabot's PRs (`deps:` titles, `dependabot/…` branches; GZ-065) are the one exception to "one ticket per PR": they need no ticket.
+- **Merging:** the merge rule still applies in full. Every check must be green, a person merges with a squash, and nothing auto-merges.
+- **Finishing it on the branch:** this is part of the update, as RUNBOOK's "Dependency updates" lists: the pins CI insists on, a regenerated `openapi.json`, and the raised minimums Dependabot writes into `pyproject.toml`.
+- **Code changes:** if an update needs anything more, close the PR and open a ticket.
+
 ## Plan template (post this before coding)
 
 ```

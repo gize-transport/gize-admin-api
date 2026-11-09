@@ -1,0 +1,110 @@
+# GZ-065: every pinned dependency gets an update PR, weekly. Each one goes through CI like
+# any other PR and is merged by a person once every check is green: nothing auto-merges
+# (docs/workflow.md, "Dependency updates"). Security updates (Settings > Advanced Security)
+# come as soon as an advisory is published, cooldown or not.
+#
+# Minor and patch updates are grouped into one PR per ecosystem; a major comes alone.
+# A release must be a few days old: time for a bad or hijacked one to be pulled.
+# The versions we can't take yet are ignored, each with its reason.
+# A version also written elsewhere fails CI until it follows (the Python and uv images, the
+# gitleaks hook, the Compose services: RUNBOOK.md, "Dependency updates"). oasdiff and the
+# Dockerfile's `# syntax` frontend are no ecosystem's: the weekly pin-check reports them.
+# pyproject's [tool.uv] required-version has a floor only: Dependabot runs its own uv,
+# usually newer than ours, and a ceiling would fail every run (dependabot-core#13199).
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Africa/Addis_Ababa"
+    cooldown:
+      default-days: 5
+    groups:
+      python-packages:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Africa/Addis_Ababa"
+    cooldown:
+      default-days: 5
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Africa/Addis_Ababa"
+    cooldown:
+      default-days: 5
+    groups:
+      images:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # pyproject: requires-python >=3.12,<3.13.
+      - dependency-name: "python"
+        versions: [">=3.13"]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Africa/Addis_Ababa"
+    cooldown:
+      default-days: 5
+    groups:
+      services:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Supabase runs Postgres 17: tests run on what production runs.
+      - dependency-name: "postgres"
+        versions: [">=18"]
+      # Render's Key Value runs Redis 7.4.
+      - dependency-name: "redis"
+        versions: [">=8"]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Africa/Addis_Ababa"
+    cooldown:
+      default-days: 5
+    groups:
+      hooks:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps"

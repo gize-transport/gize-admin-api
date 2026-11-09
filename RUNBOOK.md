@@ -130,6 +130,37 @@ The copy carries the tables' grants to `gize_app` and the Alembic version, so af
 
 Practise this on your local database before you rely on it. For production, choose a paid plan with daily backups or point-in-time recovery before launch.
 
+## Dependency updates
+
+Dependabot (`.github/dependabot.yml`) opens update PRs on Mondays.
+- **Grouping:** one PR per ecosystem for minor and patch updates, and a PR of its own for each major. The ecosystems are Python packages, GitHub Actions, the Docker images, the Compose services and the pre-commit hooks.
+- **Cooldown:** a release must be 5 days old before it's proposed.
+- **Merging:** each one is a normal PR. CI runs, and a person merges it only when every check is green: `gh pr checks <n> --watch`, then `gh pr merge <n> --squash --delete-branch`. Nothing merges by itself.
+
+**Before merging:**
+- Read a major's release notes.
+- After a runtime package or the Python image deploys, check staging's `/health/ready`.
+
+**Bumps CI fails on purpose:** some versions live in two places, so CI fails until both match. Finish these on the PR's branch, push, and CI runs again.
+- **Python image:** set `UV_PYTHON` to the new patch release in every workflow (`ci.yml`, `contract-release.yml`, `deploy-staging.yml`, `pin-check.yml`).
+- **uv image:** set `UV_VERSION` in `ci.yml`, `contract-release.yml` and `deploy-staging.yml`. In `pyproject.toml`, set the floor of `required-version` (a floor only: Dependabot runs its own, newer uv, which a ceiling would refuse) and the range of `uv_build`. Then run `uv lock`.
+- **gitleaks hook:** set `GITLEAKS_VERSION` and `GITLEAKS_SHA256` in `ci.yml`.
+- **Compose services (Postgres, Redis):** copy the new `image:` lines into the `services:` of `ci.yml`, so CI tests what developers run.
+
+**Normal parts of a Python package update:**
+- **Raised minimums:** Dependabot's uv updates also raise the minimum versions in `pyproject.toml` (`alembic>=…`).
+- **A changed contract:** a FastAPI or Pydantic update can change `openapi.json`. Regenerate it on the branch (`uv run python scripts/export_openapi.py`) and commit it; the contract check still refuses a breaking change.
+- **Anything more** (code changes, a breaking contract change) needs a ticket: close the PR.
+
+**The "Stale pins (weekly check)" issue:** the pin-check workflow reports the two pins no Dependabot ecosystem sees. It counts only releases at least 5 days old.
+- **oasdiff:** `OASDIFF_VERSION` and `OASDIFF_SHA256` in `ci.yml` and `contract-release.yml`. The checksum is the `linux_amd64` tarball's line in the release's checksums file on GitHub.
+- **Dockerfile frontend:** the digest on the first line (`# syntax=docker/dockerfile:1@sha256:…`); the issue shows the new one.
+- Bump them on a `chore/deps-<what>` branch, through a normal PR. The issue closes itself on the next Monday run, or run the workflow by hand from the Actions tab.
+
+**Versions Dependabot ignores:** Python 3.13+, Postgres 18+ and Redis 8+. These are decisions, not updates: each needs a ticket.
+
+**Security updates:** they come as soon as an advisory is published, whatever the cooldown, once *Dependabot alerts* and *Dependabot security updates* are on (Settings → Advanced Security).
+
 ## What the signals mean
 
 There's no alerting yet: shipping logs and alert rules come with GZ-066.

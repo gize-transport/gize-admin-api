@@ -1,0 +1,91 @@
+# Reports the pins no Dependabot ecosystem sees (GZ-065): oasdiff, written in two
+# workflows, and the Dockerfile's `# syntax` frontend digest. Keeps one open issue listing
+# the stale ones, and closes it once every pin is current. It changes no file.
+# Two jobs: `report` works it out with a read-only token; only `issue`, which runs no
+# project code, may write (issues only). Third-party actions are pinned to commit SHAs.
+name: Pin check
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"  # Mondays 06:00 Addis Ababa, with Dependabot's run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pin-check
+  cancel-in-progress: false
+
+env:
+  UV_PYTHON: "3.12.16"
+  TITLE: "Stale pins (weekly check)"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  report:
+    name: Compare the pins with what is published
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      body: ${{ steps.report.outputs.body }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.UV_PYTHON }}
+      - name: Report (standard library only)
+        id: report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/oasdiff/oasdiff/releases?per_page=30" > "${RUNNER_TEMP}/oasdiff.json"
+          curl --fail --silent --show-error --max-time 30 --output "${RUNNER_TEMP}/frontend.json" \
+            "https://hub.docker.com/v2/repositories/docker/dockerfile/tags/1"
+          python -m scripts.stale_pins --oasdiff "${RUNNER_TEMP}/oasdiff.json" \
+            --frontend "${RUNNER_TEMP}/frontend.json" > "${RUNNER_TEMP}/report.md"
+          cat "${RUNNER_TEMP}/report.md"
+          delimiter="body-$(openssl rand -hex 16)"
+          {
+            echo "body<<${delimiter}"
+            cat "${RUNNER_TEMP}/report.md"
+            echo "${delimiter}"
+          } >> "${GITHUB_OUTPUT}"
+
+  issue:
+    name: Keep the issue up to date
+    needs: report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write  # one issue; nothing else in this repo may be written
+    steps:
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ needs.report.outputs.body }}
+        run: |
+          # By exact title over the open issues (not search, whose index lags a new issue).
+          open="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 200 \
+            --json number,title --jq "map(select(.title == env.TITLE)) | .[0].number // empty")"
+          if [[ -z "${BODY}" ]]; then
+            if [[ -n "${open}" ]]; then
+              gh issue close "${open}" --repo "${GITHUB_REPOSITORY}" \
+                --comment "Every pin is current."
+            fi
+            exit 0
+          fi
+          printf '%s\n' "${BODY}" > "${RUNNER_TEMP}/body.md"
+          if [[ -n "${open}" ]]; then
+            gh issue edit "${open}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/body.md"
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" \
+              --body-file "${RUNNER_TEMP}/body.md"
+          fi

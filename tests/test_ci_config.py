@@ -8,9 +8,15 @@ written in more than one place from drifting apart.
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 CI = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 RELEASE = (ROOT / ".github" / "workflows" / "contract-release.yml").read_text()
+DOCKERFILE = (ROOT / "Dockerfile").read_text()
+DEPENDABOT = (ROOT / ".github" / "dependabot.yml").read_text()
+PIN_CHECK = (ROOT / ".github" / "workflows" / "pin-check.yml").read_text()
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
 
 EXPECTED_CHECKS = {
     "lint": "Lint, types, dependency audit",
@@ -45,10 +51,13 @@ def test_readme_lists_every_check_name() -> None:
 
 def test_uv_version_matches_dockerfile_and_pyproject() -> None:
     ci_uv = _one(r'^  UV_VERSION: "([\d.]+)"$', CI)
-    dockerfile = (ROOT / "Dockerfile").read_text()
     pyproject = (ROOT / "pyproject.toml").read_text()
-    assert _one(r"^ARG UV_IMAGE=ghcr\.io/astral-sh/uv:([\d.]+)@", dockerfile) == ci_uv
-    assert _one(r'^required-version = ">=([\d.]+),', pyproject) == ci_uv
+    assert _one(r"^FROM ghcr\.io/astral-sh/uv:([\d.]+)@sha256:[0-9a-f]{64} AS uv$", DOCKERFILE) == (
+        ci_uv
+    )
+    # A floor only: Dependabot runs its own, newer uv, which a ceiling refuses (GZ-065).
+    assert _one(r'^required-version = ">=([\d.]+)"$', pyproject) == ci_uv
+    assert _one(r'^requires = \["uv_build>=([\d.]+),<[\d.]+"\]$', pyproject) == ci_uv
 
 
 def test_gitleaks_version_matches_pre_commit_hook() -> None:
@@ -72,8 +81,11 @@ def test_ci_service_images_match_docker_compose() -> None:
 
 def test_ci_python_matches_docker_image() -> None:
     ci_python = _one(r'^  UV_PYTHON: "(3\.12\.\d+)"$', CI)
-    dockerfile = (ROOT / "Dockerfile").read_text()
-    assert _one(r"^ARG PYTHON_IMAGE=python:([\d.]+)-slim", dockerfile) == ci_python
+    stages = re.findall(r"^FROM python:([\d.]+)-slim-trixie@sha256:([0-9a-f]{64}) AS (\w+)$",
+                        DOCKERFILE, re.MULTILINE)  # fmt: skip
+    # The build and the image it fills: one Python, so Dependabot updates both together.
+    assert [stage for *_, stage in stages] == ["builder", "runtime"]
+    assert {(version, digest) for version, digest, _ in stages} == {(ci_python, stages[0][1])}
 
 
 def test_oasdiff_is_pinned_the_same_in_both_workflows() -> None:
@@ -120,3 +132,105 @@ def test_release_notes_come_from_the_notes_script() -> None:
     version_job = RELEASE.split("\n  release:\n", 1)[0]
     assert "python -m scripts.contract_notes" in version_job
     assert 'oasdiff" changelog --severity-levels' not in version_job  # the long text form
+
+
+# GZ-065: something proposes every update; nothing merges one but a person.
+
+
+def test_every_image_is_a_literal_digest_pinned_from_line() -> None:
+    """Dependabot reads only literal FROM lines: an ARG-built one would never be updated."""
+    froms = re.findall(r"^FROM (.+)$", DOCKERFILE, re.MULTILINE)
+    assert len(froms) == 3
+    for line in froms:
+        assert re.fullmatch(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64} AS \w+", line), line
+    assert "ARG " not in DOCKERFILE.split("\nFROM ", 1)[0]
+
+
+def test_every_action_is_pinned_to_a_commit() -> None:
+    for workflow in WORKFLOWS:
+        for action in re.findall(r"uses: (\S+)", workflow.read_text()):
+            assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", action), f"{workflow.name}: {action}"
+
+
+def _updates() -> dict[str, str]:
+    """Each update block of dependabot.yml, by ecosystem."""
+    blocks = re.split(r"^  - (?=package-ecosystem:)", DEPENDABOT, flags=re.MULTILINE)[1:]
+    return {_one(r'^package-ecosystem: "([\w-]+)"$', block): block for block in blocks}
+
+
+def test_dependabot_watches_every_kind_of_pin() -> None:
+    assert set(_updates()) == {"uv", "github-actions", "docker", "docker-compose", "pre-commit"}
+
+
+@pytest.mark.parametrize(
+    "ecosystem", ["uv", "github-actions", "docker", "docker-compose", "pre-commit"]
+)
+def test_each_ecosystem_is_weekly_grouped_and_cooled_down(ecosystem: str) -> None:
+    block = _updates()[ecosystem]
+    assert re.search(r'^    directory: "/"$', block, re.MULTILINE)
+    assert re.search(r'^      interval: "weekly"$', block, re.MULTILINE)
+    # Minor and patch together, one PR; a major alone, to be read on its own.
+    assert re.search(r'update-types: \["minor", "patch"\]', block)
+    # A release a few days old: time for a bad or hijacked one to be pulled.
+    assert re.search(r"^    cooldown:\n      default-days: [3-9]$", block, re.MULTILINE)
+    assert re.search(r'^      prefix: "deps"$', block, re.MULTILINE)
+
+
+@pytest.mark.parametrize(
+    ("ecosystem", "dependency", "versions"),
+    [
+        ("docker", "python", ">=3.13"),  # pyproject: >=3.12,<3.13
+        ("docker-compose", "postgres", ">=18"),  # Supabase runs 17
+        ("docker-compose", "redis", ">=8"),  # Render's Key Value runs 7.4
+    ],
+)
+def test_versions_we_cannot_take_are_ignored(
+    ecosystem: str, dependency: str, versions: str
+) -> None:
+    rule = rf'- dependency-name: "{re.escape(dependency)}"\n\s+versions: \["{versions}"\]'
+    assert re.search(rule, _updates()[ecosystem])
+
+
+def test_the_runbook_says_how_to_finish_a_python_or_uv_bump() -> None:
+    """Python and uv are pinned in the image and the workflows: an image bump fails CI until
+    the workflows follow (RUNBOOK, "Dependency updates"), never drifts quietly."""
+    runbook = (ROOT / "RUNBOOK.md").read_text()
+    assert "## Dependency updates" in runbook
+    for name in ("UV_PYTHON", "UV_VERSION", "required-version"):
+        assert name in runbook.split("## Dependency updates", 1)[1]
+
+
+def test_nothing_merges_on_its_own() -> None:
+    for workflow in WORKFLOWS:
+        text = workflow.read_text()
+        assert "gh pr merge" not in text, workflow.name
+        assert "--auto" not in text, workflow.name
+        assert "enable-pull-request-automerge" not in text, workflow.name
+
+
+def test_the_pin_check_runs_weekly_and_on_demand() -> None:
+    assert re.search(
+        r'^  schedule:\n    - cron: "\d+ \d+ \* \* 1"(  #.*)?$', PIN_CHECK, re.MULTILINE
+    )
+    assert re.search(r"^  workflow_dispatch:", PIN_CHECK, re.MULTILINE)
+
+
+def test_the_pin_check_writes_issues_only_from_a_job_running_no_project_code() -> None:
+    assert _one(r"^permissions:\n  contents: (\w+)$", PIN_CHECK) == "read"
+    assert "contents: write" not in PIN_CHECK
+    assert PIN_CHECK.count("issues: write") == 1
+    report_job, issue_job = PIN_CHECK.split("\n  issue:\n", 1)
+    assert "issues: write" in issue_job
+    assert "scripts." not in issue_job
+    assert "uv " not in issue_job
+    assert "python -m scripts.stale_pins" in report_job
+
+
+def test_every_workflow_uses_ci_s_python_and_actions() -> None:
+    """A Dependabot PR updates every workflow at once; these keep a hand edit honest too."""
+    ci_python = _one(r'^  UV_PYTHON: "([\d.]+)"$', CI)
+    ci_actions = set(re.findall(r"uses: (\S+)", CI))
+    for workflow in WORKFLOWS:
+        text = workflow.read_text()
+        assert set(re.findall(r'^  UV_PYTHON: "([\d.]+)"$', text, re.MULTILINE)) <= {ci_python}
+        assert set(re.findall(r"uses: (\S+)", text)) <= ci_actions, workflow.name

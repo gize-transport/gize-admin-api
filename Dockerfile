@@ -1,14 +1,15 @@
 # syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 # One image, three commands: `api` (default), `worker` and `migrate`. See docker/entrypoint.sh.
 
-# Keep the patch release in step with UV_PYTHON in .github/workflows/ci.yml.
-ARG PYTHON_IMAGE=python:3.12.16-slim-trixie@sha256:962f801b08c870ac2a51b72bf02dae38c9a4162319e5e882ec244e198188d54e
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.30@sha256:93b61e21202b1dab861092748e46bbd6e0e41dd84f59b9174efd2353186e1b47
+# Images are written on their FROM lines, not in ARGs: Dependabot reads only literal ones
+# (GZ-065). Both Python stages use the same image, which it updates together; keep its patch
+# release in step with UV_PYTHON, and uv's with UV_VERSION, in the workflows (RUNBOOK.md,
+# "Dependency updates"; tests/test_ci_config.py fails until they match).
 
-FROM ${UV_IMAGE} AS uv
+FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
 
 # --- build: resolve the locked runtime dependencies into /opt/venv -----------------------
-FROM ${PYTHON_IMAGE} AS builder
+FROM python:3.12.16-slim-trixie@sha256:962f801b08c870ac2a51b72bf02dae38c9a4162319e5e882ec244e198188d54e AS builder
 COPY --from=uv /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -23,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
 # --- runtime: no build tools, no uv, non-root ---------------------------------------------
-FROM ${PYTHON_IMAGE} AS runtime
+FROM python:3.12.16-slim-trixie@sha256:962f801b08c870ac2a51b72bf02dae38c9a4162319e5e882ec244e198188d54e AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}"
