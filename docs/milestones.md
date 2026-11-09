@@ -413,6 +413,10 @@ Status: done · Depends on: GZ-062 (hosting chosen)
   - The log flush runs last at shutdown: the SDK's flush ignores its timeout.
   - Stricter tests: events must appear as call arguments; environment grouping; the status label; no router included with a prefix (it would drop out of span, log and metric names).
   - RUNBOOK: a manual fallback in case the logs data source isn't offered for a file import.
+- Installed (2026-11-09):
+  - **Rules:** the metrics file was imported through Grafana's form. The form offers no Loki data source, so the logs file went through Grafana's import API (`/api/convert/prometheus/config/v1/rules/<namespace>`). All seven were read back and run with no errors. RUNBOOK now gives the API command for updates; it replaces a group in place.
+  - **Notifications:** the stack's default policy sent everything to an `empty` contact point. The owner made a `gize-api-email` contact point the default.
+  - **End to end:** 25 forged tokens on staging made GizeApiSecurityEventsSpike fire (`staging`), and the email went out with no error.
 
 ### GZ-063 · Load and failure drill
 Status: todo · Depends on: GZ-062
