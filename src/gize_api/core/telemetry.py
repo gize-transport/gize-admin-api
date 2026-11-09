@@ -1,9 +1,10 @@
-"""OpenTelemetry traces and metrics, exported over OTLP/HTTP (Grafana Cloud).
+"""OpenTelemetry traces, metrics and logs, exported over OTLP/HTTP (Grafana Cloud).
 
 Off unless OTEL_EXPORTER_OTLP_ENDPOINT is set (local runs and tests need nothing).
 
-- Request spans are named by route template. URL attributes carry the template, never the
-  raw path or query; client address, user agent and Host are blanked.
+- Request spans are named by route template (the one the app chose, after routing). URL
+  attributes carry the template, never the raw path or query; client address, user agent
+  and Host are blanked.
 - Metrics keep only method, status and route: client-controlled values (Host) would let
   anyone create unbounded series.
 - Trace context sent by clients is ignored (they are the public internet); new traces are
@@ -15,12 +16,18 @@ Off unless OTEL_EXPORTER_OTLP_ENDPOINT is set (local runs and tests need nothing
   literal replaced by `?`, never parameters or error text, with per-operation duration and
   error metrics. Requests failed by an unavailable database are counted.
 
+- Logs (GZ-066): every line written to stderr is shipped as it was written, scrubbed
+  (core/logging.py), its fields as attributes and its event as the body, linked to the
+  trace it was logged in. Shipping starts with `ship_logs()`, once the app is built.
+
 Outbound httpx instrumentation (GZ-008) joins when that client lands.
 """
 
 import asyncio
 import contextlib
 import functools
+import json
+import logging
 import re
 import threading
 import time
@@ -29,11 +36,20 @@ from dataclasses import dataclass
 from typing import Any
 
 import structlog
+from opentelemetry import trace
+from opentelemetry._logs import SeverityNumber
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 from opentelemetry.metrics import Counter, Histogram
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import (
+    BatchLogRecordProcessor,
+    LogRecordExporter,
+    SimpleLogRecordProcessor,
+)
 from opentelemetry.sdk.metrics import AlwaysOffExemplarFilter, MeterProvider
 from opentelemetry.sdk.metrics.export import MetricReader, PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import View
@@ -46,10 +62,10 @@ from redis.asyncio import Redis
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.routing import BaseRoute, Match
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from gize_api.core.config import Settings
-from gize_api.core.logging import known_method
+from gize_api.core.logging import known_method, log_export, set_log_export
 
 EXPORT_TIMEOUT_SECONDS = 5
 SHUTDOWN_BUDGET_SECONDS = 5.0
@@ -123,10 +139,48 @@ _TRACE_CONTEXT_HEADERS = frozenset({b"traceparent", b"tracestate", b"baggage"})
 logger = structlog.get_logger("gize_api.telemetry")
 
 
+_SEVERITY = (
+    (logging.CRITICAL, SeverityNumber.FATAL),
+    (logging.ERROR, SeverityNumber.ERROR),
+    (logging.WARNING, SeverityNumber.WARN),
+    (logging.INFO, SeverityNumber.INFO),
+)
+
+
 @dataclass(frozen=True)
 class Telemetry:
     tracer_provider: TracerProvider
     meter_provider: MeterProvider
+    logger_provider: LoggerProvider | None = None
+
+    def ship_logs(self) -> None:
+        """Ship every line written from now on (core/logging.py), until shutdown."""
+        if self.logger_provider is not None:
+            set_log_export(self._ship)
+
+    def stop_shipping_logs(self) -> None:
+        """Stop shipping, if these are the lines' destination (another app's are left be)."""
+        if log_export() == self._ship:
+            set_log_export(None)
+
+    def _ship(self, record: logging.LogRecord, line: str) -> None:
+        fields = json.loads(line)
+        body = fields.pop("event", None)
+        self._log_emitter.emit(
+            timestamp=int(record.created * 1e9),
+            severity_number=next(
+                (number for level, number in _SEVERITY if record.levelno >= level),
+                SeverityNumber.DEBUG,
+            ),
+            severity_text=record.levelname,
+            body=body if isinstance(body, str) else line,
+            attributes=_log_attributes(fields),
+        )
+
+    @functools.cached_property
+    def _log_emitter(self) -> Any:  # noqa: ANN401 - the SDK's Logger
+        assert self.logger_provider is not None  # noqa: S101 - only shipped with one
+        return self.logger_provider.get_logger("gize_api")
 
     def wrap(self, app: ASGIApp, routes: Sequence[BaseRoute]) -> ASGIApp:
         """Trace and measure every request, outermost in the stack (see main.GizeAPI).
@@ -136,7 +190,7 @@ class Telemetry:
         marks the span as an error from the status code alone.
         """
         traced = OpenTelemetryMiddleware(
-            app,
+            _NameSpanByRoute(app),
             excluded_urls=EXCLUDED_URLS,
             default_span_details=_span_details(routes),
             server_request_hook=lambda span, scope: _scrub_request_span(span, scope, routes),
@@ -325,12 +379,19 @@ class Telemetry:
         def remaining_ms() -> int:
             return max(0, int((deadline - time.monotonic()) * 1000))
 
+        self.stop_shipping_logs()
         steps: list[tuple[str, Callable[[], object]]] = [
             ("trace_flush", lambda: self.tracer_provider.force_flush(remaining_ms())),
             ("metric_flush", lambda: self.meter_provider.force_flush(remaining_ms())),
             ("trace_shutdown", self.tracer_provider.shutdown),
             ("metric_shutdown", lambda: self.meter_provider.shutdown(max(1, remaining_ms()))),
         ]
+        logs = self.logger_provider
+        if logs is not None:
+            # Last: the SDK's log flush ignores its timeout, so it must not use up the
+            # budget before traces and metrics are out.
+            steps.append(("log_flush", lambda: logs.force_flush(remaining_ms())))
+            steps.append(("log_shutdown", logs.shutdown))
         for name, step in steps:
             if name.endswith("_flush") and remaining_ms() == 0:
                 continue
@@ -345,13 +406,20 @@ def configure_telemetry(
     *,
     span_exporter: SpanExporter | None = None,
     metric_reader: MetricReader | None = None,
+    log_exporter: LogRecordExporter | None = None,
 ) -> Telemetry | None:
     """Set up providers, or return None when nothing would be exported.
 
-    `span_exporter` and `metric_reader` replace the OTLP exporters (tests use in-memory ones).
+    `span_exporter`, `metric_reader` and `log_exporter` replace the OTLP exporters (tests
+    use in-memory ones). Logs are shipped only once `ship_logs()` is called.
     """
     endpoint = settings.otel_exporter_otlp_endpoint
-    if endpoint is None and span_exporter is None and metric_reader is None:
+    if (
+        endpoint is None
+        and span_exporter is None
+        and metric_reader is None
+        and (log_exporter is None)
+    ):
         return None
     headers = settings.otlp_headers()
 
@@ -398,7 +466,41 @@ def configure_telemetry(
         views=[View(instrument_name="http.server.*", attribute_keys=set(_METRIC_ATTRIBUTES))],
         shutdown_on_exit=False,
     )
-    return Telemetry(tracer_provider=tracer_provider, meter_provider=meter_provider)
+    logger_provider: LoggerProvider | None = None
+    if log_exporter is not None or endpoint is not None:
+        logger_provider = LoggerProvider(resource=resource, shutdown_on_exit=False)
+        if log_exporter is not None:
+            logger_provider.add_log_record_processor(SimpleLogRecordProcessor(log_exporter))
+        else:
+            otlp_logs = OTLPLogExporter(
+                endpoint=f"{endpoint}/v1/logs", headers=headers, timeout=EXPORT_TIMEOUT_SECONDS
+            )
+            # Each export is bounded by the exporter's own timeout (the processor's
+            # export_timeout_millis is unused in SDK 1.45).
+            logger_provider.add_log_record_processor(BatchLogRecordProcessor(otlp_logs))
+    return Telemetry(
+        tracer_provider=tracer_provider,
+        meter_provider=meter_provider,
+        logger_provider=logger_provider,
+    )
+
+
+def _log_attributes(fields: dict[str, Any]) -> dict[str, Any]:
+    """A shipped line's fields as attributes: scalars and lists of text as they are, other
+    shapes as compact JSON, nulls left out (the timestamp is the record's own)."""
+    attributes: dict[str, Any] = {}
+    for key, value in fields.items():
+        if value is None or key == "timestamp":
+            continue
+        if isinstance(value, bool | float | str) or (
+            isinstance(value, int) and -(2**63) <= value < 2**63
+        ):
+            attributes[key] = value  # OTLP integers are 64-bit: a bigger one goes as JSON
+        elif isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+            attributes[key] = tuple(value)
+        else:
+            attributes[key] = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return attributes
 
 
 def _statement_text(statement: str) -> str:
@@ -440,6 +542,45 @@ def _route_template(routes: Sequence[BaseRoute], scope: Scope) -> str | None:
         if match == Match.FULL and isinstance(path, str):
             return path
     return None
+
+
+class _NameSpanByRoute:
+    """Name the request span after the route the app chose (GZ-066).
+
+    FastAPI 0.162 wraps included routers (`_IncludedRouter`), so matching `app.routes`
+    before routing finds only routes added on the app itself: the app's own requests were
+    named `GET`. FastAPI records the chosen route in the scope; when the response starts
+    (routing done, and before the instrumentation ends the span with the response's last
+    part), the span takes its template, as the request metrics already do.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        span = trace.get_current_span()
+
+        async def named(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                _name_by_route(span, scope)
+            await send(message)
+
+        await self.app(scope, receive, named)
+
+
+def _name_by_route(span: Span, scope: Scope) -> None:
+    template = getattr(scope.get("route"), "path_format", None)
+    if not isinstance(template, str) or not span.is_recording():
+        return
+    span.update_name(f"{known_method(str(scope.get('method', 'HTTP')))} {template}")
+    span.set_attribute("http.route", template)
+    present = span.attributes if isinstance(span, ReadableSpan) else None
+    for name in _URL_ATTRIBUTES:
+        if name in (present or {}) and name != "url.query":
+            span.set_attribute(name, template)
 
 
 def _span_details(

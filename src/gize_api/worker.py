@@ -145,7 +145,9 @@ async def startup(ctx: dict[str, Any]) -> None:
     configure_logging(settings.log_level)
     logging.getLogger("arq").setLevel(logging.WARNING)  # our `@job` lines replace its own
     configure_sentry(settings)
-    ctx["telemetry"] = configure_telemetry(settings)
+    ctx["telemetry"] = telemetry = configure_telemetry(settings)
+    if telemetry is not None:
+        telemetry.ship_logs()  # GZ-066: the worker's lines reach Grafana Cloud too
     ctx["engine"] = create_engine(settings)
     ctx["sessionmaker"] = create_sessionmaker(ctx["engine"])
     logger.info("worker_started")

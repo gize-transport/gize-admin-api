@@ -402,3 +402,24 @@ def test_any_other_stored_exception_keeps_only_its_type() -> None:
 
     stored = serialize_job({"r": ValueError("a message with 0911223344")})
     assert json.loads(stored) == {"r": {"error": "ValueError"}}
+
+
+async def test_the_worker_ships_its_logs_until_shutdown(
+    make_settings: SettingsFactory, database: DatabaseUrls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GZ-066: the worker's lines reach Grafana Cloud too, from startup to shutdown."""
+    from gize_api import worker
+    from gize_api.core import telemetry as telemetry_module
+    from tests.support import memory_log_exporter
+
+    exported = memory_log_exporter()
+    real = telemetry_module.configure_telemetry
+    monkeypatch.setattr(
+        worker, "configure_telemetry", lambda settings: real(settings, log_exporter=exported)
+    )
+    ctx: dict[str, Any] = {"settings": make_settings(database_url=database.app)}
+    await worker.startup(ctx)
+    await worker.shutdown(ctx)
+    bodies = [record.log_record.body for record in exported.get_finished_logs()]
+    assert "worker_started" in bodies
+    assert "worker_stopped" not in bodies  # logged after telemetry shut down: stderr only

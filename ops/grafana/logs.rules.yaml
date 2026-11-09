@@ -1,0 +1,89 @@
+# GZ-066: alert rules on the API's logs (Grafana Cloud Loki), in Prometheus rule-file form.
+# Import into Grafana-managed rules with the logs data source (`grafanacloud-<stack>-logs`):
+# RUNBOOK.md, "Alerts". Each shipped line's event is its body; its fields (category,
+# dependency, …) are searchable after `|`. tests/test_alert_rules.py checks this file.
+groups:
+  - name: gize-api-logs
+    interval: 1m
+    rules:
+      - alert: GizeApiSecurityEventsSpike
+        expr: >-
+          sum by (deployment_environment_name) (count_over_time({service_name="gize-admin-api"}
+          | category="security" | reason!~"missing|expired"
+          |~ "^(token_rejected|staff_access_denied|permission_denied|rate_limit_exceeded)$" [5m])) > 20
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            {{ $labels.deployment_environment_name }}: more than 20 forged or wrong tokens,
+            refused staff, denied requests or rate-limit hits in 5 minutes.
+          description: >-
+            Someone may be guessing tokens, probing staff routes or hammering a public
+            endpoint. In Explore, group these lines by `reason` and `route`. Missing and
+            expired tokens are left out: a tab left open after its session ends sends those.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapisecurityeventsspike
+
+      - alert: GizeApiStaffAccessChanged
+        expr: >-
+          sum by (deployment_environment_name) (count_over_time({service_name="gize-admin-api"}
+          | category="security"
+          |~ "^(staff_invited|staff_role_changed|staff_reactivated|staff_deactivated)$" [5m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            {{ $labels.deployment_environment_name }}: a staff account was invited,
+            re-activated, de-activated or changed role.
+          description: >-
+            Check it was meant: the line names the staff member changed and who did it
+            (`staff_id`, `actor_staff_id`).
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapistaffaccesschanged
+
+      - alert: GizeApiDependencyUnavailable
+        expr: >-
+          sum by (deployment_environment_name, dependency) (count_over_time({service_name="gize-admin-api"}
+          |~ "^dependency_unavailable$" [5m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.deployment_environment_name }}: the API cannot reach {{ $labels.dependency }}."
+          description: >-
+            Readiness checks are failing for Postgres or Redis: requests that need it answer
+            503. The line repeats each minute while it lasts and `dependency_recovered`
+            follows when it is back.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapidependencyunavailable
+
+      - alert: GizeApiUnhandledErrors
+        expr: >-
+          sum by (deployment_environment_name) (count_over_time({service_name="gize-admin-api"}
+          |~ "^unhandled_error$" [5m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.deployment_environment_name }}: the API answered 500 for an error nothing handled."
+          description: >-
+            A bug, most likely. The line has the route, the exception type and its frames
+            (never its message) and the request ID to follow in traces.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapiunhandlederrors
+
+      - alert: GizeApiMisconfigured
+        # Production only: staging sleeps when idle and logs its known gaps at every wake.
+        expr: >-
+          sum by (setting) (count_over_time({service_name="gize-admin-api"}
+          | deployment_environment_name="production"
+          |~ "^(observability_disabled|sms_disabled)$" [15m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Production started without Sentry or SMS configured.
+          description: >-
+            `observability_disabled` names the missing setting; `sms_disabled` means every
+            SMS fails (phone codes answer 503) until AFROMESSAGE_TOKEN is set. A missing
+            Grafana endpoint can't be seen here (nothing is shipped then): production
+            refuses to start without it unless explicitly opted out.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapimisconfigured
