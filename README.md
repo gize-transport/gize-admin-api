@@ -595,7 +595,7 @@ There is no branch protection on our plan, so CLAUDE.md's merge rules are the pr
   - `oasdiff breaking --fail-on WARN`: removing or renaming anything, making a field or parameter required, changing a type, tightening a limit;
   - `scripts/contract_codes.py`: removing an error code, or dropping one from an operation. oasdiff can't see these (`x-error-codes` is our own extension).
 
-  New response enum values (an error code, a role) are allowed by `docs/api-contract.md`, but oasdiff 1.33 counts them as breaking. `.github/oasdiff-levels.txt` lowers that one check to info; it can't hold comments, oasdiff reads every line.
+  New response enum values (an error code, a role) are allowed by `docs/api-contract.md`, but oasdiff (1.33 and later) counts them as breaking. `.github/oasdiff-levels.txt` lowers that one check to info; it can't hold comments, oasdiff reads every line.
 
   Follow the deprecation steps in `docs/api-contract.md`. Only the owner adds the `breaking-change-approved` label to let one through. The approval sticks to the PR: after pushing more commits, remove and re-add the label so it covers what was added. "Re-run jobs" uses the labels from the original run.
 - **Releases are automatic.** When a merge to `main` changes `openapi.json`, `.github/workflows/contract-release.yml` tags `api-vX.Y.Z` and attaches the file to a GitHub release:

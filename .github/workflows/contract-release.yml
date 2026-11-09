@@ -22,8 +22,8 @@ env:
   UV_PYTHON: "3.12.16"
   UV_VERSION: "0.13.7"
   # Keep in step with ci.yml (checked by tests/test_ci_config.py).
-  OASDIFF_VERSION: "1.33.0"
-  OASDIFF_SHA256: "43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247"
+  OASDIFF_VERSION: "1.35.0"
+  OASDIFF_SHA256: "a8023002fcb2eaa7f5758148a9303cb63d33b939886df312268bc0fc7b939140"
 
 defaults:
   run:
