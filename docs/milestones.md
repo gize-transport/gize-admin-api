@@ -358,6 +358,7 @@ Status: done (brought forward before M3; GZ-061 stays where it is) · Depends on
 - Done when: the owner has followed RUNBOOK "First staging setup", a merge to `main` deploys by itself, and `/health/ready` and a signed-in `/v1/staff/me` answer on staging.
 - Live (2026-11-02): `https://gize-api-staging.onrender.com`. The owner followed the first setup (bootstrap, first migration, Blueprint, GitHub secrets, first admin). From outside: `/health/live` and `/health/ready` 200, unauthenticated and forged-token requests 401, `/docs` served, no CORS for unknown origins. The deploy workflow ran end to end on `26014af` (tip check, migrations as `gize_migrator` with verify-full, deploy hook) and staging stayed ready throughout. Still to see: a signed-in `/v1/staff/me` on staging, once the frontend points at it.
 - Found during setup: a value pasted into Render with extra characters fails startup with a `database_url` format error (the value itself is never logged). RUNBOOK's copy command avoids it. The first admin's name on staging is the placeholder "Your Name"; staff names can't be changed through the API yet (follow-up).
+- 2026-11-10: the admin portal is at `https://admin.gizetransport.com`. It's the staging API's one CORS origin (`CORS_ALLOWED_ORIGINS`, now declared in `render.yaml`; owner set it on Render).
 
 ### GZ-064 · Overview summary endpoint
 Status: done · Depends on: GZ-040, GZ-041, GZ-053

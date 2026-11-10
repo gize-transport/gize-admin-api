@@ -10,12 +10,13 @@ How to set up, deploy, roll back and look after the hosted API. Staging only for
 | Redis | Render Key Value `gize-redis-staging` (free plan) | Private network only. It loses its data on restart, which only resets rate limits for now. |
 | Database and sign-in | Supabase project `pahktmbnbyulqkhdruci` (eu-west-1) | Postgres schema `gize` plus Supabase Auth. The free plan has no automatic backups and pauses after about a week without activity (unpause it in the dashboard). |
 | Deploys | `.github/workflows/deploy-staging.yml` | After CI passes on `main`: migrations, then Render's deploy hook for that commit. |
+| Admin portal (CORS) | `https://admin.gizetransport.com` | The only browser origin allowed (`CORS_ALLOWED_ORIGINS` in `render.yaml`, 2026-11-10). Add more comma-separated: `https`, no path, no trailing slash. |
+| Logs, metrics, traces, alerts | Grafana Cloud stack `maroonstarfish2393` (India) | See "Grafana Cloud" and "Alerts" below. |
 
 Not running on staging yet:
 - **The worker:** it only clears old idempotency keys until M3 sends SMS, and Render's free plan has no workers.
-- **CORS origins:** the frontend isn't deployed yet.
 - **`CLIENT_IP_HEADER`:** Render documents no trustworthy client-IP header; this must be settled before the public sign-up routes (M3).
-- **Sentry and Grafana:** optional on staging. The API logs `observability_disabled` at startup.
+- **Sentry:** optional on staging, so the API logs `observability_disabled setting=sentry_dsn` at startup. Grafana is set up (GZ-066).
 
 ## Staging secrets
 
