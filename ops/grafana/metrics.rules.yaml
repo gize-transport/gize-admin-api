@@ -39,3 +39,19 @@ groups:
             The API is down, or its telemetry export is broken (an expired Grafana token,
             say). Check /health/ready first.
           runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapisilent
+
+      - alert: GizeApiSmsFailing
+        # Production only: staging has no AfroMessage token, so every send there fails (GZ-063).
+        # The outcomes are integrations/sms.py's SmsFailure kinds.
+        expr: >-
+          sum by (deployment_environment_name) (increase(gize_sms_send_duration_seconds_count{job="gize-admin-api", deployment_environment_name="production", outcome=~"unavailable|rejected|timeout"}[15m])) >= 3
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.deployment_environment_name }}: SMS sends are failing (3 or more in 15 minutes)."
+          description: >-
+            AfroMessage is down, refusing our messages or timing out: phone codes answer 503,
+            launch messages are marked failed (staff can retry them) and offers show their
+            SMS failed (staff call the person). Split by `outcome` and `purpose` in Explore.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapismsfailing

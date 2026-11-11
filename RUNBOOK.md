@@ -272,6 +272,19 @@ More than 5% of requests answered 5xx, out of at least 20, for 2 minutes.
   - split by `http_target` to see which route.
 - **Do:** as for those two. After a deploy, roll back first and investigate after.
 
+### GizeApiSmsFailing
+Production: 3 or more SMS sends failed in 15 minutes (AfroMessage unavailable, refusing or timing out).
+- **What riders see:** phone codes answer 503, so people can't register on the website. Launch messages are marked failed, and offers show `sms_status: failed`.
+- **Look:**
+  - AfroMessage's status, and your balance and sender name in its dashboard;
+  - in Explore, `gize_sms_send_duration_seconds_count` split by `outcome` and `purpose`.
+  - `rejected` usually means the token, the sender name or the balance; `unavailable` and `timeout` are their side.
+- **Do:**
+  - fix the account if it's ours;
+  - tell callers to try again later;
+  - once sends work, retry the failed launch messages from the route (`launch-messages/retry`);
+  - call the people whose offers show a failed SMS. An offer's SMS isn't resent.
+
 ### GizeApiSilent
 Production sent no telemetry for 15 minutes, having sent some in the last day.
 - **Look:** `/health/ready` from your machine.
