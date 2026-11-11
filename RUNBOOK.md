@@ -175,6 +175,26 @@ Logs, metrics and traces are in Grafana Cloud (next section); this table is for 
 | `403` for a signed-in user | They aren't active staff in this database | An admin invites them, or the first-admin step is missing. |
 | `observability_disabled` at startup | Sentry or Grafana isn't configured | Expected on staging for Sentry (not set up yet). In production it alerts: GizeApiMisconfigured. |
 
+## Drills
+
+The last drill's results are in `docs/drills/2026-11-11-staging.md`. Repeat it before production, and after any change to timeouts, rate limits, alerts or hosting. Run it on **staging only**, while nobody else is using it.
+
+1. **A staff token, about an hour:**
+   - `uv run python -m scripts.drill_token` asks for the publishable key, an email and a password, for an account that has a password.
+   - **Or copy the portal's token:** reload a data page in the admin portal, then DevTools → Network → an `onrender` request → right-click **authorization** → **Copy value**. Then run:
+     `pbpaste | tr -d ' \r\n' | sed 's/^Bearer//' > ~/.gize-drill-token && chmod 600 ~/.gize-drill-token`
+2. **Data:** `uv run python -m scripts.drill_seed seed --token-file ~/.gize-drill-token`
+   - It takes about 12 minutes. Every ID created goes into `~/.gize-drill-seed.json`.
+   - Add `--launch 5` **only while staging has no AfroMessage token**: launches text their riders.
+3. **Load:** `uv run python -m scripts.load_drill --minutes 10 --token-file ~/.gize-drill-token`. Keep away from the portal meanwhile: it shares the account's limit.
+4. **Drills, each under a shorter load (`--minutes 4`):**
+   - **Database slow:** hold an `ACCESS EXCLUSIVE` lock on `gize.routes` for 60 s as `gize_migrator` (`.env.staging`), in a transaction that rolls back.
+   - **Redis down:** suspend `gize-redis-staging` in Render, wait for GizeApiDependencyUnavailable's email (about 2 minutes), then resume it.
+   - **SMS down:** staging without a token already is.
+5. **Clean up:**
+   - `uv run python -m scripts.drill_seed remove --token-file ~/.gize-drill-token` (about 12 minutes; it can run again if interrupted);
+   - then `rm ~/.gize-drill-token ~/.gize-drill-seed.json`.
+
 ## Grafana Cloud: logs, metrics, traces
 
 Stack: https://maroonstarfish2393.grafana.net (India region). The API sends all three over OTLP, using `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` on Render. Both come from the stack's **Connections → OpenTelemetry (OTLP)** page.

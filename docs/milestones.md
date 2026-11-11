@@ -420,5 +420,42 @@ Status: done · Depends on: GZ-062 (hosting chosen)
   - **End to end:** 25 forged tokens on staging made GizeApiSecurityEventsSpike fire (`staging`), and the email went out with no error.
 
 ### GZ-063 · Load and failure drill
-Status: todo · Depends on: GZ-062
+Status: done · Depends on: GZ-062
 - Light load test at expected peak (staff + registration traffic); drills: Redis down, DB slow, SMS down – confirm behaviour and alerts.
+- Owner decisions (2026-11-10): 5 staff on one account and about 1 visitor a second, for 10 minutes; drill data made through the API and removed afterwards; the owner suspends and resumes Redis in Render; an SMS-failure alert is added.
+- Built:
+  - `scripts/load_drill.py` (staff, visitors and phone codes; p50/p95 and status counts);
+  - `scripts/drill_seed.py` (seed and remove through the API; every ID kept in a state file; launches only on request);
+  - `scripts/drill_token.py` (a staff sign-in kept out of the terminal and the chat);
+  - **GizeApiSmsFailing** (production): 3 or more failed sends in 15 minutes;
+  - RUNBOOK "Drills"; tests in `tests/test_load_drill.py` and `tests/test_alert_rules.py`.
+- **Ran 2026-11-11 on staging** (`docs/drills/2026-11-11-staging.md`):
+  - **Load:** 1,339 requests in 10 minutes, all as expected. Staff p95 at most 738 ms; public p95 at most 379 ms.
+  - **SMS down:** launches recorded 65 of 65 messages as failed, visible and retryable.
+  - **Database slow:** routes-dependent requests answered 503 after 3 s, the rest went on, and readiness stayed up. **The 5xx alert didn't fire.**
+  - **Redis down:** reads went on (failing open), phone codes answered 503, readiness stayed up, and GizeApiDependencyUnavailable emailed within about 2 minutes. p95 rose to about 1.4 s.
+- Findings, each its own ticket: GZ-070 (alerts that miss short bursts), GZ-071 (histogram buckets), GZ-072 (shared client address on Render), GZ-073 (Redis timeout per request). Two notes for the owner: launched-but-not-started riders count as neither riding nor reserved on the overview; production should put the API and the database in one region.
+- Also closed GZ-062's last item: a signed-in `GET /v1/staff/me` on staging answered 200 (admin).
+
+### GZ-070 · Alerts that catch short outages
+Status: todo · Depends on: GZ-066
+- Found in GZ-063: GizeApiServerErrors missed a one-minute burst of 63 503s.
+  - Each new route and status series reaches Grafana with its count already in it, since metrics are exported every 60 s, and `increase()` starts from that first sample.
+  - GizeApiSmsFailing has the same weakness.
+- Count 5xx from the access log lines (`request` with `status`), and SMS failures from `sms_failed`. Both log-based, as the dependency alert is, which fired correctly.
+- Prove it by repeating the database-slow drill: the alert must fire.
+
+### GZ-071 · Timing histograms in seconds with seconds buckets
+Status: todo · Depends on: GZ-005
+- Found in GZ-063: `db.client.operation.duration`, `http.client.request.duration`, `gize.sms.send.duration` and `gize.job.duration` are recorded in seconds, but use the SDK's default bucket boundaries (0–10000, sized for milliseconds). Every sample falls in the first bucket, so percentiles read 2.5 s / 4.75 s for 20 ms queries.
+- Give them seconds boundaries (OTel's advisory `explicit_bucket_boundaries_advisory`, 0.005 … 10 s), with a test on the exported boundaries.
+
+### GZ-072 · A trustworthy client address on Render
+Status: todo · Depends on: GZ-009 · **Before the public website launches**
+- Found in GZ-063: uvicorn runs with `--no-proxy-headers` and `CLIENT_IP_HEADER` is unset. On Render, every caller has the proxy's address, so all visitors share one 60-a-minute read limit and the sign-up and SMS limits. One test machine reached it twice.
+- Find what Render guarantees about the client's address (which header, whether clients can forge it); set `CLIENT_IP_HEADER` or trust the proxy's `X-Forwarded-For` hop accordingly. Prove it with two sources.
+
+### GZ-073 · No Redis wait on every request while Redis is down
+Status: todo · Depends on: GZ-009
+- Found in GZ-063: with Redis suspended, each request waited out the rate limiter's Redis timeout (about 1 s) before failing open. p95 went from about 0.5 s to about 1.4 s.
+- After a failure, skip Redis for a short time (fail open, or closed, as each policy says) and retry in the background. Keep the alert and the once-a-minute log line.
