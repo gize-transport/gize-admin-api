@@ -8,8 +8,8 @@ code). Runs on committed rows: the claim must hold across connections.
 
 import asyncio
 import uuid
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, get_args
 
 import pytest
 import structlog
@@ -97,7 +97,7 @@ async def test_the_same_key_never_sends_twice(
     assert len(await _rows(committed_sessionmaker)) == 1
 
 
-@pytest.mark.parametrize("kind", ["unavailable", "rejected", "timeout"])
+@pytest.mark.parametrize("kind", get_args(SmsFailure))
 async def test_a_failed_send_is_recorded_and_never_retried(
     committed_sessionmaker: async_sessionmaker[AsyncSession], kind: SmsFailure
 ) -> None:
@@ -112,7 +112,12 @@ async def test_a_failed_send_is_recorded_and_never_retried(
     assert sender.calls == 1
     (row,) = await _rows(committed_sessionmaker)
     assert (row.status, row.error) == (SmsStatus.FAILED, kind)
-    # A warning, so a missing provider shows; never the phone or the text.
+    _assert_one_failure_logged(logs, kind)
+
+
+def _assert_one_failure_logged(logs: Sequence[Mapping[str, Any]], kind: str) -> None:
+    """GZ-070: GizeApiSmsFailing counts `sms_failed` lines, so every way a send fails must
+    write exactly one: a warning, so a missing provider shows; never the phone or the text."""
     (warning,) = [log for log in logs if log["event"] == "sms_failed"]
     assert warning["log_level"] == "warning"
     assert (warning["purpose"], warning["error"]) == ("phone_verification", kind)
@@ -125,10 +130,11 @@ async def test_an_unexpected_error_is_recorded_then_raised(
 ) -> None:
     """A bug in a sender still leaves the row settled (never stuck in `sending`)."""
     sender = FailingSender(RuntimeError("a bug"))
-    with pytest.raises(RuntimeError, match="a bug"):
+    with structlog.testing.capture_logs() as logs, pytest.raises(RuntimeError, match="a bug"):
         await _send(committed_sessionmaker, sender, _key())
     (row,) = await _rows(committed_sessionmaker)
     assert (row.status, row.error) == (SmsStatus.FAILED, "error")
+    _assert_one_failure_logged(logs, "error")
 
 
 async def test_a_send_cancelled_midway_is_recorded_as_a_timeout(
@@ -146,13 +152,15 @@ async def test_a_send_cancelled_midway_is_recorded_as_a_timeout(
         async def aclose(self) -> None:
             return None
 
-    task = asyncio.create_task(_send(committed_sessionmaker, HangingSender(), _key()))
-    await asyncio.wait_for(entered.wait(), timeout=5)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    with structlog.testing.capture_logs() as logs:
+        task = asyncio.create_task(_send(committed_sessionmaker, HangingSender(), _key()))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
     (row,) = await _rows(committed_sessionmaker)
     assert (row.status, row.error) == (SmsStatus.FAILED, "timeout")
+    _assert_one_failure_logged(logs, "timeout")
 
 
 async def test_recording_a_sent_sms_can_fail_and_it_still_goes_out_once(

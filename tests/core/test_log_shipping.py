@@ -10,18 +10,20 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
+import httpx
 import pytest
 import structlog
 from opentelemetry._logs import SeverityNumber
 from opentelemetry.sdk._logs import ReadableLogRecord
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from starlette.types import Receive, Scope, Send
 
 from gize_api import main
 from gize_api.core import logging as gize_logging
 from gize_api.core import telemetry as telemetry_module
 from gize_api.core.config import Environment
-from gize_api.core.logging import configure_logging, log_security_event
+from gize_api.core.logging import AccessLogMiddleware, configure_logging, log_security_event
 from gize_api.core.telemetry import Telemetry, configure_telemetry
 from tests.support import SettingsFactory, memory_log_exporter
 
@@ -75,6 +77,25 @@ def test_a_line_is_shipped_as_written_with_its_fields(
     assert attributes["phone"] == line["phone"]
     assert PHONE not in json.dumps({k: str(v) for k, v in attributes.items()})
     assert record.timestamp is not None
+
+
+async def test_a_request_line_ships_its_status_as_a_number(
+    shipping: Telemetry, exported: InMemoryLogRecordExporter
+) -> None:
+    """GZ-070: GizeApiServerErrors counts shipped `request` lines with `status >= 500`."""
+
+    async def unavailable(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    transport = httpx.ASGITransport(app=AccessLogMiddleware(unavailable))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (await client.get("/v1/routes")).status_code == 503
+    record = _one(exported, "request").log_record
+    attributes = dict(record.attributes or {})
+    assert attributes["status"] == 503
+    assert attributes["logger"] == "gize_api.access"
+    assert record.severity_number == SeverityNumber.ERROR
 
 
 def test_values_that_are_not_scalars_are_kept_readable(
