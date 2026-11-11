@@ -5,9 +5,14 @@
 
 `seed` creates about first-six-months size, all named "Drill …" with made-up phones:
 20 areas, 10 corridors, 30 forming public routes (prices set), 600 riders, 390 of them
-reserved on the routes, and 50 route requests. `--launch N` launches N routes on the next
-1st: each launch texts its riders, so only on a staging without an AfroMessage token (the
-sends fail, which is the SMS drill). Every ID created is written to `--state` as it is made.
+reserved on the routes, and 50 route requests. `--launch N --allow-sms` launches N routes on
+the next 1st: each launch texts its riders (made-up but valid-format numbers), so only on a
+staging without an AfroMessage token (the sends fail, which is the SMS drill).
+
+Needs an **admin's** token (prices and deletes are admin-only). Runs only against staging or
+a local copy. `remove` before the launch date: seats that have started are kept to a month's
+end, and their riders can't be deleted until then. Every ID created is written to `--state`
+as it is made.
 
 `remove` undoes exactly what the state file lists, in reverse: seats ended, riders,
 requests, routes, corridors and areas deleted (soft deletes, audited, as staff would).
@@ -33,6 +38,9 @@ import httpx
 from gize_api.core.schedule import addis_today
 
 STAGING = "https://gize-api-staging.onrender.com"
+ALLOWED_HOSTS = ("https://gize-api-staging.onrender.com", "http://localhost", "http://127.0.0.1",
+                 "http://test")  # fmt: skip
+WARM_UP_SECONDS = 120.0
 STATE_FILE = Path("~/.gize-drill-seed.json")
 TIMEOUT_SECONDS = 30.0
 PER_MINUTE = 100  # under the staff limit of 120
@@ -53,7 +61,10 @@ class State:
         return cls(**json.loads(path.read_text())) if path.exists() else cls()
 
     def save(self, path: Path) -> None:
-        path.write_text(json.dumps(asdict(self), indent=1) + "\n")
+        """Atomically: an interrupt leaves the old file or the new one, never half of one."""
+        partial = path.with_suffix(".partial")
+        partial.write_text(json.dumps(asdict(self), indent=1) + "\n")
+        partial.replace(path)
 
 
 class Api:
@@ -90,7 +101,10 @@ class Api:
             headers["Idempotency-Key"] = str(uuid.uuid4())
         response = self.client.request(method, path, json=body, headers=headers)
         if response.status_code not in ok:
-            code = response.json().get("code") if response.content else None
+            try:
+                code = response.json().get("code")
+            except ValueError:  # an HTML error page from the proxy
+                code = None
             raise SystemExit(f"{method} {path}: {response.status_code} {code}")
         return response
 
@@ -202,8 +216,14 @@ def main(argv: list[str] | None = None, transport: httpx.BaseTransport | None = 
     parser.add_argument("--token-file", required=True)
     parser.add_argument("--state", type=Path, default=STATE_FILE)
     parser.add_argument("--launch", type=int, default=0, help="routes to launch (texts riders)")
+    parser.add_argument("--allow-sms", action="store_true", help="needed with --launch")
     parser.add_argument("--per-minute", type=int, default=PER_MINUTE)
     args = parser.parse_args(argv)
+    if not args.base_url.startswith(ALLOWED_HOSTS):
+        parser.error(f"drills run on staging or a local copy only, not {args.base_url}")
+    if args.launch and not args.allow_sms:
+        parser.error("--launch texts every rider it starts (made-up but valid numbers): add "
+                     "--allow-sms, and only where SMS is off")  # fmt: skip
     token = Path(args.token_file).expanduser().read_text().strip()
     path = args.state.expanduser()
     state = State.load(path)
@@ -212,6 +232,9 @@ def main(argv: list[str] | None = None, transport: httpx.BaseTransport | None = 
     with httpx.Client(
         base_url=args.base_url, timeout=TIMEOUT_SECONDS, transport=transport
     ) as client:
+        # Wake staging first: a create whose answer is lost to a slow wake-up would leave a
+        # row the state file never lists.
+        client.get("/health/ready", timeout=WARM_UP_SECONDS)
         api = Api(client, token, per_minute=args.per_minute)
         if args.action == "seed":
             seed(api, state, path, args.launch, addis_today())  # the API's own "today"

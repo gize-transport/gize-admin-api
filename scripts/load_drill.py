@@ -9,11 +9,14 @@ browsing the website, a few people asking for a phone code.
 - Public: visitors arriving at `--public-rate` a second (Poisson), each reading the areas or
   searching the routes between two of them, as the website does.
   The public read limit is 60 a minute per address, and this runs from one.
-- Sign-ups: `--signups` phone-code requests, spread over the run (a made-up number).
+- Phone codes: `--signups` requests spread over the run, only with `--allow-sms` (they text
+  a made-up but valid-format number when SMS is on). Off by default.
 - First a warm-up: staging's free plan sleeps when idle.
 
-Prints, per endpoint, the count by status and the p50/p95/max latency; `--output` also
-writes them as JSON. Never prints the token. Not part of the API: a tool for drills.
+Prints, per endpoint, the count by status and the p50/p95/max latency (over every request,
+refused or failed ones included; status 0: no answer); `--output` also writes them as JSON.
+Runs only against staging or a local copy. Never prints the token. Not part of the API: a
+tool for drills.
 """
 
 import argparse
@@ -23,6 +26,7 @@ import math
 import random
 import sys
 import time
+import uuid
 from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -32,6 +36,9 @@ from typing import Any
 import httpx
 
 STAGING = "https://gize-api-staging.onrender.com"
+# Where a drill may run: staging, or a local copy (tests use http://test).
+ALLOWED_HOSTS = ("https://gize-api-staging.onrender.com", "http://localhost", "http://127.0.0.1",
+                 "http://test")  # fmt: skip
 REQUEST_TIMEOUT_SECONDS = 30.0
 WARM_UP_TIMEOUT_SECONDS = 120.0
 STAFF_PATHS = (
@@ -47,7 +54,9 @@ STAFF_PATHS = (
 PUBLIC_AREAS = "/v1/public/areas?limit=100"
 PUBLIC_ROUTES = "/v1/public/routes"  # with from_area_id and to_area_id, as the website asks
 SIGNUP_PATH = "/v1/verification/request"
-SIGNUP_PHONE = "0911000063"  # made up: staging sends no SMS (no AfroMessage token)
+# Made up, but a valid-format mobile: someone may own it. Phone codes are only sent with
+# --allow-sms, and only make sense where SMS is off or goes to a test provider.
+SIGNUP_PHONE = "0911000063"
 ROUTE_DETAIL = "/v1/routes/{route_id}"
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -103,6 +112,14 @@ async def _call(
     return response
 
 
+def _ids(response: httpx.Response) -> list[str]:
+    """The IDs on a page, or none if the body isn't one (an error page from a proxy)."""
+    try:
+        return [str(item["id"]) for item in response.json().get("items", [])]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return []
+
+
 def _endpoint(method: str, path: str) -> str:
     return f"{method} {path.split('?', 1)[0]}"
 
@@ -129,7 +146,7 @@ async def staff_user(
             endpoint = _endpoint("GET", path)
         response = await _call(client, results, endpoint, "GET", path, headers=headers)
         if response is not None and path.startswith("/v1/routes?") and response.is_success:
-            route_ids = [str(item["id"]) for item in response.json().get("items", [])]
+            route_ids = _ids(response)
         await sleep(interval * rng.uniform(0.5, 1.5))
 
 
@@ -156,7 +173,7 @@ async def public_visitors(
             return
         response = await _call(client, results, _endpoint("GET", PUBLIC_AREAS), "GET", PUBLIC_AREAS)
         if response is not None and response.is_success:
-            area_ids[:] = [str(item["id"]) for item in response.json().get("items", [])]
+            area_ids[:] = _ids(response)
 
     while time.monotonic() < until:
         task = asyncio.ensure_future(visit())
@@ -184,6 +201,7 @@ async def signups(
             "POST",
             SIGNUP_PATH,
             json={"phone": SIGNUP_PHONE},
+            headers={"Idempotency-Key": str(uuid.uuid4())},  # one per request, as the site
         )
 
 
@@ -231,7 +249,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--staff", type=int, default=5)
     parser.add_argument("--staff-interval", type=float, default=3.0)
     parser.add_argument("--public-rate", type=float, default=0.8)
-    parser.add_argument("--signups", type=int, default=3)
+    parser.add_argument("--signups", type=int, default=0, help="phone-code requests (texts)")
+    parser.add_argument("--allow-sms", action="store_true", help="needed with --signups")
     parser.add_argument("--token-file", default=None, help="from scripts/drill_token.py")
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=63)
@@ -239,7 +258,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, transport: httpx.AsyncBaseTransport | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if not args.base_url.startswith(ALLOWED_HOSTS):
+        parser.error(f"drills run on staging or a local copy only, not {args.base_url}")
+    if args.signups and not args.allow_sms:
+        parser.error("--signups asks for phone codes, which text a real number: add --allow-sms")
     token = None
     if args.token_file is not None:
         token = Path(args.token_file).expanduser().read_text().strip()

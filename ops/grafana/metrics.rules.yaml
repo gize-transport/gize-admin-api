@@ -42,9 +42,11 @@ groups:
 
       - alert: GizeApiSmsFailing
         # Production only: staging has no AfroMessage token, so every send there fails (GZ-063).
-        # The outcomes are integrations/sms.py's SmsFailure kinds.
+        # The outcomes: integrations/sms.py's SmsFailure kinds, and "error" (anything else).
+        # Known gap until GZ-070: failures in a series' first minute (after a deploy, say)
+        # are not counted, as new series start with their count.
         expr: >-
-          sum by (deployment_environment_name) (increase(gize_sms_send_duration_seconds_count{job="gize-admin-api", deployment_environment_name="production", outcome=~"unavailable|rejected|timeout"}[15m])) >= 3
+          sum by (deployment_environment_name) (increase(gize_sms_send_duration_seconds_count{job="gize-admin-api", deployment_environment_name="production", outcome=~"unavailable|rejected|timeout|error"}[15m])) >= 3
         for: 0m
         labels:
           severity: critical

@@ -100,6 +100,7 @@ async def test_visitors_search_routes_between_two_listed_areas() -> None:
 async def test_signups_send_no_token_and_unanswered_counts_as_zero() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert "authorization" not in request.headers
+        assert request.headers["idempotency-key"]  # the route requires one (428 otherwise)
         raise httpx.ConnectError("down")
 
     results = Results()
@@ -123,7 +124,8 @@ def test_a_whole_run_warms_up_then_reports(
 
     output = tmp_path / "report.json"
     argv = ["--base-url", "http://test", "--minutes", "0.002", "--staff", "2", "--staff-interval",
-            "0.01", "--public-rate", "200", "--signups", "1", "--token-file", str(token),
+            "0.01", "--public-rate", "200", "--signups", "1", "--allow-sms",
+            "--token-file", str(token),
             "--output", str(output)]  # fmt: skip
     assert load_drill.main(argv, transport=httpx.MockTransport(handler)) == 0
     printed = capsys.readouterr().out
@@ -195,6 +197,9 @@ class FakeApi:
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         keyed = "idempotency-key" in request.headers
+        if request.url.path == "/health/ready":  # the warm-up: no sign-in
+            self.calls.append(("GET", "/health/ready", False))
+            return httpx.Response(200, json={"status": "ok"})
         assert request.headers["authorization"] == "Bearer tok"
         self.calls.append((request.method, request.url.path, keyed))
         if request.method == "POST" and request.url.path.count("/") == 2:
@@ -225,7 +230,8 @@ def _seed(tmp_path: Path, fake: Callable[[httpx.Request], httpx.Response], *extr
 @pytest.mark.usefixtures("small")
 def test_seeding_creates_everything_and_lists_every_id(tmp_path: Path) -> None:
     fake = FakeApi()
-    assert _seed(tmp_path, fake, "--launch", "1") == 0
+    assert _seed(tmp_path, fake, "--launch", "1", "--allow-sms") == 0
+    assert fake.calls[0] == ("GET", "/health/ready", False)  # woken before any create
     state = json.loads((tmp_path / "state.json").read_text())
     assert {kind: len(ids) for kind, ids in state.items()} == {
         "areas": 4, "corridors": 2, "routes": 4, "riders": 8, "seated": 8, "requests": 2,
@@ -264,7 +270,7 @@ def test_removal_undoes_newest_first_and_can_run_again(tmp_path: Path) -> None:
     order = [kinds.index(k) for k in ("riders", "route-requests", "routes", "corridors", "areas")]
     assert order == sorted(order)
     assert all(not ids for ids in json.loads(state_file.read_text()).values())
-    assert fake.calls[0][1].endswith("/seat/end")  # seats ended before anything is deleted
+    assert fake.calls[1][1].endswith("/seat/end")  # after the warm-up: seats end first
 
 
 def test_an_unexpected_answer_stops_naming_the_endpoint_not_the_token(tmp_path: Path) -> None:
@@ -281,3 +287,44 @@ def test_the_next_first_crosses_the_year() -> None:
 
     assert drill_seed.next_first(date(2026, 11, 11)) == date(2026, 12, 1)
     assert drill_seed.next_first(date(2026, 12, 31)) == date(2027, 1, 1)
+
+
+@pytest.mark.parametrize(
+    ("main", "argv", "refusal"),
+    [
+        (load_drill.main, ["--base-url", "https://api.gizetransport.com"],
+         "staging or a local copy"),
+        (load_drill.main, ["--signups", "1"], "--allow-sms"),
+        (drill_seed.main, ["seed", "--token-file", "t", "--base-url",
+                           "https://api.gizetransport.com"], "staging or a local copy"),
+        (drill_seed.main, ["seed", "--token-file", "t", "--launch", "1"], "--allow-sms"),
+    ],
+)  # fmt: skip
+def test_drills_refuse_other_hosts_and_unasked_texts(
+    main: Callable[[list[str]], int],
+    argv: list[str],
+    refusal: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(argv)
+    assert refusal in capsys.readouterr().err
+
+
+def test_an_html_error_page_still_stops_cleanly() -> None:
+    def proxy_error(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="<html>Bad Gateway</html>")
+
+    with httpx.Client(base_url="http://test", transport=httpx.MockTransport(proxy_error)) as c:
+        api = drill_seed.Api(c, "tok", per_minute=100000)
+        with pytest.raises(SystemExit, match=r"^POST /v1/areas: 502 None$"):
+            api.create("/v1/areas", {"name": "x"})
+
+
+def test_a_looser_existing_token_file_is_tightened_before_the_write(tmp_path: Path) -> None:
+    target = tmp_path / "token"
+    target.write_text("old")
+    target.chmod(0o644)
+    drill_token.save("tok", target)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_text() == "tok"

@@ -53,9 +53,9 @@ def save(token: str, path: Path) -> Path:
     """Write the token readable by its owner only (created that way: never world-readable)."""
     target = path.expanduser()
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(descriptor, 0o600)  # an existing, looser file is tightened before the write
     with os.fdopen(descriptor, "w") as file:
         file.write(token)
-    target.chmod(0o600)
     return target
 
 

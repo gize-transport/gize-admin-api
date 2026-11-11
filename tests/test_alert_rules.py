@@ -158,8 +158,16 @@ def test_routers_carry_their_own_prefixes() -> None:
 
 
 def test_the_sms_alert_counts_every_failure_kind_and_only_those() -> None:
-    """GZ-063: a new way for an SMS to fail must not go unalerted."""
+    """GZ-063: a new way for an SMS to fail must not go unalerted. The failure outcomes are
+    the sender's kinds and "error" (anything else it raises: sms/service.py)."""
     (rule,) = [r for r in _rules("metrics") if r["alert"] == "GizeApiSmsFailing"]
     (kinds,) = re.findall(r'outcome=~"([a-z|]+)"', rule["expr"])
-    assert set(kinds.split("|")) == set(get_args(SmsFailure))
-    assert "gize.sms.send.duration" in SOURCE  # the metric the rule reads, by its OTel name
+    service = (ROOT / "src" / "gize_api" / "sms" / "service.py").read_text()
+    literal = r'(?:_measure\(telemetry|_fail\(sessions, telemetry, claimed), purpose, "([a-z]+)"'
+    failures = set(re.findall(literal, service)) - {"duplicate", "sent"}
+    assert "error" in failures
+    assert set(kinds.split("|")) == set(get_args(SmsFailure)) | {"error"}
+    assert failures <= set(kinds.split("|"))  # every failure the service writes is counted
+    # The name Grafana stores: the instrument's, dots as underscores, its unit (s) appended.
+    assert re.search(r'"gize\.sms\.send\.duration", unit="s"', SOURCE)
+    assert "gize_sms_send_duration_seconds_count" in rule["expr"]
