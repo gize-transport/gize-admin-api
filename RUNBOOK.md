@@ -175,6 +175,29 @@ Logs, metrics and traces are in Grafana Cloud (next section); this table is for 
 | `403` for a signed-in user | They aren't active staff in this database | An admin invites them, or the first-admin step is missing. |
 | `observability_disabled` at startup | Sentry or Grafana isn't configured | Expected on staging for Sentry (not set up yet). In production it alerts: GizeApiMisconfigured. |
 
+## Drills
+
+The last drill's results are in `docs/drills/2026-11-11-staging.md`. Repeat it before production, and after any change to timeouts, rate limits, alerts or hosting. Run it on **staging only**, while nobody else is using it.
+
+1. **An admin's token, about an hour** (the seed sets prices and deletes, which are admin-only):
+   - `uv run python -m scripts.drill_token` asks for the publishable key, an email and a password, for an account that has a password.
+   - **Or copy the portal's token:** reload a data page in the admin portal, then DevTools → Network → an `onrender` request → right-click **authorization** → **Copy value**. Then run:
+     `(umask 077; pbpaste | tr -d ' \r\n' | sed 's/^Bearer//' > ~/.gize-drill-token) && pbcopy < /dev/null`
+
+     It's private from the start and the clipboard is cleared afterwards.
+2. **Data:** `uv run python -m scripts.drill_seed seed --token-file ~/.gize-drill-token`
+   - It takes about 12 minutes. Every ID created goes into `~/.gize-drill-seed.json`.
+   - Add `--launch 5 --allow-sms` **only while staging has no AfroMessage token**: launches text their riders, whose made-up numbers are valid-format ones someone may own. The phone-code part of the load (`--signups N --allow-sms`) texts too. Without `--allow-sms`, both are refused.
+3. **Load:** `uv run python -m scripts.load_drill --minutes 10 --token-file ~/.gize-drill-token`. Keep away from the portal meanwhile: it shares the account's limit.
+4. **Drills, each under a shorter load (`--minutes 4`):**
+   - **Database slow:** hold an `ACCESS EXCLUSIVE` lock on `gize.routes` for 60 s as `gize_migrator` (`.env.staging`), in a transaction that rolls back.
+   - **Redis down:** suspend `gize-redis-staging` in Render, wait for GizeApiDependencyUnavailable's email (about 2 minutes), then resume it.
+   - **SMS down:** staging without an AfroMessage token already is: the launches show it.
+   - **Phone codes:** they test registration only once staging has `VERIFIED_PHONE_TOKEN_KEY`. Without it they answer 503 before anything else runs.
+5. **Clean up:**
+   - `uv run python -m scripts.drill_seed remove --token-file ~/.gize-drill-token` (about 12 minutes; it can run again if interrupted);
+   - then `rm ~/.gize-drill-token ~/.gize-drill-seed.json`.
+
 ## Grafana Cloud: logs, metrics, traces
 
 Stack: https://maroonstarfish2393.grafana.net (India region). The API sends all three over OTLP, using `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` on Render. Both come from the stack's **Connections → OpenTelemetry (OTLP)** page.
@@ -271,6 +294,20 @@ More than 5% of requests answered 5xx, out of at least 20, for 2 minutes.
   - 500s with GizeApiUnhandledErrors;
   - split by `http_target` to see which route.
 - **Do:** as for those two. After a deploy, roll back first and investigate after.
+
+### GizeApiSmsFailing
+Production: 3 or more SMS sends failed in 15 minutes (AfroMessage unavailable, refusing or timing out).
+- **Known gap until GZ-070:** failures in a series' first minute (after a deploy or restart, say) aren't counted. A burst right after a deploy can go unalerted.
+- **What riders see:** phone codes answer 503, so people can't register on the website. Launch messages are marked failed, and offers show `sms_status: failed`.
+- **Look:**
+  - AfroMessage's status, and your balance and sender name in its dashboard;
+  - in Explore, `gize_sms_send_duration_seconds_count` split by `outcome` and `purpose`.
+  - `rejected` usually means the token, the sender name or the balance; `unavailable` and `timeout` are their side.
+- **Do:**
+  - fix the account if it's ours;
+  - tell callers to try again later;
+  - once sends work, retry the failed launch messages from the route (`launch-messages/retry`);
+  - call the people whose offers show a failed SMS. An offer's SMS isn't resent.
 
 ### GizeApiSilent
 Production sent no telemetry for 15 minutes, having sent some in the last day.

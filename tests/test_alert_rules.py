@@ -6,13 +6,14 @@ the code, the runbook and the shape Grafana's import expects.
 """
 
 import re
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 import yaml
 
 from gize_api.core.config import Settings
 from gize_api.core.telemetry import _METRIC_ATTRIBUTES
+from gize_api.integrations.sms import SmsFailure
 from tests.support import ROOT
 
 RULES = ROOT / "ops" / "grafana"
@@ -21,7 +22,7 @@ RUNBOOK = (ROOT / "RUNBOOK.md").read_text()
 SOURCE = "\n".join(path.read_text() for path in (ROOT / "src" / "gize_api").rglob("*.py"))
 SERVICE = Settings.model_fields["otel_service_name"].default
 # Production-only rules: staging sleeps when idle, so these would fire on it for nothing.
-PRODUCTION_ONLY = {"GizeApiMisconfigured", "GizeApiSilent"}
+PRODUCTION_ONLY = {"GizeApiMisconfigured", "GizeApiSilent", "GizeApiSmsFailing"}
 # Security events logged where nothing is shipped: the first-admin command (cli/), once, at
 # setup. stderr and Sentry have them; an alert waiting for them would never fire.
 NOT_SHIPPED = {"first_admin_created"}
@@ -48,6 +49,7 @@ def test_there_is_a_rule_for_each_thing_the_ticket_names() -> None:
         "GizeApiMisconfigured",
         "GizeApiServerErrors",
         "GizeApiSilent",
+        "GizeApiSmsFailing",
     }
     assert len(NAMES) == len(set(NAMES))
 
@@ -127,6 +129,7 @@ def test_metric_rules_use_the_names_grafana_stores() -> None:
     assert "http.status_code" in _METRIC_ATTRIBUTES
     assert "http_status_code" in expressions
     assert set(re.findall(r"([a-z_]+)\{", expressions)) == {
+        "gize_sms_send_duration_seconds_count",
         "http_server_duration_milliseconds_count",
         "target_info",
     }
@@ -152,3 +155,19 @@ def test_routers_carry_their_own_prefixes() -> None:
     calls = re.findall(r"app\.include_router\(([^)]*)\)", main)
     assert calls
     assert all("prefix" not in call for call in calls)
+
+
+def test_the_sms_alert_counts_every_failure_kind_and_only_those() -> None:
+    """GZ-063: a new way for an SMS to fail must not go unalerted. The failure outcomes are
+    the sender's kinds and "error" (anything else it raises: sms/service.py)."""
+    (rule,) = [r for r in _rules("metrics") if r["alert"] == "GizeApiSmsFailing"]
+    (kinds,) = re.findall(r'outcome=~"([a-z|]+)"', rule["expr"])
+    service = (ROOT / "src" / "gize_api" / "sms" / "service.py").read_text()
+    literal = r'(?:_measure\(telemetry|_fail\(sessions, telemetry, claimed), purpose, "([a-z]+)"'
+    failures = set(re.findall(literal, service)) - {"duplicate", "sent"}
+    assert "error" in failures
+    assert set(kinds.split("|")) == set(get_args(SmsFailure)) | {"error"}
+    assert failures <= set(kinds.split("|"))  # every failure the service writes is counted
+    # The name Grafana stores: the instrument's, dots as underscores, its unit (s) appended.
+    assert re.search(r'"gize\.sms\.send\.duration", unit="s"', SOURCE)
+    assert "gize_sms_send_duration_seconds_count" in rule["expr"]
