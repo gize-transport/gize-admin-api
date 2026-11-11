@@ -451,6 +451,11 @@ Status: done · Depends on: GZ-063
   - 15 route requests.
 - Refuses hosts other than staging or local, and needs `--allow-sms` (launches text riders).
 - RUNBOOK, "Demo data": how to remove and remake it. **Remove it before staging gets an AfroMessage token**: retrying the failed launch messages would text the made-up numbers.
+- Made on staging, 2026-11-11. The overview shows 4 active routes (all with drivers), 6 forming (2 ready to launch), 1 draft; 90 riders, 8 riding today, 40 reserved; 15 open requests; 6 drivers.
+- The first two runs stopped on API rules the script had wrong, and the tests now pin both:
+  - company riders take no destination;
+  - a route request needs a running route.
+- `finish` was added to complete a run that stopped after its riders: removing and remaking the same day would stop at the company riders, who rode today.
 
 ### GZ-070 · Alerts that catch short outages
 Status: todo · Depends on: GZ-066

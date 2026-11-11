@@ -1,6 +1,7 @@
 """Realistic demo data on staging for partner demos (GZ-074), through the API.
 
     uv run python -m scripts.demo_seed seed --token-file ~/.gize-drill-token --allow-sms
+    uv run python -m scripts.demo_seed finish …   # completes a run that stopped after riders
     uv run python -m scripts.drill_seed remove --token-file ~/.gize-drill-token \\
         --state ~/.gize-demo-seed.json
 
@@ -17,7 +18,9 @@ AfroMessage token the texts fail (shown on those routes' launch messages). The p
 made-up but valid-format numbers: before giving staging an AfroMessage token, remove this
 data (or never retry those messages).
 
-Needs an admin's token. Every ID created goes into `--state` (default
+Needs an admin's token. Removing it the day it was made stops at the company riders: they
+rode today, and a rider can only be deleted once no seat covers today. Remove it a day later.
+Every ID created goes into `--state` (default
 ~/.gize-demo-seed.json), so `drill_seed remove --state …` takes it all away again.
 """
 
@@ -188,8 +191,8 @@ def seed(api: Api, state: State, path: Path, today: date) -> State:
             keep()
     for n in range(CORPORATE_RIDERS):
         body = {"rider_type": "corporate", "company_id": companies[0], "full_name": name(n + 40),
-                "phone": phone(4, n), "home_area_id": area["CMC"],
-                "destination_area_id": area["Bole"]}  # fmt: skip
+                "phone": phone(4, n), "home_area_id": area["CMC"]}  # fmt: skip
+        # No destination, plan or Saturday: company riders ride to the route's B.
         rider = api.create("/v1/riders", body)
         state.riders.append(rider)
         keep()
@@ -198,8 +201,29 @@ def seed(api: Api, state: State, path: Path, today: date) -> State:
                  keyed=True)  # fmt: skip
         state.seated.append(rider)
         keep()
+    return finish(api, state, path, today)
 
-    launched = [(route, corridor) for route, fate, corridor in routes if fate == "launch"]
+
+def finish(api: Api, state: State, path: Path, today: date) -> State:
+    """The last steps, from the state file alone: launches and drivers, then the requests
+    (a route request needs a running route). `finish` completes a run that stopped here."""
+    public = state.routes[: len(ROUTES)]
+    corporate = state.routes[len(ROUTES)]
+    area = dict(zip(AREAS, state.areas, strict=True))
+    drivers = state.drivers
+    launched = [(route, spec[1]) for route, spec in zip(public, ROUTES, strict=True)
+                if spec[7] == "launch"]  # fmt: skip
+
+    def keep() -> None:
+        state.save(path)
+
+    # Launched first: a route request needs a running (active or paused) route.
+    launch_date = next_first(today).isoformat()
+    for n, (route, _) in enumerate(launched):
+        launch = {"status": "active", "launch_date": launch_date}
+        api.call("PUT", f"/v1/routes/{route}/status", launch)
+        api.call("PUT", f"/v1/routes/{route}/driver", {"driver_id": drivers[n]})
+    api.call("PUT", f"/v1/routes/{corporate}/driver", {"driver_id": drivers[len(launched)]})
     for n in range(REQUESTS_FOR_ROUTES):
         route, _ = launched[n % len(launched)]
         body = {"kind": "route", "route_id": route, "rider_type": "adult",
@@ -220,18 +244,12 @@ def seed(api: Api, state: State, path: Path, today: date) -> State:
         state.requests.append(api.create("/v1/route-requests", body))
         keep()
 
-    launch_date = next_first(today).isoformat()
-    for n, (route, _) in enumerate(launched):
-        launch = {"status": "active", "launch_date": launch_date}
-        api.call("PUT", f"/v1/routes/{route}/status", launch)
-        api.call("PUT", f"/v1/routes/{route}/driver", {"driver_id": drivers[n]})
-    api.call("PUT", f"/v1/routes/{corporate}/driver", {"driver_id": drivers[len(launched)]})
     return state
 
 
 def main(argv: list[str] | None = None, transport: httpx.BaseTransport | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("action", choices=["seed"])
+    parser.add_argument("action", choices=["seed", "finish"])
     parser.add_argument("--base-url", default=STAGING)
     parser.add_argument("--token-file", required=True)
     parser.add_argument("--state", type=Path, default=STATE_FILE)
@@ -245,14 +263,18 @@ def main(argv: list[str] | None = None, transport: httpx.BaseTransport | None = 
                      "--allow-sms, and only where SMS is off")  # fmt: skip
     path = args.state.expanduser()
     state = State.load(path)
-    if any(getattr(state, kind) for kind in vars(state)):
+    if args.action == "seed" and any(getattr(state, kind) for kind in vars(state)):
         raise SystemExit(f"{path} lists earlier demo data: remove it first")
+    if args.action == "finish" and (len(state.routes) != len(ROUTES) + 1 or state.requests):
+        raise SystemExit(f"{path} isn't a run that stopped before its launches and requests")
     token = Path(args.token_file).expanduser().read_text().strip()
     with httpx.Client(
         base_url=args.base_url, timeout=TIMEOUT_SECONDS, transport=transport
     ) as client:
         client.get("/health/ready", timeout=WARM_UP_SECONDS)
-        seed(Api(client, token, per_minute=args.per_minute), state, path, addis_today())
+        api = Api(client, token, per_minute=args.per_minute)
+        step = seed if args.action == "seed" else finish
+        step(api, state, path, addis_today())
     counts = ", ".join(f"{len(ids)} {kind}" for kind, ids in vars(state).items())
     sys.stdout.write(f"demo: done ({counts} in {path})\n")
     return 0

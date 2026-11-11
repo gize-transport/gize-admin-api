@@ -209,6 +209,7 @@ Staging holds realistic made-up data for partner demos (GZ-074, `scripts/demo_se
 Its IDs are in `~/.gize-demo-seed.json` on the machine that made it.
 - **Remove it:** `uv run python -m scripts.drill_seed remove --token-file ~/.gize-drill-token --state ~/.gize-demo-seed.json` (an admin's token).
 - **Make it again:** `uv run python -m scripts.demo_seed seed --token-file ~/.gize-drill-token --allow-sms`.
+- **Removing it the day it was made** stops at the company riders, who rode today: remove it a day later. If a `seed` run stops after its riders, `demo_seed finish` completes it.
 
 **Before giving staging an AfroMessage token, remove the demo data, or never press retry on its launch messages.** They failed because staging has no SMS, and retrying would text the made-up numbers, which may belong to real people.
 

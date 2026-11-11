@@ -374,10 +374,20 @@ def test_the_demo_makes_a_portal_worth_showing(
     corporate_seats = [b for m, p, b in fake.bodies if p.endswith("/seat") and "start_date" in b]
     assert len(corporate_seats) == 8
     assert {b["start_date"] for b in corporate_seats} == {"2026-11-11"}  # riding from today
+    order = [p for m, p, b in fake.bodies]
+    last_launch = max(i for i, (_, p, b) in enumerate(fake.bodies)
+                      if p.endswith("/status") and "launch_date" in (b or {}))  # fmt: skip
+    first_request = order.index("/v1/route-requests")
+    assert last_launch < first_request  # a route request needs a running route
     drivers = [b for m, p, b in fake.bodies if p.endswith("/driver")]
     assert len(drivers) == 4
     assert len({b["driver_id"] for b in drivers}) == 4  # one route each
     added = [b for m, p, b in fake.bodies if m == "POST" and p == "/v1/riders"]
+    # Company riders ride to their route's B, with no plan or Saturday (riders/schemas.py).
+    company = [b for b in added if b.get("rider_type") == "corporate"]
+    assert len(company) == 8
+    for body in company:
+        assert not {"destination_area_id", "plan", "saturday_addon"} & set(body)
     for body in added:
         if body.get("saturday_addon"):
             assert body["home_area_id"] != state["areas"][AREA_AYAT]  # no Saturday there
@@ -422,3 +432,38 @@ def test_removing_the_demo_takes_drivers_and_companies_last(
     deleted = [path.split("/")[2] for method, path, _ in fake.calls if method == "DELETE"]
     assert deleted[-8:] == ["drivers"] * 6 + ["companies"] * 2
     assert all(not ids for ids in json.loads((tmp_path / "demo.json").read_text()).values())
+
+
+def test_finish_completes_a_run_that_stopped_before_its_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(demo_seed, "addis_today", lambda: date(2026, 11, 11))
+
+    class RequestsRefused(RecordingApi):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/route-requests":
+                return httpx.Response(422, json={"code": "VALIDATION_FAILED"})
+            return super().__call__(request)
+
+    with pytest.raises(SystemExit, match="route-requests: 422"):
+        _demo(tmp_path, RequestsRefused(), "--allow-sms")
+    stopped = json.loads((tmp_path / "demo.json").read_text())
+    assert (len(stopped["riders"]), len(stopped["requests"])) == (90, 0)
+    fake = RecordingApi()
+    token = tmp_path / "token"
+    argv = ["finish", "--token-file", str(token), "--state", str(tmp_path / "demo.json"),
+            "--base-url", "http://test", "--per-minute", "100000", "--allow-sms"]  # fmt: skip
+    assert demo_seed.main(argv, transport=httpx.MockTransport(fake)) == 0
+    assert len(json.loads((tmp_path / "demo.json").read_text())["requests"]) == 15
+    created = [p for m, p, _ in fake.bodies if m == "POST"]
+    assert set(created) == {"/v1/route-requests"}  # nothing made twice
+    launches = [b for m, p, b in fake.bodies if p.endswith("/status")]
+    assert len(launches) == 3
+
+
+def test_finish_refuses_a_state_that_is_not_a_stopped_run(tmp_path: Path) -> None:
+    token = tmp_path / "token"
+    token.write_text("tok")
+    with pytest.raises(SystemExit, match="stopped before its launches"):
+        demo_seed.main(["finish", "--token-file", str(token), "--state",
+                        str(tmp_path / "none.json"), "--allow-sms"])  # fmt: skip
