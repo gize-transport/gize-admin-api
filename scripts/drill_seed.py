@@ -55,6 +55,8 @@ class State:
     riders: list[str] = field(default_factory=list)
     seated: list[str] = field(default_factory=list)
     requests: list[str] = field(default_factory=list)
+    drivers: list[str] = field(default_factory=list)  # demo data (scripts/demo_seed.py)
+    companies: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path) -> "State":
@@ -200,6 +202,8 @@ def remove(api: Api, state: State, path: Path) -> State:
         ("routes", "/v1/routes"),
         ("corridors", "/v1/corridors"),
         ("areas", "/v1/areas"),
+        ("drivers", "/v1/drivers"),
+        ("companies", "/v1/companies"),
     ):
         ids: list[str] = getattr(state, kind)
         while ids:

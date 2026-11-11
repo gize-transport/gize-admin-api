@@ -439,6 +439,24 @@ Status: done · Depends on: GZ-062
 - Findings, each its own ticket: GZ-070 (alerts that miss short bursts), GZ-071 (histogram buckets), GZ-072 (shared client address on Render), GZ-073 (Redis timeout per request). Two notes for the owner: launched-but-not-started riders count as neither riding nor reserved on the overview; production should put the API and the database in one region.
 - Also closed GZ-062's last item: a signed-in `GET /v1/staff/me` on staging answered 200 (admin).
 
+### GZ-074 · Demo data for partners (staging)
+Status: done · Depends on: GZ-063
+- Owner request (2026-11-11), before GZ-070: realistic data on staging for partner demos in the admin portal.
+- Owner choices: realistic Addis names (made up); some routes running; small.
+- Built: `scripts/demo_seed.py`, through the API and reusing GZ-063's seed tools (pacing, state file, removal; drivers and companies added to removal). It makes:
+  - 10 areas, 6 corridors, 6 drivers, 2 companies;
+  - 10 public routes: 3 launched for the next 1st with drivers, 6 forming (2 ready to launch), 1 draft;
+  - 1 corporate route active today with a driver and 8 company riders riding today;
+  - 82 adult riders, 70 of them reserved;
+  - 15 route requests.
+- Refuses hosts other than staging or local, and needs `--allow-sms` (launches text riders).
+- RUNBOOK, "Demo data": how to remove and remake it. **Remove it before staging gets an AfroMessage token**: retrying the failed launch messages would text the made-up numbers.
+- Made on staging, 2026-11-11. The overview shows 4 active routes (all with drivers), 6 forming (2 ready to launch), 1 draft; 90 riders, 8 riding today, 40 reserved; 15 open requests; 6 drivers.
+- The first two runs stopped on API rules the script had wrong, and the tests now pin both:
+  - company riders take no destination;
+  - a route request needs a running route.
+- `finish` was added to complete a run that stopped after its riders: removing and remaking the same day would stop at the company riders, who rode today.
+
 ### GZ-070 · Alerts that catch short outages
 Status: todo · Depends on: GZ-066
 - Found in GZ-063: GizeApiServerErrors missed a one-minute burst of 68 503s.
