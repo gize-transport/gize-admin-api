@@ -6,12 +6,14 @@ import random
 import stat
 import time
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 
-from scripts import drill_seed, drill_token, load_drill
+from scripts import demo_seed, drill_seed, drill_token, load_drill
 from scripts.load_drill import Results, percentile, summary
 
 
@@ -235,6 +237,7 @@ def test_seeding_creates_everything_and_lists_every_id(tmp_path: Path) -> None:
     state = json.loads((tmp_path / "state.json").read_text())
     assert {kind: len(ids) for kind, ids in state.items()} == {
         "areas": 4, "corridors": 2, "routes": 4, "riders": 8, "seated": 8, "requests": 2,
+        "drivers": 0, "companies": 0,
     }  # fmt: skip
     creates = [path for method, path, keyed in fake.calls if method == "POST"]
     assert all(keyed for method, _, keyed in fake.calls if method == "POST")
@@ -328,3 +331,94 @@ def test_a_looser_existing_token_file_is_tightened_before_the_write(tmp_path: Pa
     drill_token.save("tok", target)
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert target.read_text() == "tok"
+
+
+# --- demo_seed (GZ-074) ----------------------------------------------------------------
+
+
+class RecordingApi(FakeApi):
+    """FakeApi that also keeps each request's body."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bodies: list[tuple[str, str, Any]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        self.bodies.append((request.method, request.url.path, body))
+        return super().__call__(request)
+
+
+def _demo(tmp_path: Path, fake: Callable[[httpx.Request], httpx.Response], *extra: str) -> int:
+    token = tmp_path / "token"
+    token.write_text("tok")
+    argv = ["seed", "--token-file", str(token), "--state", str(tmp_path / "demo.json"),
+            "--base-url", "http://test", "--per-minute", "100000", *extra]  # fmt: skip
+    return demo_seed.main(argv, transport=httpx.MockTransport(fake))
+
+
+def test_the_demo_makes_a_portal_worth_showing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(demo_seed, "addis_today", lambda: date(2026, 11, 11))
+    fake = RecordingApi()
+    assert _demo(tmp_path, fake, "--allow-sms") == 0
+    state = json.loads((tmp_path / "demo.json").read_text())
+    assert {kind: len(ids) for kind, ids in state.items()} == {
+        "areas": 10, "corridors": 6, "routes": 11, "riders": 90, "seated": 78,
+        "requests": 15, "drivers": 6, "companies": 2,
+    }  # fmt: skip
+    statuses = [(p, b) for m, p, b in fake.bodies if p.endswith("/status")]
+    launches = [b for _, b in statuses if b["status"] == "active" and "launch_date" in b]
+    assert launches == [{"status": "active", "launch_date": "2026-12-01"}] * 3
+    corporate_seats = [b for m, p, b in fake.bodies if p.endswith("/seat") and "start_date" in b]
+    assert len(corporate_seats) == 8
+    assert {b["start_date"] for b in corporate_seats} == {"2026-11-11"}  # riding from today
+    drivers = [b for m, p, b in fake.bodies if p.endswith("/driver")]
+    assert len(drivers) == 4
+    assert len({b["driver_id"] for b in drivers}) == 4  # one route each
+    added = [b for m, p, b in fake.bodies if m == "POST" and p == "/v1/riders"]
+    for body in added:
+        if body.get("saturday_addon"):
+            assert body["home_area_id"] != state["areas"][AREA_AYAT]  # no Saturday there
+
+
+AREA_AYAT = demo_seed.AREAS.index("Ayat")
+
+
+@pytest.mark.parametrize(
+    ("argv", "refusal"),
+    [([], "--allow-sms"), (["--allow-sms", "--base-url", "https://api.gizetransport.com"],
+                           "staging or a local copy")],
+)  # fmt: skip
+def test_the_demo_refuses_texts_unasked_and_other_hosts(
+    tmp_path: Path, argv: list[str], refusal: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    token = tmp_path / "token"
+    token.write_text("tok")
+    with pytest.raises(SystemExit):
+        demo_seed.main(["seed", "--token-file", str(token), *argv])
+    assert refusal in capsys.readouterr().err
+
+
+def test_the_demo_refuses_to_seed_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(demo_seed, "addis_today", lambda: date(2026, 11, 11))
+    _demo(tmp_path, FakeApi(), "--allow-sms")
+    with pytest.raises(SystemExit, match="remove it first"):
+        _demo(tmp_path, FakeApi(), "--allow-sms")
+
+
+def test_removing_the_demo_takes_drivers_and_companies_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(demo_seed, "addis_today", lambda: date(2026, 11, 11))
+    fake = FakeApi()
+    _demo(tmp_path, fake, "--allow-sms")
+    fake.calls.clear()
+    argv = ["remove", "--token-file", str(tmp_path / "token"), "--state",
+            str(tmp_path / "demo.json"), "--base-url", "http://test",
+            "--per-minute", "100000"]  # fmt: skip
+    assert drill_seed.main(argv, transport=httpx.MockTransport(fake)) == 0
+    deleted = [path.split("/")[2] for method, path, _ in fake.calls if method == "DELETE"]
+    assert deleted[-8:] == ["drivers"] * 6 + ["companies"] * 2
+    assert all(not ids for ids in json.loads((tmp_path / "demo.json").read_text()).values())

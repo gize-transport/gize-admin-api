@@ -198,6 +198,20 @@ The last drill's results are in `docs/drills/2026-11-11-staging.md`. Repeat it b
    - `uv run python -m scripts.drill_seed remove --token-file ~/.gize-drill-token` (about 12 minutes; it can run again if interrupted);
    - then `rm ~/.gize-drill-token ~/.gize-drill-seed.json`.
 
+## Demo data (staging)
+
+Staging holds realistic made-up data for partner demos (GZ-074, `scripts/demo_seed.py`), created through the API like real staff work:
+- **Places and people:** real Addis areas; made-up Ethiopian names and valid-format phones.
+- **Routes:** 3 public routes launched for the next 1st, each with a driver; forming routes, some ready to launch; one draft.
+- **Riding today:** a company route with its staff, the only riders who can start before a 1st.
+- **Requests:** some waiting for routes, some for new areas.
+
+Its IDs are in `~/.gize-demo-seed.json` on the machine that made it.
+- **Remove it:** `uv run python -m scripts.drill_seed remove --token-file ~/.gize-drill-token --state ~/.gize-demo-seed.json` (an admin's token).
+- **Make it again:** `uv run python -m scripts.demo_seed seed --token-file ~/.gize-drill-token --allow-sms`.
+
+**Before giving staging an AfroMessage token, remove the demo data, or never press retry on its launch messages.** They failed because staging has no SMS, and retrying would text the made-up numbers, which may belong to real people.
+
 ## Grafana Cloud: logs, metrics, traces
 
 Stack: https://maroonstarfish2393.grafana.net (India region). The API sends all three over OTLP, using `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` on Render. Both come from the stack's **Connections → OpenTelemetry (OTLP)** page.
