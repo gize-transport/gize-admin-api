@@ -5,12 +5,13 @@ import json
 import random
 import stat
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
 import pytest
 
-from scripts import drill_token, load_drill
+from scripts import drill_seed, drill_token, load_drill
 from scripts.load_drill import Results, percentile, summary
 
 
@@ -180,3 +181,103 @@ def test_the_command_prompts_and_saves(
     assert drill_token.main(["--output", str(target)], transport=transport) == 0
     assert target.read_text() == "tok"
     assert "tok" not in capsys.readouterr().out.replace(str(target), "")
+
+
+# --- drill_seed ----------------------------------------------------------------------
+
+
+class FakeApi:
+    """Answers the calls drill_seed makes, recording them; nothing reaches staging."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, bool]] = []
+        self.gone: set[str] = set()
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        keyed = "idempotency-key" in request.headers
+        assert request.headers["authorization"] == "Bearer tok"
+        self.calls.append((request.method, request.url.path, keyed))
+        if request.method == "POST" and request.url.path.count("/") == 2:
+            return httpx.Response(201, json={"id": f"id-{len(self.calls)}"})
+        if request.method == "DELETE":
+            if request.url.path in self.gone:
+                return httpx.Response(404, json={"code": "NOT_FOUND"})
+            self.gone.add(request.url.path)
+            return httpx.Response(204)
+        return httpx.Response(200, json={})
+
+
+@pytest.fixture
+def small(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in (("AREAS", 4), ("CORRIDORS", 2), ("ROUTES_PER_CORRIDOR", 2),
+                        ("RIDERS", 8), ("PER_ROUTE", 2), ("REQUESTS", 2)):  # fmt: skip
+        monkeypatch.setattr(drill_seed, name, value)
+
+
+def _seed(tmp_path: Path, fake: Callable[[httpx.Request], httpx.Response], *extra: str) -> int:
+    token = tmp_path / "token"
+    token.write_text("tok")
+    argv = ["seed", "--token-file", str(token), "--state", str(tmp_path / "state.json"),
+            "--base-url", "http://test", "--per-minute", "100000", *extra]  # fmt: skip
+    return drill_seed.main(argv, transport=httpx.MockTransport(fake))
+
+
+@pytest.mark.usefixtures("small")
+def test_seeding_creates_everything_and_lists_every_id(tmp_path: Path) -> None:
+    fake = FakeApi()
+    assert _seed(tmp_path, fake, "--launch", "1") == 0
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert {kind: len(ids) for kind, ids in state.items()} == {
+        "areas": 4, "corridors": 2, "routes": 4, "riders": 8, "seated": 8, "requests": 2,
+    }  # fmt: skip
+    creates = [path for method, path, keyed in fake.calls if method == "POST"]
+    assert all(keyed for method, _, keyed in fake.calls if method == "POST")
+    assert creates.index("/v1/areas") < creates.index("/v1/corridors") < creates.index("/v1/routes")
+    statuses = [path for method, path, _ in fake.calls if path.endswith("/status")]
+    assert len(statuses) == 4 + 1  # each to forming, then one launched
+
+
+@pytest.mark.usefixtures("small")
+def test_nothing_is_launched_unless_asked(tmp_path: Path) -> None:
+    fake = FakeApi()
+    _seed(tmp_path, fake)
+    assert len([p for _, p, _ in fake.calls if p.endswith("/status")]) == 4
+
+
+@pytest.mark.usefixtures("small")
+def test_seeding_again_refuses_until_removed(tmp_path: Path) -> None:
+    _seed(tmp_path, FakeApi())
+    with pytest.raises(SystemExit, match="remove it first"):
+        _seed(tmp_path, FakeApi())
+
+
+@pytest.mark.usefixtures("small")
+def test_removal_undoes_newest_first_and_can_run_again(tmp_path: Path) -> None:
+    fake = FakeApi()
+    _seed(tmp_path, fake)
+    fake.calls.clear()
+    state_file = tmp_path / "state.json"
+    argv = ["remove", "--token-file", str(tmp_path / "token"), "--state", str(state_file),
+            "--base-url", "http://test", "--per-minute", "100000"]  # fmt: skip
+    assert drill_seed.main(argv, transport=httpx.MockTransport(fake)) == 0
+    kinds = [path.split("/")[2] for method, path, _ in fake.calls if method == "DELETE"]
+    order = [kinds.index(k) for k in ("riders", "route-requests", "routes", "corridors", "areas")]
+    assert order == sorted(order)
+    assert all(not ids for ids in json.loads(state_file.read_text()).values())
+    assert fake.calls[0][1].endswith("/seat/end")  # seats ended before anything is deleted
+
+
+def test_an_unexpected_answer_stops_naming_the_endpoint_not_the_token(tmp_path: Path) -> None:
+    def refused(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"code": "FORBIDDEN"})
+
+    with pytest.raises(SystemExit) as stopped:
+        _seed(tmp_path, refused)
+    assert str(stopped.value) == "POST /v1/areas: 403 FORBIDDEN"
+
+
+def test_the_next_first_crosses_the_year() -> None:
+    from datetime import date
+
+    assert drill_seed.next_first(date(2026, 11, 11)) == date(2026, 12, 1)
+    assert drill_seed.next_first(date(2026, 12, 31)) == date(2027, 1, 1)
