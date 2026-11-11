@@ -5,15 +5,14 @@ renamed in the code would leave its alert silent forever. These tests hold every
 the code, the runbook and the shape Grafana's import expects.
 """
 
+import ast
 import re
-from typing import Any, get_args
+from typing import Any
 
 import pytest
 import yaml
 
 from gize_api.core.config import Settings
-from gize_api.core.telemetry import _METRIC_ATTRIBUTES
-from gize_api.integrations.sms import SmsFailure
 from tests.support import ROOT
 
 RULES = ROOT / "ops" / "grafana"
@@ -38,6 +37,11 @@ def _rules(kind: str) -> list[dict[str, Any]]:
 
 ALL = [(kind, rule) for kind in FILES for rule in _rules(kind)]
 NAMES = [rule["alert"] for _, rule in ALL]
+
+
+def _rule(kind: str, name: str) -> dict[str, Any]:
+    (rule,) = [r for r in _rules(kind) if r["alert"] == name]
+    return rule
 
 
 def test_there_is_a_rule_for_each_thing_the_ticket_names() -> None:
@@ -99,8 +103,11 @@ def test_rules_for_every_environment_count_each_apart_and_name_it(
 @pytest.mark.parametrize("rule", _rules("logs"), ids=[r["alert"] for r in _rules("logs")])
 def test_every_event_a_log_rule_waits_for_is_one_the_code_logs(rule: dict[str, Any]) -> None:
     """An event renamed in the code must not leave its alert silent."""
-    (events,) = re.findall(r'\|~ "\^\(?([a-z_|]+)\)?\$"', rule["expr"])
-    for event in events.split("|"):
+    filters = re.findall(r'\|~ "\^\(?([a-z_|]+)\)?\$"', rule["expr"])
+    assert filters, f"{rule['alert']}: no event filter"
+    # A query counted more than once (a ratio, a volume floor) must count the same lines.
+    assert len(set(filters)) == 1, rule["alert"]
+    for event in filters[0].split("|"):
         # As a call's first argument (`logger.error("unhandled_error", …)`), not any mention.
         logged = re.search(rf'\(\s*"{event}"|"{event}" if |else "{event}"', SOURCE)
         assert logged, f"{rule['alert']}: nothing logs {event!r}"
@@ -123,16 +130,10 @@ def test_the_security_rules_cover_every_security_event() -> None:
 
 def test_metric_rules_use_the_names_grafana_stores() -> None:
     """OTLP metrics land in Grafana Cloud with dots as underscores and the unit appended
-    (seen on staging, 2026-11-09): `http.server.duration` (ms) is the one below."""
+    (seen on staging, 2026-11-09). Only the silence rule reads metrics: counts of short
+    bursts come from logs (GZ-070, below)."""
     expressions = " ".join(rule["expr"] for rule in _rules("metrics"))
-    # The status label the rules read is one the metrics keep (core/telemetry.py's View).
-    assert "http.status_code" in _METRIC_ATTRIBUTES
-    assert "http_status_code" in expressions
-    assert set(re.findall(r"([a-z_]+)\{", expressions)) == {
-        "gize_sms_send_duration_seconds_count",
-        "http_server_duration_milliseconds_count",
-        "target_info",
-    }
+    assert set(re.findall(r"([a-z_]+)\{", expressions)) == {"target_info"}
 
 
 def test_the_files_say_how_to_import_them() -> None:
@@ -157,17 +158,45 @@ def test_routers_carry_their_own_prefixes() -> None:
     assert all("prefix" not in call for call in calls)
 
 
-def test_the_sms_alert_counts_every_failure_kind_and_only_those() -> None:
-    """GZ-063: a new way for an SMS to fail must not go unalerted. The failure outcomes are
-    the sender's kinds and "error" (anything else it raises: sms/service.py)."""
-    (rule,) = [r for r in _rules("metrics") if r["alert"] == "GizeApiSmsFailing"]
-    (kinds,) = re.findall(r'outcome=~"([a-z|]+)"', rule["expr"])
-    service = (ROOT / "src" / "gize_api" / "sms" / "service.py").read_text()
-    literal = r'(?:_measure\(telemetry|_fail\(sessions, telemetry, claimed), purpose, "([a-z]+)"'
-    failures = set(re.findall(literal, service)) - {"duplicate", "sent"}
-    assert "error" in failures
-    assert set(kinds.split("|")) == set(get_args(SmsFailure)) | {"error"}
-    assert failures <= set(kinds.split("|"))  # every failure the service writes is counted
-    # The name Grafana stores: the instrument's, dots as underscores, its unit (s) appended.
-    assert re.search(r'"gize\.sms\.send\.duration", unit="s"', SOURCE)
-    assert "gize_sms_send_duration_seconds_count" in rule["expr"]
+def test_the_5xx_alert_counts_request_lines_by_their_status() -> None:
+    """GZ-070: from logs, not the request counter. A new metric series reaches Grafana with
+    its first minute already counted, and `increase()` missed 61 of a burst's 68 503s
+    (GZ-063). Every request line arrives as it happens.
+    """
+    expr = _rule("logs", "GizeApiServerErrors")["expr"]
+    errors, everything = expr.split(" / ")
+    # 5xx, all, and the volume floor: each the same lines, health probes left out (only
+    # failed ones are logged; a new deploy failing them is no error users see).
+    assert expr.count('|~ "^request$" | route!~"/health/.*"') == 3
+    assert expr.count('|~ "^request$"') == 3
+    # The status, the field the access log writes (a number), filters the 5xx count only.
+    assert "| status >= 500" in errors
+    assert "status" not in everything
+    access = (ROOT / "src" / "gize_api" / "core" / "logging.py").read_text()
+    assert re.search(r'log\(\s*"request",.{0,200}?\bstatus=status,', access, re.DOTALL)
+    # Over 5% of at least 20 requests in 5 minutes: one 503 among a handful is no outage.
+    assert re.search(r"\) > 0\.05\s+and on \(deployment_environment_name\)", expr)
+    assert expr.rstrip().endswith("[5m])) >= 20")
+
+
+def test_the_sms_alert_counts_every_failed_send() -> None:
+    """GZ-070: from `sms_failed` lines, whatever the failure kind, so a new kind can't go
+    unalerted. sms/service.py writes the line in one place, which every failure goes
+    through; tests/sms/test_send_once.py checks each kind writes exactly one."""
+    expr = _rule("logs", "GizeApiSmsFailing")["expr"]
+    assert '|~ "^sms_failed$"' in expr
+    assert "error" not in expr.replace("sms_failed", "")  # no filter on the kind
+    assert expr.rstrip().endswith("[15m])) >= 3")
+    assert SOURCE.count('"sms_failed"') == 1  # written in one place only: sms/service.py's _fail
+    service = ast.parse((ROOT / "src" / "gize_api" / "sms" / "service.py").read_text())
+    (fail,) = [
+        f for f in ast.walk(service) if isinstance(f, ast.AsyncFunctionDef) and f.name == "_fail"
+    ]
+    calls = {
+        call.args[0].value if call.args and isinstance(call.args[0], ast.Constant) else "": call
+        for call in ast.walk(fail)
+        if isinstance(call, ast.Call)
+    }
+    settle = [c for c in ast.walk(fail) if isinstance(c, ast.Name) and c.id == "_settle"]
+    # Logged before the row is settled: a database failing then must not drop the line.
+    assert calls["sms_failed"].lineno < min(name.lineno for name in settle)

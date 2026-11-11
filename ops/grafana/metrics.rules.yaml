@@ -1,30 +1,12 @@
 # GZ-066: alert rules on the API's metrics (Grafana Cloud Prometheus), in Prometheus
 # rule-file form. Import into Grafana-managed rules with the metrics data source
 # (`grafanacloud-<stack>-prom`): RUNBOOK.md, "Alerts". tests/test_alert_rules.py checks it.
+# Counts of failures come from logs instead (GZ-070): a new metric series reaches Grafana
+# with its first minute already counted, which `increase()` misses.
 groups:
   - name: gize-api-metrics
     interval: 1m
     rules:
-      - alert: GizeApiServerErrors
-        # Over 5% of requests answered 5xx, out of at least 20 in 5 minutes (a single 503
-        # among a handful of requests is not an outage).
-        expr: >-
-          (
-            sum by (deployment_environment_name) (increase(http_server_duration_milliseconds_count{job="gize-admin-api", http_status_code=~"5.."}[5m]))
-            / sum by (deployment_environment_name) (increase(http_server_duration_milliseconds_count{job="gize-admin-api"}[5m]))
-          ) > 0.05
-          and on (deployment_environment_name)
-          sum by (deployment_environment_name) (increase(http_server_duration_milliseconds_count{job="gize-admin-api"}[5m])) >= 20
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "{{ $labels.deployment_environment_name }}: more than 5% of API requests are failing with 5xx."
-          description: >-
-            503s mean a dependency is down (see GizeApiDependencyUnavailable); 500s are
-            bugs (see GizeApiUnhandledErrors). Split by `http_target` in Explore.
-          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapiservererrors
-
       - alert: GizeApiSilent
         # Production only, and only once it has sent data: silent until production exists.
         expr: >-
@@ -39,21 +21,3 @@ groups:
             The API is down, or its telemetry export is broken (an expired Grafana token,
             say). Check /health/ready first.
           runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapisilent
-
-      - alert: GizeApiSmsFailing
-        # Production only: staging has no AfroMessage token, so every send there fails (GZ-063).
-        # The outcomes: integrations/sms.py's SmsFailure kinds, and "error" (anything else).
-        # Known gap until GZ-070: failures in a series' first minute (after a deploy, say)
-        # are not counted, as new series start with their count.
-        expr: >-
-          sum by (deployment_environment_name) (increase(gize_sms_send_duration_seconds_count{job="gize-admin-api", deployment_environment_name="production", outcome=~"unavailable|rejected|timeout|error"}[15m])) >= 3
-        for: 0m
-        labels:
-          severity: critical
-        annotations:
-          summary: "{{ $labels.deployment_environment_name }}: SMS sends are failing (3 or more in 15 minutes)."
-          description: >-
-            AfroMessage is down, refusing our messages or timing out: phone codes answer 503,
-            launch messages are marked failed (staff can retry them) and offers show their
-            SMS failed (staff call the person). Split by `outcome` and `purpose` in Explore.
-          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapismsfailing

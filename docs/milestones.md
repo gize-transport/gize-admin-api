@@ -458,12 +458,19 @@ Status: done · Depends on: GZ-063
 - `finish` was added to complete a run that stopped after its riders: removing and remaking the same day would stop at the company riders, who rode today.
 
 ### GZ-070 · Alerts that catch short outages
-Status: todo · Depends on: GZ-066
+Status: done · Depends on: GZ-066
 - Found in GZ-063: GizeApiServerErrors missed a one-minute burst of 68 503s.
   - Each new route and status series reaches Grafana with its count already in it, since metrics are exported every 60 s, and `increase()` starts from that first sample (it counted 7 of the 68).
   - GizeApiSmsFailing has the same weakness.
 - Count 5xx from the access log lines (`request` with `status`), and SMS failures from `sms_failed`. Both log-based, as the dependency alert is, which fired correctly.
 - Prove it by repeating the database-slow drill: the alert must fire.
+- Built: both rules moved to `ops/grafana/logs.rules.yaml`; the metrics file keeps GizeApiSilent only, so an outage sends one email, not two.
+  - GizeApiServerErrors: `request` lines with `status >= 500`, over 5% of at least 20 in 5 minutes, per environment, no wait (`for: 0m`). Health probes are left out (found in review): only failed ones are logged, so a new deploy failing its probes would have read as a user-facing outage.
+  - GizeApiSmsFailing: 3 or more `sms_failed` lines in 15 minutes, production only. Every failed send writes one, whatever the kind, so a new kind can't go unalerted.
+  - Tests tie the rules to the code: the access log's `status` field ships as a number, every SMS failure path writes exactly one `sms_failed`, and each rule counts one event.
+- Replayed on the GZ-063 drill's logs, the new 5xx rule fires at 04:46 (counting all 68), where the metric rule stayed silent.
+- Re-imported into Grafana Cloud 2026-11-11 (8 rules, all healthy).
+- Proved on staging, 2026-11-11: a 60-second lock on `gize.routes` (18:59:21–19:00:21 UTC) under website-visitor traffic. GizeApiServerErrors fired at 19:01:10, 1 min 49 s after the lock began, and went to `gize-api-email` (`docs/drills/2026-11-11-staging.md`).
 
 ### GZ-071 · Timing histograms in seconds with seconds buckets
 Status: todo · Depends on: GZ-005

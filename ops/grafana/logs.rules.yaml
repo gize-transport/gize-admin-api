@@ -87,3 +87,48 @@ groups:
             Grafana endpoint can't be seen here (nothing is shipped then): production
             refuses to start without it unless explicitly opted out.
           runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapimisconfigured
+
+      - alert: GizeApiServerErrors
+        # Over 5% of requests answered 5xx, out of at least 20 in 5 minutes (a single 503
+        # among a handful of requests is not an outage). Counted from `request` lines, not
+        # metrics, so a burst of a minute or less counts in full (GZ-070). Health probes are
+        # left out: only failed ones are logged, and a new deploy failing its probes while
+        # the old one serves is no user-facing error (GizeApiDependencyUnavailable covers it).
+        expr: >-
+          (
+            sum by (deployment_environment_name) (count_over_time({service_name="gize-admin-api"}
+            |~ "^request$" | route!~"/health/.*" | status >= 500 [5m]))
+            / sum by (deployment_environment_name) (count_over_time({service_name="gize-admin-api"}
+            |~ "^request$" | route!~"/health/.*" [5m]))
+          ) > 0.05
+          and on (deployment_environment_name)
+          sum by (deployment_environment_name) (count_over_time({service_name="gize-admin-api"}
+          |~ "^request$" | route!~"/health/.*" [5m])) >= 20
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.deployment_environment_name }}: more than 5% of API requests are failing with 5xx."
+          description: >-
+            503s mean a dependency is down or slow (see GizeApiDependencyUnavailable); 500s
+            are bugs (see GizeApiUnhandledErrors). In Explore, group the `request` lines by
+            `route` and `status`.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapiservererrors
+
+      - alert: GizeApiSmsFailing
+        # Production only: staging has no AfroMessage token, so every send there fails (GZ-063).
+        # Every failed send logs one `sms_failed` line, whatever went wrong (sms/service.py).
+        expr: >-
+          sum by (deployment_environment_name) (count_over_time({service_name="gize-admin-api",
+          deployment_environment_name="production"} |~ "^sms_failed$" [15m])) >= 3
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.deployment_environment_name }}: SMS sends are failing (3 or more in 15 minutes)."
+          description: >-
+            AfroMessage is down, refusing our messages or timing out: phone codes answer 503,
+            launch messages are marked failed (staff can retry them) and offers show their
+            SMS failed (staff call the person). In Explore, group the `sms_failed` lines by
+            `error` and `purpose`.
+          runbook_url: https://github.com/gize-transport/gize-admin-api/blob/main/RUNBOOK.md#gizeapismsfailing

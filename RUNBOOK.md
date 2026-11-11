@@ -235,8 +235,9 @@ Stack: https://maroonstarfish2393.grafana.net (India region). The API sends all 
 
 The rules are files in the repo: `ops/grafana/logs.rules.yaml` and `ops/grafana/metrics.rules.yaml`. Grafana imports them as Grafana-managed rules you can edit. `tests/test_alert_rules.py` keeps them matching the code: an event renamed in the code fails the tests instead of silencing its alert.
 
-**Installed (2026-11-09):**
-- The seven rules are in the `gize-api` folder, in two subfolders named after their files: `metrics.rules.yaml` and `logs.rules.yaml`.
+**Installed (2026-11-09; re-imported 2026-11-11 for GZ-070):**
+- The eight rules are in the `gize-api` folder, in two subfolders named after their files: `logs.rules.yaml` (seven) and `metrics.rules.yaml` (GizeApiSilent only).
+- **Counts of failures come from logs, not metrics** (GZ-070). A new metric series reaches Grafana with its first minute already counted, and `increase()` misses that: the GZ-063 drill's one-minute burst of 68 503s counted as 7. Log lines are counted as they arrive.
 - Grafana's folder UID for `gize-api` is `ft62tc`.
 
 **Updating them after a merge that changes a file:** send the file to Grafana's import API. Each file is one rule group, and sending it again replaces that group in place, so nothing needs deleting first. The import form (**Alerting → Alert rules → Import**) handles only the metrics file: it offers no logs (Loki) data source.
@@ -263,7 +264,7 @@ The rules are files in the repo: `ops/grafana/logs.rules.yaml` and `ops/grafana/
 3. **Delete the token** in the service account. Keep the account itself for next time.
 4. In **Alert rules**, check that the `gize-api` rules show **Normal**, with no error, after a minute.
 
-Every rule except the two production-only ones counts each environment separately and names it in the alert's summary, so a staging problem never reads like a production outage.
+Every rule except the production-only ones (GizeApiMisconfigured, GizeApiSilent, GizeApiSmsFailing) counts each environment separately and names it in the alert's summary, so a staging problem never reads like a production outage.
 
 **Where alerts go:** **Alerting → Contact points**. The default email contact point gets everything. Set it to the address that should be woken, then press **Test**.
 
@@ -303,21 +304,27 @@ Production started without a setting it needs: `observability_disabled` names it
 - **Do:** set it on Render and redeploy ("Production secrets" once production exists).
 
 ### GizeApiServerErrors
-More than 5% of requests answered 5xx, out of at least 20, for 2 minutes.
+More than 5% of requests answered 5xx, out of at least 20, in 5 minutes. Counted from `request` log lines, so a burst of a minute counts in full. It fires about two minutes after the burst begins and resolves within five minutes after it ends.
+- Health probes are left out: a new deploy failing its probes while the old one serves is GizeApiDependencyUnavailable's, not this.
+- It needs `LOG_LEVEL` at `INFO` (the default): at `WARNING`, successful requests aren't logged, and every 5xx would read as 100%.
 - **Look:**
-  - 503s usually come with GizeApiDependencyUnavailable;
+  - 503s usually come with GizeApiDependencyUnavailable, or a slow database (a lock: requests wait 3 s, then 503);
   - 500s with GizeApiUnhandledErrors;
-  - split by `http_target` to see which route.
+  - in Explore, `{service_name="gize-admin-api"} |~ "^request$" | status >= 500`, and look at `route` and `status`.
 - **Do:** as for those two. After a deploy, roll back first and investigate after.
 
 ### GizeApiSmsFailing
-Production: 3 or more SMS sends failed in 15 minutes (AfroMessage unavailable, refusing or timing out).
-- **Known gap until GZ-070:** failures in a series' first minute (after a deploy or restart, say) aren't counted. A burst right after a deploy can go unalerted.
+Production: 3 or more SMS sends failed in 15 minutes (AfroMessage unavailable, refusing or timing out, or a bug in our sender).
+Counted from `sms_failed` log lines: every failed send writes one, whatever went wrong.
 - **What riders see:** phone codes answer 503, so people can't register on the website. Launch messages are marked failed, and offers show `sms_status: failed`.
 - **Look:**
   - AfroMessage's status, and your balance and sender name in its dashboard;
-  - in Explore, `gize_sms_send_duration_seconds_count` split by `outcome` and `purpose`.
-  - `rejected` usually means the token, the sender name or the balance; `unavailable` and `timeout` are their side.
+  - in Explore, `{service_name="gize-admin-api"} |~ "^sms_failed$"`, and look at `error` and `purpose`.
+  - by `error` (`integrations/afromessage.py`):
+    - `rejected`: AfroMessage answered with an error, usually the sender name or the balance, sometimes the number. The `afromessage_refused` line just before it has AfroMessage's reasons.
+    - `unavailable`: no AfroMessage token is set (GizeApiMisconfigured fires too), AfroMessage is unreachable, or it answered another HTTP error (a wrong token gets one).
+    - `timeout`: no answer in time, or one we couldn't read, so the SMS may or may not have gone out.
+    - `error`: a bug in our sender.
 - **Do:**
   - fix the account if it's ours;
   - tell callers to try again later;
