@@ -85,7 +85,15 @@ def decode_cursor(token: str) -> Cursor:
         if not token or created_at.tzinfo is None:
             raise ValueError("no time zone")
         created_at = created_at.astimezone(UTC)  # out-of-range instants fail here, not in SQL
-    except (binascii.Error, ValueError, TypeError, UnicodeDecodeError, OverflowError):
+    except (
+        binascii.Error,
+        ValueError,
+        TypeError,
+        AttributeError,
+        UnicodeDecodeError,
+        OverflowError,
+    ):
+        # AttributeError: uuid.UUID given something not text (a number, a list).
         raise AppError(ErrorCode.INVALID_CURSOR) from None
     return Cursor(created_at=created_at, id=cursor_id)
 

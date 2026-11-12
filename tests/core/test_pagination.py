@@ -47,6 +47,9 @@ def _token(payload: object) -> str:
         _token(["2026-10-28T06:30:00", str(uuid.uuid4())]),  # no time zone
         _token(["yesterday", str(uuid.uuid4())]),
         _token(["2026-10-28T06:30:00+00:00", str(uuid.uuid4()), "extra"]),
+        _token(["2026-10-28T06:30:00+00:00", 5]),  # an id that isn't text
+        _token(["2026-10-28T06:30:00+00:00", [str(uuid.uuid4())]]),
+        _token([20261028, str(uuid.uuid4())]),  # a time that isn't text
         base64.urlsafe_b64encode(b"\xff\xfe").decode(),
         _token(["0001-01-01T00:00:00+14:00", str(uuid.uuid4())]),  # outside timestamptz
         _token(["9999-12-31T23:59:59-14:00", str(uuid.uuid4())]),

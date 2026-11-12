@@ -483,6 +483,7 @@ Status: done · Depends on: GZ-005
   - the bounds reach every timeout they measure;
   - a new timing in seconds without bounds fails the build.
 - The old buckets' data in Grafana stops updating: percentiles from before 2026-11-12 aren't comparable (RUNBOOK, "Grafana Cloud").
+- Confirmed on staging, 2026-11-12, after the deploy, under website traffic: only the new buckets report. The database p95 reads 48 ms (p50 34 ms), where it read 4.75 s. Redis p95 is at or under 5 ms.
 
 ### GZ-072 · A trustworthy client address on Render
 Status: todo · Depends on: GZ-009 · **Before the public website launches**
@@ -493,3 +494,27 @@ Status: todo · Depends on: GZ-009 · **Before the public website launches**
 Status: todo · Depends on: GZ-009
 - Found in GZ-063: with Redis suspended, each request waited out the rate limiter's Redis timeout (about 1 s) before failing open. p95 went from about 0.5 s to about 1.4 s.
 - After a failure, skip Redis for a short time (fail open, or closed, as each policy says) and retry in the background. Keep the alert and the once-a-minute log line.
+
+### GZ-075 · A route's offer queue
+Status: done · Depends on: GZ-040
+- Asked by the frontend team (gize-admin-web, backend question 10, 2026-11-12): the portal lists a route's requests oldest first, but "Offer a free seat" skips requests with an open offer anywhere and puts those offered a seat on the route before last. So the offer dialog couldn't show the real order, and a request chosen "ahead" might already be next.
+- Built: `GET /v1/routes/{route_id}/offer-queue` (`offers_queue`, any staff), paged with its own cursor (group, age, id).
+  - **Items:** the request (as `route_requests_get` returns it), `position` (1 is whom the offer picks), `offered_before` and `not_offerable` (`open_offer` or `student`).
+  - **Order:** first the requests a seat can be offered to, then the others, oldest first.
+  - **Numbering:** positions are numbered over the whole queue, so pages continue the count.
+  - **Errors:** 404 for an unknown route; a draft or paused route still lists its queue.
+- The offer and the queue share one definition (`route_requests.repository._queue_terms`): who can be offered, and in what order. A test offers seat after seat and checks each goes to the queue's position 1.
+- Tests also cover:
+  - the frontend team's example: B-07 with Almaz, Dawit and Meron, plus a student and a request matched to the route;
+  - pages;
+  - an empty queue;
+  - 401 and 403;
+  - an unknown route (404);
+  - bad cursors and limits (422);
+  - the database down (503);
+  - a constant query count.
+- From review:
+  - A cursor whose id or time isn't text answered 500 instead of 422 `INVALID_CURSOR`, in the new cursor and in the shared one (`core/pagination.py`, every paged list). Both are fixed and tested.
+  - Offers past their 48 hours but still stored `open` are tested here and elsewhere: here the request goes after the others, elsewhere it's free again, as the offer sees it.
+  - Also tested: ties across a page boundary, and closed and deleted requests.
+  - Positions are as of each page's read: an offer made between two pages moves its request to the end.

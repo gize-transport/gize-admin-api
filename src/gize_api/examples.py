@@ -18,7 +18,7 @@ from gize_api.companies.schemas import CompanyRead
 from gize_api.corridors.schemas import AreaRef, CorridorRead
 from gize_api.drivers.schemas import DriverRead
 from gize_api.launches.schemas import LaunchMessages
-from gize_api.offers.schemas import OfferRead, PublicOfferAccepted
+from gize_api.offers.schemas import OfferQueueItem, OfferRead, PublicOfferAccepted
 from gize_api.overview.schemas import Overview
 from gize_api.registrations.schemas import AdultRegistered
 from gize_api.riders.schemas import RiderListItem, RiderRead
@@ -60,6 +60,30 @@ RIDER = {
     "seat": SEAT,
     "next_seat": None,
     "open_requests": 0,
+    "created_at": CREATED,
+    "updated_at": UPDATED,
+}
+
+REQUEST = {
+    "id": REQUEST_ID,
+    "kind": "route",
+    "status": "new",
+    "source": "app",
+    "rider_name": "Meron Haile",
+    "rider_type": "adult",
+    "contact_name": "Meron Haile",
+    "contact_phone": "+251911000124",
+    "school_name": None,
+    "route": ROUTE,
+    "matched_route": None,
+    "from_area": None,
+    "from_area_name": None,
+    "to_area": None,
+    "to_area_name": None,
+    "preferred_morning_time": None,
+    "preferred_return_time": None,
+    "notes": None,
+    "decline_reason": None,
     "created_at": CREATED,
     "updated_at": UPDATED,
 }
@@ -134,30 +158,9 @@ def examples() -> tuple[BaseModel, ...]:
         ),
         RiderRead.model_validate({**RIDER, "phone": "+251911000123"}),
         RiderListItem.model_validate({**RIDER, "phone_masked": "+2519****0123"}),
-        RouteRequestRead.model_validate(
-            {
-                "id": REQUEST_ID,
-                "kind": "route",
-                "status": "new",
-                "source": "app",
-                "rider_name": "Meron Haile",
-                "rider_type": "adult",
-                "contact_name": "Meron Haile",
-                "contact_phone": "+251911000124",
-                "school_name": None,
-                "route": ROUTE,
-                "matched_route": None,
-                "from_area": None,
-                "from_area_name": None,
-                "to_area": None,
-                "to_area_name": None,
-                "preferred_morning_time": None,
-                "preferred_return_time": None,
-                "notes": None,
-                "decline_reason": None,
-                "created_at": CREATED,
-                "updated_at": UPDATED,
-            }
+        RouteRequestRead.model_validate(REQUEST),
+        OfferQueueItem.model_validate(
+            {"position": 1, "offered_before": False, "not_offerable": None, "request": REQUEST}
         ),
         RouteRequestSummary.model_validate(
             {
