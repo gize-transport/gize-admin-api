@@ -17,6 +17,8 @@ from gize_api.offers.schemas import (
     OfferCreate,
     OfferListParams,
     OfferPage,
+    OfferQueuePage,
+    OfferQueueParams,
     OfferRead,
     PublicOfferAccept,
     PublicOfferAccepted,
@@ -114,6 +116,35 @@ async def list_offers(
     newest first. 404 NOT_FOUND for a route that never existed or was deleted."""
     response.headers["Cache-Control"] = "no-store"
     return await service.list_offers(session, route_id, params)
+
+
+def offer_queue_params(params: Annotated[OfferQueueParams, Query()]) -> OfferQueueParams:
+    _ = params.queue_after  # a bad cursor is refused before any work
+    return params
+
+
+@router.get(
+    "/v1/routes/{route_id}/offer-queue",
+    operation_id="offers_queue",
+    summary="Who a route's free seat goes to, in order",
+    responses=problem_responses(ErrorCode.NOT_FOUND, ErrorCode.INVALID_CURSOR),
+)
+async def offer_queue(
+    route_id: uuid.UUID,
+    response: Response,
+    _: CurrentStaff = Depends(current_staff),  # noqa: B008
+    params: OfferQueueParams = Depends(offer_queue_params),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> OfferQueuePage:
+    """The open requests waiting for the route (asked for it, or matched to it), in the
+    order `offers_create` picks: `position` 1 is whom it offers the seat to by default.
+    Oldest first, but requests offered a seat on this route before (`offered_before`: it
+    expired or was withdrawn) after the others. Then those that can't be offered a seat,
+    oldest first, with the reason (`not_offerable`): an open offer on any route, or a
+    student's request. Positions continue from page to page, as of each page's read. Any
+    route, even one that can't be offered from (only forming and active public ones can)."""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.queue(session, route_id, params)
 
 
 @router.get(

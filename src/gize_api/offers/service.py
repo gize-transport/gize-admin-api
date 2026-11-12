@@ -3,9 +3,10 @@ accept on the website with their verified phone. Staff changes are audited (skip
 redacted); website acceptances aren't (the audit log records staff), the rows say so.
 
 - **Offering** locks the route, stores open offers past their time as `expired`, checks a
-  seat is free from the start (riders and open offers counted), then locks the queue: the
-  oldest adult request waiting for the route with no open offer, or the one staff name
-  (ahead of older ones: a skip reason). The offer holds the seat for 48 hours. The SMS
+  seat is free from the start (riders and open offers counted), then locks the queue
+  (`GET …/offer-queue` lists it, GZ-075): the oldest adult request waiting for the route
+  with no open offer, those offered a seat here before last, or the one staff name (ahead
+  of older ones: a skip reason). The offer holds the seat for 48 hours. The SMS
   goes after the commit (GZ-030's `send_once`, `offer:<id>`); its failure keeps the offer.
 - **Accepting** locks the rider (when one exists), the route, then the offer and its
   request: an offer no longer open, or past its time, is 409 OFFER_CLOSED. A rider is made
@@ -41,8 +42,12 @@ from gize_api.offers.schemas import (
     OfferCreate,
     OfferListParams,
     OfferPage,
+    OfferQueueItem,
+    OfferQueuePage,
+    OfferQueueParams,
     OfferRead,
     PublicOfferAccepted,
+    encode_queue_cursor,
 )
 from gize_api.riders import repository as riders
 from gize_api.riders import service as rider_service
@@ -55,6 +60,7 @@ from gize_api.riders.models import (
 )
 from gize_api.route_requests import repository as route_requests
 from gize_api.route_requests.models import ROUTE_REQUEST_AUDIT, RequestStatus, RouteRequest
+from gize_api.route_requests.schemas import RouteRequestRead
 from gize_api.routes import repository as routes
 from gize_api.routes import seats
 from gize_api.routes.models import (
@@ -182,6 +188,32 @@ async def list_offers(
         rows = {row[0].id: row for row in listed}
         return OfferPage(
             items=[_from_row(rows[offer_id]) for offer_id in ids], next_cursor=page.next_cursor
+        )
+
+
+async def queue(
+    session: AsyncSession, route_id: uuid.UUID, params: OfferQueueParams
+) -> OfferQueuePage:
+    """The requests waiting for the route in the order the offer picks (GZ-075), whatever
+    the route's status: only offering is refused on a draft or paused one."""
+    async with session.begin():
+        if await routes.get_live_route(session, route_id) is None:
+            raise AppError(ErrorCode.NOT_FOUND)
+        entries = await route_requests.offer_queue(
+            session, route_id, after=params.queue_after, limit=params.limit + 1
+        )
+        page = entries[: params.limit]
+        return OfferQueuePage(
+            items=[
+                OfferQueueItem(
+                    position=entry.position,
+                    offered_before=entry.offered_before,
+                    not_offerable=entry.not_offerable,
+                    request=RouteRequestRead.model_validate(entry.request),
+                )
+                for entry in page
+            ],
+            next_cursor=encode_queue_cursor(page[-1].key) if len(entries) > params.limit else None,
         )
 
 

@@ -12,19 +12,29 @@ from sqlalchemy import (
     String,
     Uuid,
     and_,
+    case,
     cast,
     exists,
     func,
     literal,
     or_,
     select,
+    tuple_,
 )
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from gize_api.areas.models import Area
-from gize_api.offers.models import OfferStatus, SeatOffer
+from gize_api.offers.models import (
+    NEXT,
+    NOT_OFFERABLE,
+    PASSED_OVER,
+    NotOfferable,
+    OfferStatus,
+    QueueKey,
+    SeatOffer,
+)
 from gize_api.route_requests.models import (
     OPEN_STATUSES,
     RequestKind,
@@ -148,18 +158,31 @@ async def others_waiting(
 MAX_QUEUE = 200  # requests read for one offer; the oldest are offered first
 
 
-async def waiting_without_offer(
-    session: AsyncSession, route_id: uuid.UUID, *, also: uuid.UUID | None = None
-) -> list[RouteRequest]:
-    """Adults' requests waiting for this route with no open offer (GZ-040): the queue a
-    free seat is offered from. Oldest first, except that a request already offered a seat
-    on this route that expired or was withdrawn goes behind the others (the seat passes to
-    the next request). The first MAX_QUEUE, and `also` (the one staff name) wherever it
-    stands, last when beyond them.
+@dataclass(frozen=True)
+class QueueEntry:
+    request: RouteRequest
+    position: int | None  # 1 is whom the offer picks; None when it can't be offered
+    offered_before: bool
+    not_offerable: NotOfferable | None
+    key: QueueKey
 
-    Locked (`FOR UPDATE`, after the route's lock) in id order, whatever the queue's order:
-    a request can wait for two routes, and two offers locking it in different orders could
-    deadlock. The lock re-checks each row, so one closed meanwhile drops out."""
+
+@dataclass(frozen=True)
+class _QueueTerms:
+    """The offer queue's rules for one route, shared by the offer and the queue's list so
+    the two can never disagree."""
+
+    open_offer: ColumnElement[bool]  # an open offer in time, on any route
+    passed_over: ColumnElement[bool]  # offered a seat on this route that lapsed
+    not_offerable: ColumnElement[str | None]
+    group: ColumnElement[int]
+
+
+def _queue_terms(route_id: uuid.UUID) -> _QueueTerms:
+    """A request a seat can be offered to: an adult's (seats are offered to adults) with
+    no open offer. Oldest first, except that one already offered a seat
+    on this route that expired or was withdrawn goes behind the others (the seat passes to
+    the next request)."""
     in_time = SeatOffer.expires_at > func.now()
     open_offer = exists().where(
         SeatOffer.request_id == RouteRequest.id, SeatOffer.status == OfferStatus.OPEN, in_time
@@ -172,11 +195,35 @@ async def waiting_without_offer(
             and_(SeatOffer.status == OfferStatus.OPEN, ~in_time),
         ),
     )
-    waiting = (*waiting_for(route_id), RouteRequest.rider_type == RiderType.ADULT, ~open_offer)
+    not_offerable = case(
+        (RouteRequest.rider_type != RiderType.ADULT, literal(NotOfferable.STUDENT.value)),
+        (open_offer, literal(NotOfferable.OPEN_OFFER.value)),
+        else_=literal(None, String),
+    )
+    group = case(
+        (or_(RouteRequest.rider_type != RiderType.ADULT, open_offer), NOT_OFFERABLE),
+        (passed_over, PASSED_OVER),
+        else_=NEXT,
+    )
+    return _QueueTerms(open_offer, passed_over, not_offerable, group)
+
+
+async def waiting_without_offer(
+    session: AsyncSession, route_id: uuid.UUID, *, also: uuid.UUID | None = None
+) -> list[RouteRequest]:
+    """The requests a free seat on this route can be offered to (GZ-040), in the queue's
+    order (`_queue_terms`): the first MAX_QUEUE, and `also` (the one staff name) wherever
+    it stands, last when beyond them.
+
+    Locked (`FOR UPDATE`, after the route's lock) in id order, whatever the queue's order:
+    a request can wait for two routes, and two offers locking it in different orders could
+    deadlock. The lock re-checks each row, so one closed meanwhile drops out."""
+    terms = _queue_terms(route_id)
+    waiting = (*waiting_for(route_id), terms.group != NOT_OFFERABLE)
     queue = await session.scalars(
         select(RouteRequest.id)
         .where(*waiting)
-        .order_by(passed_over, RouteRequest.created_at, RouteRequest.id)
+        .order_by(terms.group, RouteRequest.created_at, RouteRequest.id)
         .limit(MAX_QUEUE)
     )
     place = {request_id: index for index, request_id in enumerate(queue)}
@@ -188,6 +235,63 @@ async def waiting_without_offer(
         .with_for_update()
     )
     return sorted(locked, key=lambda request: place.get(request.id, len(place)))
+
+
+async def offer_queue(
+    session: AsyncSession, route_id: uuid.UUID, *, after: QueueKey | None, limit: int
+) -> list[QueueEntry]:
+    """Up to `limit` requests waiting for this route, after `after`, in the queue's order
+    (`_queue_terms`): those a seat can be offered to, numbered from 1 (whom the offer
+    picks), then those it can't, oldest first, with the reason. One query, numbered over
+    the whole queue, so a page's positions continue the one before (as of each page's read:
+    an offer made between two pages moves its request to the end).
+
+    Indexes: the requests through `waiting_for`'s (`ix_route_requests_route_id`,
+    `ix_route_requests_matched_route_id`); offers through `uq_seat_offers_request_id_open`
+    and `ix_seat_offers_route_id_created_at`."""
+    terms = _queue_terms(route_id)
+    ranked = (
+        select(
+            RouteRequest.id.label("id"),
+            RouteRequest.created_at.label("created_at"),
+            terms.group.label("grp"),
+            terms.passed_over.label("offered_before"),
+            terms.not_offerable.label("not_offerable"),
+        )
+        .where(*waiting_for(route_id))
+        .subquery("ranked")
+    )
+    order = (ranked.c.grp, ranked.c.created_at, ranked.c.id)
+    numbered = select(ranked, func.row_number().over(order_by=order).label("number")).subquery(
+        "numbered"
+    )
+    statement = (
+        select(
+            RouteRequest,
+            numbered.c.number,
+            numbered.c.grp,
+            numbered.c.offered_before,
+            numbered.c.not_offerable,
+        )
+        .join(numbered, numbered.c.id == RouteRequest.id)
+        .options(*_WITH_PLACES)
+    )
+    key = tuple_(numbered.c.grp, numbered.c.created_at, numbered.c.id)
+    if after is not None:
+        statement = statement.where(key > tuple_(after.group, after.created_at, after.id))
+    rows = await session.execute(
+        statement.order_by(numbered.c.grp, numbered.c.created_at, numbered.c.id).limit(limit)
+    )
+    return [
+        QueueEntry(
+            request=request,
+            position=None if group == NOT_OFFERABLE else number,
+            offered_before=offered_before,
+            not_offerable=None if reason is None else NotOfferable(reason),
+            key=QueueKey(group, request.created_at, request.id),
+        )
+        for request, number, group, offered_before, reason in rows
+    ]
 
 
 def waiting_for(route_id: uuid.UUID) -> tuple[ColumnElement[bool], ...]:

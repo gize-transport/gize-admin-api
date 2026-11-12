@@ -10,6 +10,7 @@ wherever it is read, and stored `expired` when next touched.
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 
@@ -21,6 +22,28 @@ from gize_api.core.models import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH
 
 OFFER_OPEN_UNIQUE = "uq_seat_offers_request_id_open"
+
+
+# Where a request stands in a route's offer queue (GZ-040, GZ-075): its group, then its age.
+NEXT, PASSED_OVER, NOT_OFFERABLE = 0, 1, 2
+
+
+@dataclass(frozen=True)
+class QueueKey:
+    """A request's place in a route's offer queue: group (NEXT, PASSED_OVER, NOT_OFFERABLE),
+    then oldest first, then by id."""
+
+    group: int
+    created_at: datetime
+    id: uuid.UUID
+
+
+class NotOfferable(StrEnum):
+    """Why a request waiting for a route can't be offered its seat (GZ-075): it has an open
+    offer (on any route), or it's a student's (seats are offered to adults)."""
+
+    OPEN_OFFER = "open_offer"
+    STUDENT = "student"
 
 
 class OfferStatus(StrEnum):
