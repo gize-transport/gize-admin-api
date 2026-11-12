@@ -473,9 +473,16 @@ Status: done · Depends on: GZ-066
 - Proved on staging, 2026-11-11: a 60-second lock on `gize.routes` (18:59:21–19:00:21 UTC) under website-visitor traffic. GizeApiServerErrors fired at 19:01:10, 1 min 49 s after the lock began, and went to `gize-api-email` (`docs/drills/2026-11-11-staging.md`).
 
 ### GZ-071 · Timing histograms in seconds with seconds buckets
-Status: todo · Depends on: GZ-005
+Status: done · Depends on: GZ-005
 - Found in GZ-063: `db.client.operation.duration`, `http.client.request.duration`, `gize.sms.send.duration` and `gize.job.duration` are recorded in seconds, but use the SDK's default bucket boundaries (0–10000, sized for milliseconds). Every sample falls in the first bucket, so percentiles read 2.5 s / 4.75 s for 20 ms queries.
 - Give them seconds boundaries (OTel's advisory `explicit_bucket_boundaries_advisory`, 0.005 … 10 s), with a test on the exported boundaries.
+- Built: `SECONDS_BUCKETS` in `core/telemetry.py` (0.005 … 10 s, OpenTelemetry's recommended set for request durations) on the database, Redis, outside-call and SMS timings. `JOB_SECONDS_BUCKETS` adds 30 and 60 s for jobs, which run up to their 60-second limit.
+- Tests:
+  - each of the five timings exports these bounds;
+  - a 20 ms value lands in (10 ms, 25 ms];
+  - the bounds reach every timeout they measure;
+  - a new timing in seconds without bounds fails the build.
+- The old buckets' data in Grafana stops updating: percentiles from before 2026-11-12 aren't comparable (RUNBOOK, "Grafana Cloud").
 
 ### GZ-072 · A trustworthy client address on Render
 Status: todo · Depends on: GZ-009 · **Before the public website launches**

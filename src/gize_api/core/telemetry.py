@@ -70,6 +70,16 @@ from gize_api.core.logging import known_method, log_export, set_log_export
 EXPORT_TIMEOUT_SECONDS = 5
 SHUTDOWN_BUDGET_SECONDS = 5.0
 METRIC_EXPORT_INTERVAL_MS = 60_000
+# Bucket bounds for timings recorded in seconds (GZ-071): OpenTelemetry's recommended set
+# for request durations, 5 ms to 10 s, up to the longest limit these measure (database
+# statements 5 s, Redis 1 s, outside calls 10 s). A call cut off at 10 s is measured just
+# past it, in the overflow bucket, which percentiles read as 10 s: "hit the limit". The
+# SDK's default bounds are sized for milliseconds: in seconds every value fell into "0 to 5 s".
+SECONDS_BUCKETS: tuple[float, ...] = (
+    0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0,
+)  # fmt: skip
+# Background jobs run up to the worker's 60-second limit (cut off there, likewise).
+JOB_SECONDS_BUCKETS: tuple[float, ...] = (*SECONDS_BUCKETS, 30.0, 60.0)
 # Matched against the full request URL; only the two health endpoints are untraced.
 EXCLUDED_URLS = r"^https?://[^/]+/health/(live|ready)(\?.*)?$"
 
@@ -212,6 +222,7 @@ class Telemetry:
             "db.client.operation.duration",
             unit="s",
             description="Duration of database statements",
+            explicit_bucket_boundaries_advisory=SECONDS_BUCKETS,
         )
 
         def before(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy event signature
@@ -287,6 +298,7 @@ class Telemetry:
             "http.client.request.duration",
             unit="s",
             description="Duration of calls to outside services",
+            explicit_bucket_boundaries_advisory=SECONDS_BUCKETS,
         )
 
     def record_job(self, job: str, outcome: str, seconds: float) -> None:
@@ -296,7 +308,10 @@ class Telemetry:
     @functools.cached_property
     def _job_duration(self) -> Histogram:
         return self.meter_provider.get_meter("gize_api.worker").create_histogram(
-            "gize.job.duration", unit="s", description="Duration of background jobs by outcome"
+            "gize.job.duration",
+            unit="s",
+            description="Duration of background jobs by outcome",
+            explicit_bucket_boundaries_advisory=JOB_SECONDS_BUCKETS,
         )
 
     def record_sms(self, purpose: str, outcome: str, seconds: float) -> None:
@@ -307,7 +322,10 @@ class Telemetry:
     @functools.cached_property
     def _sms_duration(self) -> Histogram:
         return self.meter_provider.get_meter("gize_api.sms").create_histogram(
-            "gize.sms.send.duration", unit="s", description="SMS sends by purpose and outcome"
+            "gize.sms.send.duration",
+            unit="s",
+            description="SMS sends by purpose and outcome",
+            explicit_bucket_boundaries_advisory=SECONDS_BUCKETS,
         )
 
     def record_redis_operation(self, operation: str, outcome: str, seconds: float) -> None:
@@ -323,7 +341,10 @@ class Telemetry:
     @functools.cached_property
     def _redis_duration(self) -> Histogram:
         return self.meter_provider.get_meter("gize_api.redis").create_histogram(
-            "db.client.operation.duration", unit="s", description="Duration of Redis operations"
+            "db.client.operation.duration",
+            unit="s",
+            description="Duration of Redis operations",
+            explicit_bucket_boundaries_advisory=SECONDS_BUCKETS,
         )
 
     def record_health_probe(self, endpoint: str, status: int) -> None:
