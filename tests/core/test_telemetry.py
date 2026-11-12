@@ -1,5 +1,6 @@
 """GZ-005: OpenTelemetry traces and metrics; off unless configured; never leaks request data."""
 
+import ast
 import asyncio
 import subprocess
 import sys
@@ -11,7 +12,11 @@ import pytest
 import sqlalchemy.exc
 from fastapi import FastAPI
 from opentelemetry import trace
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoint
+from opentelemetry.sdk.metrics.export import (
+    HistogramDataPoint,
+    InMemoryMetricReader,
+    NumberDataPoint,
+)
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -19,16 +24,21 @@ from opentelemetry.trace import INVALID_SPAN
 from redis.asyncio import Redis
 from starlette.types import Message, Receive, Scope, Send
 
+from gize_api import worker
+from gize_api.core import db, ratelimit
+from gize_api.core import http as outbound
 from gize_api.core.logging import configure_logging
 from gize_api.core.request_id import REQUEST_ID_HEADER
 from gize_api.core.telemetry import (
+    JOB_SECONDS_BUCKETS,
+    SECONDS_BUCKETS,
     _DropInboundTraceContext,
     _resolve,
     _scrub_request_span,
     configure_telemetry,
 )
 from gize_api.main import GizeAPI, create_app
-from tests.support import DatabaseUrls, SettingsFactory
+from tests.support import ROOT, DatabaseUrls, SettingsFactory
 
 PHONE = "0911223344"
 SENSITIVE = (PHONE, "phone=", "10.9.8.7", "evil-host.example", "Mozilla/5.0 (Secret Phone)")
@@ -656,3 +666,97 @@ async def test_unavailable_database_is_counted(
         if isinstance(point, NumberDataPoint)
     ]
     assert points == [({"error.type": "ConnectionRefusedError"}, 1)]
+
+
+# --- GZ-071: timings in seconds have buckets in seconds ---------------------------------
+#
+# The SDK's default buckets (0, 5, 10, 25 … 10000) are sized for milliseconds: in seconds,
+# every value fell into "0 to 5 s" and Grafana read a 4.75 s p95 for 20 ms queries (GZ-063).
+
+
+def _histograms(metrics: InMemoryMetricReader) -> dict[tuple[str, str], HistogramDataPoint]:
+    data = metrics.get_metrics_data()
+    assert data is not None
+    found: dict[tuple[str, str], HistogramDataPoint] = {}
+    for resource in data.resource_metrics:
+        for scope in resource.scope_metrics:
+            for metric in scope.metrics:
+                for point in metric.data.data_points:
+                    if isinstance(point, HistogramDataPoint):
+                        found[(scope.scope.name, metric.name)] = point
+    return found
+
+
+async def test_every_timing_in_seconds_has_buckets_in_seconds(
+    make_settings: SettingsFactory, metrics: InMemoryMetricReader, database: DatabaseUrls
+) -> None:
+    app = _app(make_settings, database_url=database.app)
+    telemetry = configure_telemetry(make_settings(), metric_reader=metrics)
+    assert telemetry is not None
+    app.telemetry = telemetry
+    async with app.router.lifespan_context(app):  # telemetry shuts down with the app
+        async with app.state.sessionmaker() as session, session.begin():
+            await session.execute(sqlalchemy.text("SELECT 1"))
+        telemetry.record_redis_operation("ping", "ok", 0.002)
+        telemetry.record_outbound_duration(0.3, {"server.address": "api.example"})
+        telemetry.record_sms("phone_verification", "sent", 1.2)
+        telemetry.record_job("example", "succeeded", 42.0)
+        histograms = _histograms(metrics)
+    bounds = {key: tuple(point.explicit_bounds) for key, point in histograms.items()}
+    assert {
+        key: b for key, b in bounds.items() if key[0] != "opentelemetry.instrumentation.asgi"
+    } == {
+        ("gize_api.db", "db.client.operation.duration"): SECONDS_BUCKETS,
+        ("gize_api.redis", "db.client.operation.duration"): SECONDS_BUCKETS,
+        ("gize_api.http", "http.client.request.duration"): SECONDS_BUCKETS,
+        ("gize_api.sms", "gize.sms.send.duration"): SECONDS_BUCKETS,
+        ("gize_api.worker", "gize.job.duration"): JOB_SECONDS_BUCKETS,
+    }
+
+
+def test_a_20_ms_timing_lands_between_10_and_25_ms(
+    make_settings: SettingsFactory, metrics: InMemoryMetricReader
+) -> None:
+    telemetry = configure_telemetry(make_settings(), metric_reader=metrics)
+    assert telemetry is not None
+    telemetry.record_redis_operation("ping", "ok", 0.020)
+    point = _histograms(metrics)[("gize_api.redis", "db.client.operation.duration")]
+    # Bucket i holds (bound[i-1], bound[i]]: 0.020 is in (0.01, 0.025].
+    upper = list(point.explicit_bounds).index(0.025)
+    assert point.explicit_bounds[upper - 1] == 0.01
+    assert point.bucket_counts[upper] == 1
+    assert sum(point.bucket_counts) == 1
+
+
+def test_the_buckets_reach_every_timeout_they_measure() -> None:
+    """A value past the last bound only says "longer": each timing's limit must be the last
+    bound or within it, so a timing cut off at its limit reads as that limit."""
+    assert list(SECONDS_BUCKETS) == sorted(set(SECONDS_BUCKETS))
+    assert SECONDS_BUCKETS[0] <= 0.005  # a fast local query still has a bucket of its own
+    limits = {
+        "database statement": db.STATEMENT_TIMEOUT_MS / 1000,
+        "Redis": ratelimit.CHECK_TIMEOUT_SECONDS,
+        "outside call and SMS": outbound.TOTAL_TIMEOUT_SECONDS,
+    }
+    for what, limit in limits.items():
+        assert SECONDS_BUCKETS[-1] >= limit, what
+    assert JOB_SECONDS_BUCKETS[: len(SECONDS_BUCKETS)] == SECONDS_BUCKETS
+    assert JOB_SECONDS_BUCKETS[-1] >= worker.JOB_TIMEOUT_SECONDS
+
+
+def test_no_timing_in_seconds_is_created_without_its_buckets() -> None:
+    """A new `create_histogram(..., unit="s")` must not fall back to millisecond buckets."""
+    source = ROOT / "src" / "gize_api"
+    seconds = []
+    for path in source.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr != "create_histogram":
+                continue
+            keywords = {k.arg: k.value for k in node.keywords}
+            unit = keywords.get("unit")
+            if isinstance(unit, ast.Constant) and unit.value == "s":
+                seconds.append(path.name)
+                assert "explicit_bucket_boundaries_advisory" in keywords, path
+    assert len(seconds) >= 5  # the five of GZ-071, found

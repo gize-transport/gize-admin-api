@@ -222,7 +222,9 @@ Stack: https://maroonstarfish2393.grafana.net (India region). The API sends all 
 - **What you can filter on:** the line is the event (`unhandled_error`, `token_rejected`, …). Its fields can be filtered after a `|`: `| category="security"`, `| request_id="…"`, `| route="/v1/riders/{rider_id}"`.
 - **Logs and traces are linked:** a line logged during a request carries its trace.
 
-**Metrics:** the `-prom` data source. Requests are `http_server_duration_milliseconds_count` by `http_target` (the route pattern) and `http_status_code`. Database and Redis timings are `db_client_operation_duration_seconds`.
+**Metrics:** the `-prom` data source. Requests are `http_server_duration_milliseconds_count` by `http_target` (the route pattern) and `http_status_code`. Database and Redis timings are `db_client_operation_duration_seconds` (Redis has `db_system_name="redis"`); calls to outside services `http_client_request_duration_seconds`; SMS sends `gize_sms_send_duration_seconds`; jobs `gize_job_duration_seconds`.
+- **Percentiles:** these timings are in seconds, with buckets from 5 ms to 10 s (jobs to 60 s; GZ-071). For a p95, run `histogram_quantile(0.95, sum by (le) (rate(db_client_operation_duration_seconds_bucket{db_system_name="postgresql"}[5m])))`. For SMS, add `outcome="sent"`: duplicates are recorded at 0 s and would pull it down. A timing cut off at its limit reads as the last bound (10 s; 60 s for jobs).
+- **Before 2026-11-12 the percentiles were wrong:** every value fell into one bucket, "0 to 5 s". Don't compare them with later values.
 
 **Traces:** the `-traces` data source. Search by service name `gize-admin-api`; requests are named by their route (`GET /v1/riders/{rider_id}`).
 
