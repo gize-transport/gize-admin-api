@@ -499,6 +499,46 @@ def test_an_unknown_client_address_is_logged(
     assert any("client_address_unknown" in line for line in capsys.readouterr().err.splitlines())
 
 
+@pytest.mark.parametrize("header_value", [None, "not an ip", "198.51.100.9, 10.0.0.1"])
+def test_a_missing_trusted_header_is_logged_once_a_minute(
+    header_value: str | None,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GZ-072: behind Render, the socket address is the proxy's, shared by every caller. If
+    the header goes missing (a host change, or a server calling for its visitors), say so:
+    the name of the header only, never what was sent."""
+    from gize_api.core.logging import configure_logging
+
+    monkeypatch.setattr("gize_api.core.ratelimit._unknown_client_logged_at", {})
+    configure_logging("INFO")
+    headers = [] if header_value is None else [(b"cf-connecting-ip", header_value.encode())]
+    request = Request({"type": "http", "headers": headers, "client": ("203.0.113.7", 1)})
+    assert client_ip(request, "cf-connecting-ip") == "203.0.113.7"
+    assert client_ip(request, "cf-connecting-ip") == "203.0.113.7"
+    lines = [line for line in capsys.readouterr().err.splitlines() if "client_ip_header" in line]
+    assert len(lines) == 1  # not once per request
+    event = json.loads(lines[0])
+    assert event["event"] == "client_ip_header_missing"
+    assert event["header"] == "cf-connecting-ip"
+    assert event["level"] == "warning"
+    assert "198.51.100" not in lines[0]
+    assert "not an ip" not in lines[0]
+
+
+def test_a_present_trusted_header_logs_nothing(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gize_api.core.logging import configure_logging
+
+    monkeypatch.setattr("gize_api.core.ratelimit._unknown_client_logged_at", {})
+    configure_logging("INFO")
+    headers = [(b"cf-connecting-ip", b"198.51.100.9")]
+    request = Request({"type": "http", "headers": headers, "client": ("203.0.113.7", 1)})
+    assert client_ip(request, "cf-connecting-ip") == "198.51.100.9"
+    assert "client_ip_header" not in capsys.readouterr().err
+
+
 async def test_a_failing_limiter_close_does_not_stop_shutdown(
     make_settings: SettingsFactory,
     monkeypatch: pytest.MonkeyPatch,

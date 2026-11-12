@@ -21,9 +21,10 @@ calls Redis synchronously, so a slow Redis would stall every request.
 - **Keys** reach Redis hashed: no phone number or IP is stored in clear. The hash is not
   secret (the number space is small), so this protects against casual reading only.
 - **The client's IP** is the socket address unless CLIENT_IP_HEADER names the header a
-  trusted proxy writes (CF-Connecting-IP behind Cloudflare). Then the origin must accept
-  connections from that proxy only (firewall or authenticated origin pulls): a client
-  reaching the origin directly could otherwise send any value. IPv6 clients are keyed by
+  trusted proxy writes (CF-Connecting-IP behind Cloudflare, which fronts every Render web
+  service: GZ-072). Then the origin must accept connections from that proxy only (firewall,
+  authenticated origin pulls, or a host that offers no other way in): a client reaching the
+  origin directly could otherwise send any value. IPv6 clients are keyed by
   their /64 (one subscriber's allocation), IPv4-mapped forms as IPv4.
 - **Redis:** the limiter has its own connection pool, which waits for a free connection
   rather than failing (a busy pool is not an outage). One deadline, CHECK_TIMEOUT_SECONDS,
@@ -285,13 +286,17 @@ def client_ip(request: Request, header: str | None) -> str:
     the socket; normalised (see the module docstring).
 
     A header value that is not exactly one IP address (missing, a list, garbage) falls back
-    to the socket address. The header is only as trustworthy as the proxy in front: see
-    CLIENT_IP_HEADER in the README.
+    to the socket address, logged at most once a minute (`client_ip_header_missing`, the
+    header's name only): behind a proxy, that address is the proxy's, shared by everyone.
+    The header is only as trustworthy as the proxy in front: see CLIENT_IP_HEADER in the
+    README.
     """
     if header is not None:
         address = _normalised(request.headers.get(header, ""))
         if address is not None:
             return address
+        if RateLimiter._due(_unknown_client_logged_at, "header", OUTAGE_LOG_INTERVAL_SECONDS):
+            logger.warning("client_ip_header_missing", header=header)
     host = request.client.host if request.client is not None else ""
     address = _normalised(host)
     if address is None:
