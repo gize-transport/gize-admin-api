@@ -6,7 +6,7 @@
 # release in step with UV_PYTHON, and uv's with UV_VERSION, in the workflows (RUNBOOK.md,
 # "Dependency updates"; tests/test_ci_config.py fails until they match).
 
-FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
 
 # --- build: resolve the locked runtime dependencies into /opt/venv -----------------------
 FROM python:3.12.16-slim-trixie@sha256:962f801b08c870ac2a51b72bf02dae38c9a4162319e5e882ec244e198188d54e AS builder
