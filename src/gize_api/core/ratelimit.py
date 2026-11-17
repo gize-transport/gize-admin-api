@@ -28,13 +28,16 @@ calls Redis synchronously, so a slow Redis would stall every request.
   their /64 (one subscriber's allocation), IPv4-mapped forms as IPv4.
 - **Redis:** the limiter has its own connection pool, which waits for a free connection
   rather than failing (a busy pool is not an outage). One deadline, CHECK_TIMEOUT_SECONDS,
-  covers a whole check. Calls are traced (keys hashed) and every check is measured
-  (db.client.operation.duration, db.system.name=redis, outcome allowed/limited/error/skipped).
+  covers a whole check. Calls are traced (keys hashed) and every check that reaches Redis is
+  measured (db.client.operation.duration, db.system.name=redis, outcome allowed/limited/error).
 - **Redis down (GZ-073):** after a failed check, checks skip Redis and answer at once, each as
   its policy says (open: allowed; closed: 503), so only the first request waits for the
-  deadline. A background task PINGs Redis every PROBE_INTERVAL_SECONDS and ends the skipping
-  when it answers (`rate_limit_recovered`). `rate_limit_unavailable` stays once a minute per
-  policy and process, with `skipped` saying whether Redis was tried.
+  deadline. A background task PINGs Redis at once, then every PROBE_INTERVAL_SECONDS, and ends
+  the skipping when it answers (`rate_limit_recovered`): a one-off failure against a healthy
+  Redis costs milliseconds of skipping, an outage one timeout. The PINGs are measured as
+  `rate_limit_probe` (ok/error), the outage's ongoing signal; skipped checks are not measured
+  (no Redis call). `rate_limit_unavailable` stays once a minute per policy and process, with
+  `skipped` saying whether Redis was tried.
 """
 
 import asyncio
@@ -133,6 +136,7 @@ class RateLimiter:
         self._telemetry = telemetry
         self._outage_logged_at: dict[str, float] = {}
         self._probe: asyncio.Task[None] | None = None  # set while Redis is being skipped
+        self._closed = False
         # Our own client on the pool for the background PING: `limits`' storage.check()
         # catches everything, CancelledError included, so its loop could never be stopped.
         self._ping_client = Redis(connection_pool=pool)
@@ -172,9 +176,10 @@ class RateLimiter:
     @property
     def skipping_redis(self) -> bool:
         """True after a failed check, until the background check finds Redis again."""
-        return self._probe is not None
+        return self._probe is not None and not self._probe.done()
 
     async def aclose(self) -> None:
+        self._closed = True  # a check failing during shutdown starts no new background task
         probe, self._probe = self._probe, None
         if probe is not None:
             probe.cancel()
@@ -205,7 +210,6 @@ class RateLimiter:
         }
         started = time.perf_counter()
         if self.skipping_redis:
-            self._measure("skipped", started)
             self._unavailable(policy, None)
             return self._without_redis(policy)
         deadline = asyncio.get_running_loop().time() + CHECK_TIMEOUT_SECONDS
@@ -258,32 +262,37 @@ class RateLimiter:
         raise AppError(
             ErrorCode.SERVICE_UNAVAILABLE,
             headers={"Retry-After": UNAVAILABLE_RETRY_AFTER_SECONDS},
-        )
+        ) from None
 
     def _start_skipping(self) -> None:
-        if self._probe is None:
+        if not self._closed and not self.skipping_redis:
             self._probe = asyncio.create_task(self._until_redis_answers(), name="ratelimit-probe")
 
     async def _until_redis_answers(self) -> None:
-        """PING Redis every PROBE_INTERVAL_SECONDS until it answers, then stop skipping."""
-        while True:
-            await asyncio.sleep(PROBE_INTERVAL_SECONDS)
-            started = time.perf_counter()
-            try:
-                async with asyncio.timeout(CHECK_TIMEOUT_SECONDS):
-                    answered = bool(await self._ping_client.ping())
-            except (RedisError, OSError, TimeoutError):
-                answered = False
-            if self._telemetry is not None:
-                self._telemetry.record_redis_operation(
-                    "rate_limit_probe",
-                    "ok" if answered else "error",
-                    time.perf_counter() - started,
-                )
-            if answered:
-                break
-        self._probe = None
+        """PING Redis at once, then every PROBE_INTERVAL_SECONDS, until it answers; then stop
+        skipping. However the task ends, the skipping ends with it: never skip for good."""
+        try:
+            while True:
+                if await self._ping():
+                    break
+                await asyncio.sleep(PROBE_INTERVAL_SECONDS)
+        finally:
+            self._probe = None  # no other probe can start while this one runs
         logger.info("rate_limit_recovered")
+
+    async def _ping(self) -> bool:
+        started = time.perf_counter()
+        answered = False
+        try:
+            async with asyncio.timeout(CHECK_TIMEOUT_SECONDS):
+                answered = bool(await self._ping_client.ping())
+        except (RedisError, OSError, TimeoutError):
+            pass
+        except Exception as error:  # nothing unexpected may end the probe
+            if self._due(self._outage_logged_at, "<probe>", OUTAGE_LOG_INTERVAL_SECONDS):
+                logger.warning("rate_limit_probe_failed", exc_info=error)
+        self._measure("ok" if answered else "error", started, operation="rate_limit_probe")
+        return answered
 
     def _unavailable(self, policy: Policy, error: BaseException | None) -> None:
         """Once a minute per policy: `skipped` when Redis wasn't tried (`error` is None)."""
@@ -296,10 +305,10 @@ class RateLimiter:
                 exc_info=error,
             )
 
-    def _measure(self, outcome: str, started: float) -> None:
+    def _measure(self, outcome: str, started: float, *, operation: str = "rate_limit") -> None:
         if self._telemetry is not None:
             self._telemetry.record_redis_operation(
-                "rate_limit", outcome, time.perf_counter() - started
+                operation, outcome, time.perf_counter() - started
             )
 
     @staticmethod

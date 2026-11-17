@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 from fastapi import Depends, Request
+from limits.errors import StorageError
 from opentelemetry.sdk.metrics.export import HistogramDataPoint, InMemoryMetricReader
 from redis.asyncio import Redis
 
@@ -338,7 +339,7 @@ async def test_checks_are_measured(
         if metric.name == "db.client.operation.duration"
         for point in metric.data.data_points
         if isinstance(point, HistogramDataPoint)
-        and (point.attributes or {}).get("db.system.name") == "redis"
+        and (point.attributes or {}).get("db.operation.name") == "rate_limit"
     )
     assert outcomes == ["allowed", "error", "limited"]
 
@@ -692,7 +693,7 @@ async def test_the_limits_return_when_redis_answers_again(
     assert events.count("rate_limit_recovered") == 1
 
 
-async def test_skipped_checks_are_measured_and_said_once_a_minute_per_policy(
+async def test_skipped_checks_are_not_measured_and_said_once_a_minute_per_policy(
     make_settings: SettingsFactory,
     prefix: str,
     capsys: pytest.CaptureFixture[str],
@@ -723,9 +724,9 @@ async def test_skipped_checks_are_measured_and_said_once_a_minute_per_policy(
         if metric.name == "db.client.operation.duration"
         for point in metric.data.data_points
         if isinstance(point, HistogramDataPoint)
-        and (point.attributes or {}).get("db.system.name") == "redis"
+        and (point.attributes or {}).get("db.operation.name") == "rate_limit"
     }
-    assert counts == {"error": 1, "skipped": 6}
+    assert counts == {"error": 1}  # skipped checks made no Redis call: no 0 s timings
     lines = [line for line in _log_lines(capsys) if line["event"] == "rate_limit_unavailable"]
     assert [(line["policy"], line["skipped"]) for line in lines] == [
         ("staff", False),
@@ -796,13 +797,17 @@ async def test_closing_stops_the_background_check(
     limiter_for: Callable[..., RateLimiter],
 ) -> None:
     limiter = limiter_for("redis://127.0.0.1:1/0")
-    await limiter.check(STAFF, ip="198.51.100.1")
-    probe = limiter._probe
-    assert probe is not None
-    assert not probe.done()
-    await limiter.aclose()
+    try:
+        await limiter.check(STAFF, ip="198.51.100.1")
+        probe = limiter._probe
+        assert probe is not None
+        assert not probe.done()
+    finally:
+        await limiter.aclose()
     assert probe.cancelled()
     assert not limiter.skipping_redis
+    await limiter.check(STAFF, ip="198.51.100.1")  # failing during shutdown
+    assert limiter._probe is None  # starts nothing new
 
 
 @pytest.mark.usefixtures("quick_probe")
@@ -830,6 +835,7 @@ async def test_a_background_check_that_hangs_is_cut_off(
     async with asyncio.timeout(1.0):
         await limiter.aclose()
     assert not limiter.skipping_redis
+    assert not limiter._pool._in_use_connections  # cut-off PINGs gave their connections back
 
 
 async def _until(condition: Callable[[], bool], within: float = 2.0) -> None:
@@ -837,3 +843,86 @@ async def _until(condition: Callable[[], bool], within: float = 2.0) -> None:
     while not condition():
         assert time.monotonic() < deadline, "timed out"
         await asyncio.sleep(0.01)
+
+
+async def test_one_failure_against_a_healthy_redis_skips_only_briefly(
+    limiter_for: Callable[..., RateLimiter], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A one-off failure (a stalled loop, a busy pool) must not turn the limits off for long:
+    the background check PINGs at once."""
+    limiter = limiter_for()
+    real = limiter._count
+    failures = iter([StorageError(ConnectionError("one-off"))])
+
+    async def failing_once(*args: Any) -> Any:  # noqa: ANN401
+        if (error := next(failures, None)) is not None:
+            raise error
+        return await real(*args)
+
+    monkeypatch.setattr(limiter, "_count", failing_once)
+    one = Policy("test_one", (Limit("1/minute", "ip"),), fail_open=False)
+    try:
+        with pytest.raises(AppError):  # closed: 503
+            await limiter.check(one, ip="198.51.100.1")
+        started = time.monotonic()
+        await _until(lambda: not limiter.skipping_redis, within=0.5)
+        skipped_for = time.monotonic() - started
+        await limiter.check(one, ip="198.51.100.1")  # counted
+        with pytest.raises(AppError) as limited:
+            await limiter.check(one, ip="198.51.100.1")
+    finally:
+        await limiter.aclose()
+    assert skipped_for < 0.5
+    assert limited.value.code is ErrorCode.RATE_LIMITED
+
+
+@pytest.mark.usefixtures("quick_probe")
+async def test_an_unexpected_error_in_the_background_check_never_leaves_it_skipping(
+    limiter_for: Callable[..., RateLimiter],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Skipping for good would leave staff limits off and sign-up refusing until a restart."""
+    from gize_api.core.logging import configure_logging
+
+    configure_logging("INFO")
+    limiter = limiter_for()
+    real_ping = limiter._ping_client.ping
+    surprises = iter([RuntimeError("parser bug"), RuntimeError("parser bug")])
+
+    async def surprising_ping() -> bool:
+        if (error := next(surprises, None)) is not None:
+            raise error
+        return bool(await real_ping())
+
+    monkeypatch.setattr(limiter._ping_client, "ping", surprising_ping)
+    try:
+        limiter._start_skipping()
+        await _until(lambda: not limiter.skipping_redis)
+    finally:
+        await limiter.aclose()
+    events = [line["event"] for line in _log_lines(capsys)]
+    assert events.count("rate_limit_probe_failed") == 1  # once a minute
+    assert events.count("rate_limit_recovered") == 1
+
+
+async def test_a_background_check_that_dies_ends_the_skipping(
+    limiter_for: Callable[..., RateLimiter], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt and braces: even if the task itself fails, the next check tries Redis again."""
+    limiter = limiter_for()
+
+    async def broken(self: RateLimiter) -> bool:
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(RateLimiter, "_ping", broken)
+    try:
+        limiter._start_skipping()
+        probe = limiter._probe
+        assert probe is not None
+        with pytest.raises(RuntimeError):
+            await probe
+        assert not limiter.skipping_redis
+        await limiter.check(STAFF, ip="198.51.100.1")  # goes to Redis, which answers
+    finally:
+        await limiter.aclose()
