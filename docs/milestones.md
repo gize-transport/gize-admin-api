@@ -503,7 +503,7 @@ Status: done · Depends on: GZ-009 · **Before the public website launches**
 - Learned: Render's "Save only" stores a variable; the service picks it up only at its next deploy (Manual Deploy → Deploy latest commit). RUNBOOK says so.
 
 ### GZ-073 · No Redis wait on every request while Redis is down
-Status: in progress (built; the staging proof follows its deploy) · Depends on: GZ-009
+Status: done · Depends on: GZ-009
 - Found in GZ-063: with Redis suspended, each request waited out the rate limiter's Redis timeout (about 1 s) before failing open. p95 went from about 0.5 s to about 1.4 s.
 - After a failure, skip Redis for a short time (fail open, or closed, as each policy says) and retry in the background. Keep the alert and the once-a-minute log line.
 - Built in `core/ratelimit.py`:
@@ -516,6 +516,10 @@ Status: in progress (built; the staging proof follows its deploy) · Depends on:
   - the background task could die on an unexpected error and leave the limiter skipping for good (staff limits off, sign-up refusing until a restart). It now catches and logs anything (`rate_limit_probe_failed`), and the skipping ends however the task ends;
   - its first PING waited 2 s, so one slow check against a healthy Redis (a busy pool, a stalled loop) turned the limits off for 2 s, a cheap way to have sign-up refused. It now PINGs at once: milliseconds;
   - a check failing during shutdown starts no new task.
+- Proved on staging (2026-11-17, `bf8e452`): one website read every 1.25 s from 12:15 to 12:34 UTC while the owner suspended `gize-redis-staging` for about 8 minutes (GizeApiDependencyUnavailable emailed at 12:26 UTC):
+  - every minute stayed at a median of 0.27 s and a p95 of 0.30–0.47 s, all 200. In the GZ-063 drill, every request during the outage took about 1 s longer (p95 1.4 s);
+  - three requests in the outage window took 1.2–1.3 s (12:25:03, 12:26:20, 12:32:52) instead of about 320. One is expected at the drop; the others most likely when Redis briefly answered while Render suspended and resumed it. Not confirmed from the logs: the Grafana session had expired;
+  - after the resume, 61 quick reads gave 60 × 200 then 429: the limits were back without a restart.
 - Tests against real Redis, through a proxy that takes it down and brings it back: one timeout then no waits; closed policies refuse at once; limits return after recovery; a one-off failure skips under 0.5 s; requests failing together start one background task; a hung PING is cut off and gives its connection back; an unexpected error, or a dying task, never leaves it skipping; closing stops it; logs and metrics.
 
 ### GZ-075 · A route's offer queue
