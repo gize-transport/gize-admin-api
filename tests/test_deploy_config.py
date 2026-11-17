@@ -87,7 +87,8 @@ def test_render_sends_traffic_to_the_images_port() -> None:
 
 def test_each_visitor_is_limited_by_the_address_cloudflare_saw() -> None:
     """GZ-072: every request to a Render web service passes through Cloudflare, which writes
-    CF-Connecting-IP and replaces whatever the caller sent. Without it, every visitor has the
+    CF-Connecting-IP and refuses a request that sends its own (403, proved on staging). Without
+    it, every visitor has the
     address of Render's proxy and all share one limit. X-Forwarded-For is only appended to
     (the caller writes its first entry), so uvicorn never reads it."""
     assert _env_vars()["CLIENT_IP_HEADER"] == "value: CF-Connecting-IP"

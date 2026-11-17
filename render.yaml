@@ -31,7 +31,7 @@ projects:
               - key: CORS_ALLOWED_ORIGINS  # the admin portal (gize-admin-web); not a secret
                 value: https://admin.gizetransport.com
               # GZ-072: Cloudflare, in front of every Render web service, writes the caller's
-              # address here and replaces any value the caller sent. Never X-Forwarded-For.
+              # address here and refuses requests that send their own. Never X-Forwarded-For.
               - key: CLIENT_IP_HEADER
                 value: CF-Connecting-IP
               - key: SUPABASE_URL

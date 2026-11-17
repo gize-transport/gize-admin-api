@@ -486,17 +486,21 @@ Status: done · Depends on: GZ-005
 - Confirmed on staging, 2026-11-12, after the deploy, under website traffic: only the new buckets report. The database p95 reads 48 ms (p50 34 ms), where it read 4.75 s. Redis p95 is at or under 5 ms.
 
 ### GZ-072 · A trustworthy client address on Render
-Status: in progress · Depends on: GZ-009 · **Before the public website launches**
+Status: done · Depends on: GZ-009 · **Before the public website launches**
 - Found in GZ-063: uvicorn runs with `--no-proxy-headers` and `CLIENT_IP_HEADER` is unset. On Render, every caller has the proxy's address, so all visitors share one 60-a-minute read limit and the sign-up and SMS limits. One test machine reached the read limit twice (429 on the route search).
 - Find what Render guarantees about the client's address (which header, whether clients can forge it); set `CLIENT_IP_HEADER` or trust the proxy's `X-Forwarded-For` hop accordingly. Prove it with two sources.
 - What Render says (its articles; it has no reference page on this):
   - every request to a Render web service passes through Cloudflare (the DDoS article);
-  - Cloudflare writes `CF-Connecting-IP` on every such request and replaces any value the caller sent (the PocketBase guide only);
+  - Cloudflare writes `CF-Connecting-IP` on every such request and overwrites a caller's own (the PocketBase guide only; in fact Cloudflare refuses such a request, below);
   - `X-Forwarded-For` is appended to, so the caller writes its first entry. The DDoS article still recommends it; we don't follow that.
 - Built: `CLIENT_IP_HEADER=CF-Connecting-IP` in `render.yaml`. The setting has existed since GZ-009. `--no-proxy-headers` stays, so `X-Forwarded-For` is never read. `tests/test_deploy_config.py` pins both.
 - From review: with the header set but missing or unreadable, the API used the proxy's shared address silently. It now logs `client_ip_header_missing` (header name only, at most once a minute).
 - Docs: RUNBOOK "Client addresses" (what each source says, what is trusted, the private network, custom domains, when to revisit, including a server such as the website's Workers calling for its visitors; how to check it again); README; `.env.example`; the rate limiter's docstring.
-PROOF_PLACEHOLDER
+- Proved on staging (2026-11-17), with `CLIENT_IP_HEADER` set in Render's dashboard and deployed:
+  - **Before** (the variable saved but not yet deployed): right after one machine's 61 quick reads (60 × 200, then 429), servers in Iran and the US (check-host.net) got 429 too. Visitors shared one limit. (A first "before" on 2026-11-12 used Claude Code's WebFetch as the second source; it runs on the same machine, so it proved nothing.)
+  - **After:** this machine's burst again gave 60 × 200 then 429, and kept getting 429. At the same moment, servers in Italy (2), Moldova and Portugal got 200.
+  - **Forging:** 61 requests, each with a different made-up `X-Forwarded-For`, `X-Real-IP` and `True-Client-IP`: 60 × 200, then 429, so none were believed. A made-up `CF-Connecting-IP` gets 403 from Cloudflare ("Error code: 1000") before reaching Render.
+- Learned: Render's "Save only" stores a variable; the service picks it up only at its next deploy (Manual Deploy → Deploy latest commit). RUNBOOK says so.
 
 ### GZ-073 · No Redis wait on every request while Redis is down
 Status: todo · Depends on: GZ-009
