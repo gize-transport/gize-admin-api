@@ -156,6 +156,7 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
   - Policies (engineering-standards.md): `STAFF` 120/min, `STAFF_INVITE` 20/hour per admin (each invite sends an email), `PUBLIC_SIGNUP` 5/hour per IP and 3/day per phone, `SMS` 10/hour per IP and 3/hour per phone. An expensive endpoint defines its own.
   - Over the limit: `429 RATE_LIMITED` with `Retry-After`, logged as a security event (the policy, never the key). Sentry hears at most once a minute per policy and process.
   - Redis unavailable: staff policies allow the request (logged once a minute per process, and counted as `outcome=error` in `db.client.operation.duration`: alert on it); public and SMS policies answer `503` with `Retry-After`. A busy connection pool waits instead of failing; one 1 s deadline covers each check.
+  - After a failed check (GZ-073), checks skip Redis and answer at once by the same rules, so only the first request waits. They are counted as `outcome=skipped`, and `rate_limit_unavailable` says `skipped=true`. A background PING every 2 s (`db.operation.name=rate_limit_probe`, `outcome` ok or error) ends the skipping when Redis answers, logging `rate_limit_recovered`. Limits apply again within about 2 s of Redis coming back.
   - Keys reach Redis hashed, so no phone number or IP is stored in clear. The hash is not secret, so it stops casual reading only.
   - Health endpoints have no limits.
 

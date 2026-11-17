@@ -175,6 +175,7 @@ Logs, metrics and traces are in Grafana Cloud (next section); this table is for 
 | `403` for a signed-in user | They aren't active staff in this database | An admin invites them, or the first-admin step is missing. |
 | `observability_disabled` at startup | Sentry or Grafana isn't configured | Expected on staging for Sentry (not set up yet). In production it alerts: GizeApiMisconfigured. |
 | `client_ip_header_missing` in the logs | Requests are arriving without a readable `CF-Connecting-IP`, so they share the proxy's address and one limit | See "Client addresses": a server calling for its visitors, Render's private network, or a hosting change. |
+| `rate_limit_unavailable` in the logs | Redis didn't answer a rate-limit check. Staff and website reads go on unlimited; sign-up, phone codes and code checks answer 503. After the first failure the API stops calling Redis (`skipped=true`) and checks it in the background every 2 s | Check `gize-redis-staging` in Render. `rate_limit_recovered` follows within about 2 s of Redis answering again. GizeApiDependencyUnavailable alerts on the same outage. |
 | `429 RATE_LIMITED` for many unrelated visitors at once | They share one address: `CLIENT_IP_HEADER` is missing in Render, or a phone carrier puts many phones behind one address | Check `CLIENT_IP_HEADER` = `CF-Connecting-IP` under the service's Environment. Then see "Client addresses". |
 
 ## Client addresses

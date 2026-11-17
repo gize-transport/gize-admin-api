@@ -45,7 +45,7 @@ These apply to every ticket. A PR that breaks one is not done, whatever the test
   - Public catalogue reads (`/v1/public/*`, GZ-036): 60/minute per IP.
   - Expensive endpoints (exports, bulk actions): per-endpoint limits stated in the ticket plan.
 - Return **429** with `Retry-After` and a problem+json body.
-- **If Redis is unavailable:** staff endpoints and the public catalogue (reads only, nothing personal) fail **open** (allow, log a warning, raise an alert); OTP, SMS and public registration endpoints fail **closed** (503).
+- **If Redis is unavailable:** staff endpoints and the public catalogue (reads only, nothing personal) fail **open** (allow, log a warning, raise an alert); OTP, SMS and public registration endpoints fail **closed** (503). After one failed check, requests stop calling Redis until a background check finds it again (GZ-073): an outage costs one timeout, not one per request.
 - Staff login limits are configured in Supabase Auth settings (documented in the README setup steps).
 
 ## Observability

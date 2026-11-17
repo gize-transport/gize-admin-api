@@ -5,11 +5,13 @@ Against real Redis; each test uses a key prefix of its own.
 """
 
 import asyncio
+import contextlib
 import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -559,3 +561,279 @@ def test_a_staff_policy_requires_its_auth_dependency() -> None:
     with pytest.raises(ValueError, match="after="):
         rate_limited(TWO_PER_MINUTE)
     rate_limited(CLOSED)  # IP and phone policies need no auth
+
+
+# GZ-073: after a failure, skip Redis until a background check finds it again
+
+
+class _SwitchableRedis:
+    """A TCP proxy in front of the test Redis that can be taken down and brought back: down,
+    it closes every connection (open ones too) as soon as it is made."""
+
+    def __init__(self, target: str) -> None:
+        url = urlsplit(target)
+        self._target = (url.hostname or "127.0.0.1", url.port or 6379)
+        self._db = url.path or "/0"
+        self.up = True
+        self._writers: set[asyncio.StreamWriter] = set()
+        self._server: asyncio.Server | None = None
+
+    async def start(self) -> str:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        port = self._server.sockets[0].getsockname()[1]
+        return f"redis://127.0.0.1:{port}{self._db}"
+
+    def take_down(self) -> None:
+        self.up = False
+        for writer in list(self._writers):
+            writer.close()
+
+    async def stop(self) -> None:
+        self.take_down()
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if not self.up:
+            writer.close()
+            return
+        upstream_reader, upstream_writer = await asyncio.open_connection(*self._target)
+        self._writers |= {writer, upstream_writer}
+
+        async def pipe(source: asyncio.StreamReader, sink: asyncio.StreamWriter) -> None:
+            with contextlib.suppress(OSError):
+                while data := await source.read(65536):
+                    sink.write(data)
+                    await sink.drain()
+            sink.close()
+
+        await asyncio.gather(pipe(reader, upstream_writer), pipe(upstream_reader, writer))
+        self._writers -= {writer, upstream_writer}
+
+
+@pytest.fixture
+async def switchable_redis(test_redis_url: str) -> AsyncIterator[tuple[_SwitchableRedis, str]]:
+    proxy = _SwitchableRedis(test_redis_url)
+    url = await proxy.start()
+    yield proxy, url
+    await proxy.stop()
+
+
+@pytest.fixture
+def quick_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("gize_api.core.ratelimit.PROBE_INTERVAL_SECONDS", 0.05)
+
+
+async def test_after_a_hung_check_requests_skip_redis(
+    limiter_for: Callable[..., RateLimiter], blackhole_url: str
+) -> None:
+    """The GZ-063 drill: with Redis gone, every request waited out the 1 s timeout."""
+    limiter = limiter_for("redis://" + blackhole_url.removeprefix("http://") + "/0")
+    try:
+        started = time.monotonic()
+        await limiter.check(STAFF, ip="198.51.100.1")  # waits for the timeout, once
+        first = time.monotonic() - started
+        started = time.monotonic()
+        for _ in range(20):
+            await limiter.check(STAFF, ip="198.51.100.1")
+        rest = time.monotonic() - started
+    finally:
+        await limiter.aclose()
+    assert first >= 0.9
+    assert rest < 0.2  # no Redis call at all
+
+
+async def test_while_skipping_a_closed_policy_refuses_at_once(
+    limiter_for: Callable[..., RateLimiter], blackhole_url: str
+) -> None:
+    limiter = limiter_for("redis://" + blackhole_url.removeprefix("http://") + "/0")
+    try:
+        await limiter.check(STAFF, ip="198.51.100.1")  # the failure
+        started = time.monotonic()
+        with pytest.raises(AppError) as refused:
+            await limiter.check(SMS, ip="198.51.100.1", phone="+251911223344")
+        elapsed = time.monotonic() - started
+    finally:
+        await limiter.aclose()
+    assert refused.value.code is ErrorCode.SERVICE_UNAVAILABLE
+    assert refused.value.headers == {"Retry-After": "5"}
+    assert elapsed < 0.1
+
+
+@pytest.mark.usefixtures("quick_probe")
+async def test_the_limits_return_when_redis_answers_again(
+    limiter_for: Callable[..., RateLimiter],
+    switchable_redis: tuple[_SwitchableRedis, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from gize_api.core.logging import configure_logging
+
+    configure_logging("INFO")
+    proxy, url = switchable_redis
+    one = Policy("test_one", (Limit("1/minute", "ip"),), fail_open=True)
+    limiter = limiter_for(url)
+    try:
+        await limiter.check(one, ip="198.51.100.1")  # counted
+        proxy.take_down()
+        await limiter.check(one, ip="198.51.100.1")  # fails open: Redis is down
+        await limiter.check(one, ip="198.51.100.1")  # skipped
+        await asyncio.sleep(0.3)  # several background checks, all failing
+        await limiter.check(one, ip="198.51.100.1")  # still skipped
+        proxy.up = True
+        await _until(lambda: not limiter.skipping_redis)
+        with pytest.raises(AppError) as limited:
+            await limiter.check(one, ip="198.51.100.1")  # counted again: over the limit
+    finally:
+        await limiter.aclose()
+    assert limited.value.code is ErrorCode.RATE_LIMITED
+    events = [line["event"] for line in _log_lines(capsys)]
+    assert events.count("rate_limit_unavailable") == 1  # once a minute per policy
+    assert events.count("rate_limit_recovered") == 1
+
+
+async def test_skipped_checks_are_measured_and_said_once_a_minute_per_policy(
+    make_settings: SettingsFactory,
+    prefix: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from gize_api.core.logging import configure_logging
+
+    configure_logging("INFO")
+    metrics = InMemoryMetricReader()
+    telemetry = configure_telemetry(make_settings(), metric_reader=metrics)
+    down = RateLimiter.for_settings(
+        make_settings(redis_url="redis://127.0.0.1:1/0"), telemetry=telemetry, key_prefix=prefix
+    )
+    try:
+        await down.check(STAFF, ip="198.51.100.1")  # the failure
+        for _ in range(3):
+            await down.check(STAFF, ip="198.51.100.1")
+            with pytest.raises(AppError):
+                await down.check(SMS, ip="198.51.100.1")
+    finally:
+        await down.aclose()
+    data = metrics.get_metrics_data()
+    assert data is not None
+    counts = {
+        str((point.attributes or {})["outcome"]): point.count
+        for resource in data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == "db.client.operation.duration"
+        for point in metric.data.data_points
+        if isinstance(point, HistogramDataPoint)
+        and (point.attributes or {}).get("db.system.name") == "redis"
+    }
+    assert counts == {"error": 1, "skipped": 6}
+    lines = [line for line in _log_lines(capsys) if line["event"] == "rate_limit_unavailable"]
+    assert [(line["policy"], line["skipped"]) for line in lines] == [
+        ("staff", False),
+        ("sms", True),
+    ]
+
+
+@pytest.mark.usefixtures("quick_probe")
+async def test_the_background_check_is_measured(
+    make_settings: SettingsFactory,
+    prefix: str,
+    switchable_redis: tuple[_SwitchableRedis, str],
+) -> None:
+    """While requests skip Redis, its errors keep coming from the background check."""
+    proxy, url = switchable_redis
+    metrics = InMemoryMetricReader()
+    telemetry = configure_telemetry(make_settings(), metric_reader=metrics)
+    limiter = RateLimiter.for_settings(
+        make_settings(redis_url=url), telemetry=telemetry, key_prefix=prefix
+    )
+    try:
+        proxy.take_down()
+        await limiter.check(STAFF, ip="198.51.100.1")
+        await asyncio.sleep(0.2)
+        proxy.up = True
+        await _until(lambda: not limiter.skipping_redis)
+    finally:
+        await limiter.aclose()
+    data = metrics.get_metrics_data()
+    assert data is not None
+    probes = {
+        str((point.attributes or {})["outcome"])
+        for resource in data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == "db.client.operation.duration"
+        for point in metric.data.data_points
+        if isinstance(point, HistogramDataPoint)
+        and (point.attributes or {}).get("db.operation.name") == "rate_limit_probe"
+    }
+    assert probes == {"error", "ok"}
+
+
+async def test_requests_failing_together_start_one_background_check(
+    limiter_for: Callable[..., RateLimiter],
+    blackhole_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = 0
+    real = RateLimiter._until_redis_answers
+
+    async def counting(self: RateLimiter) -> None:
+        nonlocal started
+        started += 1
+        await real(self)
+
+    monkeypatch.setattr(RateLimiter, "_until_redis_answers", counting)
+    limiter = limiter_for("redis://" + blackhole_url.removeprefix("http://") + "/0")
+    try:
+        await asyncio.gather(*(limiter.check(STAFF, ip="198.51.100.1") for _ in range(5)))
+        await asyncio.sleep(0)  # let the task start
+    finally:
+        await limiter.aclose()
+    assert started == 1
+
+
+async def test_closing_stops_the_background_check(
+    limiter_for: Callable[..., RateLimiter],
+) -> None:
+    limiter = limiter_for("redis://127.0.0.1:1/0")
+    await limiter.check(STAFF, ip="198.51.100.1")
+    probe = limiter._probe
+    assert probe is not None
+    assert not probe.done()
+    await limiter.aclose()
+    assert probe.cancelled()
+    assert not limiter.skipping_redis
+
+
+@pytest.mark.usefixtures("quick_probe")
+async def test_a_background_check_that_hangs_is_cut_off(
+    limiter_for: Callable[..., RateLimiter],
+    blackhole_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PING that never answers costs one timeout and the next one runs. Closing stops the
+    loop even mid-PING (`limits`' own check swallows the cancellation)."""
+    limiter = limiter_for("redis://" + blackhole_url.removeprefix("http://") + "/0")
+    pings = 0
+    real_ping = limiter._ping_client.ping
+
+    async def counting_ping() -> bool:
+        nonlocal pings
+        pings += 1
+        return bool(await real_ping())
+
+    monkeypatch.setattr(limiter._ping_client, "ping", counting_ping)
+    monkeypatch.setattr("gize_api.core.ratelimit.CHECK_TIMEOUT_SECONDS", 0.2)
+    await limiter.check(STAFF, ip="198.51.100.1")
+    await _until(lambda: pings >= 3, within=3.0)
+    await _until(lambda: pings == 4, within=1.0)  # now mid-PING, most likely
+    async with asyncio.timeout(1.0):
+        await limiter.aclose()
+    assert not limiter.skipping_redis
+
+
+async def _until(condition: Callable[[], bool], within: float = 2.0) -> None:
+    deadline = time.monotonic() + within
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        await asyncio.sleep(0.01)
