@@ -503,9 +503,20 @@ Status: done · Depends on: GZ-009 · **Before the public website launches**
 - Learned: Render's "Save only" stores a variable; the service picks it up only at its next deploy (Manual Deploy → Deploy latest commit). RUNBOOK says so.
 
 ### GZ-073 · No Redis wait on every request while Redis is down
-Status: todo · Depends on: GZ-009
+Status: in progress (built; the staging proof follows its deploy) · Depends on: GZ-009
 - Found in GZ-063: with Redis suspended, each request waited out the rate limiter's Redis timeout (about 1 s) before failing open. p95 went from about 0.5 s to about 1.4 s.
 - After a failure, skip Redis for a short time (fail open, or closed, as each policy says) and retry in the background. Keep the alert and the once-a-minute log line.
+- Built in `core/ratelimit.py`:
+  - after a failed check, checks skip Redis and answer at once, each as its policy says (open: allowed; closed: 503 with `Retry-After`);
+  - one background task PINGs Redis at once, then every 2 s (1 s limit), and ends the skipping when it answers (`rate_limit_recovered`);
+  - measured: the PINGs as `rate_limit_probe` (`ok` or `error`), so an outage still shows as Redis errors; skipped checks record nothing (no Redis call, no 0 s timings);
+  - kept: `rate_limit_unavailable` once a minute per policy, now with `skipped`; GizeApiDependencyUnavailable (it reads the health check's lines).
+- Found while building: `limits`' own `storage.check()` catches everything, `CancelledError` included, so a loop on it could never be stopped and would hang shutdown while Redis is down. The PING goes through redis-py on the limiter's pool instead; a test closes the limiter mid-PING.
+- From review:
+  - the background task could die on an unexpected error and leave the limiter skipping for good (staff limits off, sign-up refusing until a restart). It now catches and logs anything (`rate_limit_probe_failed`), and the skipping ends however the task ends;
+  - its first PING waited 2 s, so one slow check against a healthy Redis (a busy pool, a stalled loop) turned the limits off for 2 s, a cheap way to have sign-up refused. It now PINGs at once: milliseconds;
+  - a check failing during shutdown starts no new task.
+- Tests against real Redis, through a proxy that takes it down and brings it back: one timeout then no waits; closed policies refuse at once; limits return after recovery; a one-off failure skips under 0.5 s; requests failing together start one background task; a hung PING is cut off and gives its connection back; an unexpected error, or a dying task, never leaves it skipping; closing stops it; logs and metrics.
 
 ### GZ-075 · A route's offer queue
 Status: done · Depends on: GZ-040
