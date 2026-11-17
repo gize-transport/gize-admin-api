@@ -217,7 +217,7 @@ The last drill's results are in `docs/drills/2026-11-11-staging.md`. Repeat it b
 3. **Load:** `uv run python -m scripts.load_drill --minutes 10 --token-file ~/.gize-drill-token`. Keep away from the portal meanwhile: it shares the account's limit.
 4. **Drills, each under a shorter load (`--minutes 4`):**
    - **Database slow:** hold an `ACCESS EXCLUSIVE` lock on `gize.routes` for 60 s as `gize_migrator` (`.env.staging`), in a transaction that rolls back.
-   - **Redis down:** suspend `gize-redis-staging` in Render, wait for GizeApiDependencyUnavailable's email (about 2 minutes), then resume it.
+   - **Redis down:** suspend `gize-redis-staging` in Render, wait for GizeApiDependencyUnavailable's email (about 2 minutes), then resume it. Response times should not move: after the first failed check, requests skip Redis (GZ-073). After the resume, a burst of 61 website reads from one machine should get 429 again.
    - **SMS down:** staging without an AfroMessage token already is: the launches show it.
    - **Phone codes:** they test registration only once staging has `VERIFIED_PHONE_TOKEN_KEY`. Without it they answer 503 before anything else runs.
 5. **Clean up:**
