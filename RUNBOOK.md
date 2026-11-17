@@ -12,10 +12,10 @@ How to set up, deploy, roll back and look after the hosted API. Staging only for
 | Deploys | `.github/workflows/deploy-staging.yml` | After CI passes on `main`: migrations, then Render's deploy hook for that commit. |
 | Admin portal (CORS) | `https://admin.gizetransport.com` | The only browser origin allowed (`CORS_ALLOWED_ORIGINS` in `render.yaml`, 2026-11-10). Add more comma-separated: `https`, no path, no trailing slash. |
 | Logs, metrics, traces, alerts | Grafana Cloud stack `maroonstarfish2393` (India) | See "Grafana Cloud" and "Alerts" below. |
+| Client addresses (rate limits) | `CLIENT_IP_HEADER=CF-Connecting-IP` (`render.yaml`, GZ-072) | Every request to a Render web service passes through Cloudflare, which writes the caller's address into `CF-Connecting-IP` and refuses requests that send their own (403, Cloudflare error 1000). So each visitor has their own per-address limits. `X-Forwarded-For` is never read: the caller controls its first entry. See "Client addresses" below. |
 
 Not running on staging yet:
 - **The worker:** it only clears old idempotency keys until M3 sends SMS, and Render's free plan has no workers.
-- **`CLIENT_IP_HEADER`:** Render documents no trustworthy client-IP header; this must be settled before the public sign-up routes (M3).
 - **Sentry:** optional on staging, so the API logs `observability_disabled setting=sentry_dsn` at startup. Grafana is set up (GZ-066).
 
 ## Staging secrets
@@ -174,6 +174,31 @@ Logs, metrics and traces are in Grafana Cloud (next section); this table is for 
 | `401` on every request | The token is from another Supabase project, or the project uses the legacy JWT secret | Check `SUPABASE_URL` and the JWT signing keys. |
 | `403` for a signed-in user | They aren't active staff in this database | An admin invites them, or the first-admin step is missing. |
 | `observability_disabled` at startup | Sentry or Grafana isn't configured | Expected on staging for Sentry (not set up yet). In production it alerts: GizeApiMisconfigured. |
+| `client_ip_header_missing` in the logs | Requests are arriving without a readable `CF-Connecting-IP`, so they share the proxy's address and one limit | See "Client addresses": a server calling for its visitors, Render's private network, or a hosting change. |
+| `429 RATE_LIMITED` for many unrelated visitors at once | They share one address: `CLIENT_IP_HEADER` is missing in Render, or a phone carrier puts many phones behind one address | Check `CLIENT_IP_HEADER` = `CF-Connecting-IP` under the service's Environment. Then see "Client addresses". |
+
+## Client addresses
+
+The per-address limits (website reads, sign-up, phone codes) need each caller's own address. Render's proxy connects to the API, so the socket address is the proxy's, the same for everyone.
+
+- **What the API trusts:** `CF-Connecting-IP`, named by `CLIENT_IP_HEADER`. A caller can't choose their own address:
+  - every request to a Render web service passes through Cloudflare ([How Render handles DDoS attacks](https://render.com/articles/how-render-handles-ddos-attacks));
+  - Cloudflare writes this header on every request that reaches a Render web service ([Host PocketBase on Render](https://render.com/articles/host-pocketbase-on-render)). That guide says a caller's own value is overwritten; in fact Cloudflare refuses the request (403, "Error code: 1000");
+  - the staging proof (GZ-072, 2026-11-17, below) showed both: other networks kept their own limit, and forged headers changed nothing.
+
+  Render has no reference page on this. We also rely on Render's statement that nothing reaches the service without passing through Cloudflare; that can't be tested from outside.
+- **What it never trusts:** `X-Forwarded-For`, although the DDoS article tells readers to use it. Proxies append to it, so the caller writes its first entry ([Render feedback](https://feedback.render.com/features/p/send-the-correct-xforwardedfor)), and anyone could dodge every per-address limit by changing it. uvicorn runs with `--no-proxy-headers`, and `tests/test_deploy_config.py` keeps it that way.
+- **If the header is missing or unreadable,** the API falls back to the socket address, which is Render's proxy, shared by everyone. It logs `client_ip_header_missing` (at most once a minute per instance). Seeing it means one of the cases below.
+- **Render's private network** (`gize-api-staging:8000`) skips Cloudflare. Only our own services in the same Render workspace can reach it. A request there carries no header (so it is limited by its socket address), and one that sends its own `CF-Connecting-IP` is believed. Fine for our own services, but don't proxy outside traffic through one.
+- **Custom domains** added in Render work the same: Render's Cloudflare still serves them.
+- **Revisit this before:**
+  - proxying the domain through our own Cloudflare account (orange cloud) or putting any other proxy in front;
+  - letting a server call the API for its visitors, such as the website's server-side rendering on Cloudflare Workers. All those requests arrive with the server's address (Cloudflare gives Workers one address), so every visitor would share one limit again. Call the public API from the visitor's browser instead.
+- **After changing the variable in Render,** deploy (**Manual Deploy → Deploy latest commit**): "Save only" stores it, and the running service keeps its old environment until the next deploy, even after waking from sleep.
+- **Check it** (the GZ-072 proof, about 6 minutes, staging only). Between steps, wait 2 minutes for the limit to clear:
+  1. Send 61 quick `GET /v1/public/areas` from one machine: 60 answer 200, the 61st 429.
+  2. Straight after, the same read from other networks answers 200. Use a phone on mobile data, or [check-host.net](https://check-host.net/check-http) (it fetches a URL from servers abroad). Claude Code's WebFetch runs on your own machine, so it is not another network.
+  3. Send 61 again, each with a different made-up `X-Forwarded-For`, `X-Real-IP` and `True-Client-IP`: again 60 answer 200 and the 61st 429. If forged values were believed, all would answer 200. A made-up `CF-Connecting-IP` answers 403 from Cloudflare.
 
 ## Drills
 

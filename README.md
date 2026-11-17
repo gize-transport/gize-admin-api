@@ -57,7 +57,7 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `AFROMESSAGE_IDENTIFIER_ID` | no | The identifier (short code) to send from, for accounts with several. Unset: the account's default. |
 | `SUPABASE_SECRET_KEY` | for the first-admin command and staff invites (without it, invites answer `503`) | **Secret.** The project's secret API key, `sb_secret_...` (Project Settings → API Keys → Secret keys). It can read and create users: keep it in `.env` or the host's secret store, never in chat, code or the frontend. The legacy `service_role` JWT is refused. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated origins (`scheme://host[:port]`, lowercase, no path); `https` only in `staging` and `production`. Empty: no cross-origin access. |
-| `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, or Cloudflare's authenticated origin pulls): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. |
+| `CLIENT_IP_HEADER` | no | The header a trusted proxy in front of the API writes the client's IP into: `CF-Connecting-IP` behind Cloudflare, or your load balancer's header. Empty (default): the connection's address. Set it only when the API accepts connections **from that proxy alone** (a firewall, Cloudflare's authenticated origin pulls, or a host like Render where Cloudflare is the only way in): a client reaching the API directly could otherwise send any value and dodge every per-IP limit. Behind a load balancer without it, every client shares the balancer's IP. **On Render:** `CF-Connecting-IP` (set in `render.yaml`): Cloudflare is in front of every Render web service and refuses requests that send their own (RUNBOOK, "Client addresses"). With the header set but missing on a request, the connection's address is used and `client_ip_header_missing` is logged. |
 | `LOG_LEVEL` | no | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; any case. |
 | `SENTRY_DSN` | production, secret | Sentry errors and security events; off when unset. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | production | OTLP/HTTP base URL for traces and metrics (`https` in staging/production); off when unset. |
@@ -454,7 +454,7 @@ The public app's first step (GZ-031). Both endpoints are public, with no sign-in
 - **Locally:** in the API's terminal (the fake SMS sender).
 - **On staging:** no SMS provider yet, so requests answer `503 SMS_UNAVAILABLE`.
 
-**Before public sign-up goes live:** the per-caller limits need a trustworthy client IP (`CLIENT_IP_HEADER`). Behind Render without one, every caller shares one address and one limit.
+**Per-caller limits** use the client's IP from `CLIENT_IP_HEADER`. Behind a proxy without it, every caller shares one address and one limit. On Render it is `CF-Connecting-IP` (GZ-072).
 
 ## Public catalogue
 
