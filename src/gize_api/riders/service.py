@@ -7,7 +7,8 @@ and skip reasons redacted.
   reservation on a `forming` route, a place on an `active` one; they leave at a month's
   end. Placing one on an active route ahead of other people's open requests for it needs
   a skip reason; their own open requests for it are fulfilled.
-- Company riders ride their company's `corporate` route, starting and leaving on any day.
+- Company riders ride their company's `corporate` route, active or paused (GZ-078), starting
+  and leaving on any day.
 - A rider holding a seat must still fit its route after an edit: boarding at A or an area
   it serves, going to B (an adult's destination), Saturday only where offered.
 - A move ends the old seat the day before the new one starts; a seat that hasn't started
@@ -396,10 +397,11 @@ async def _lock_seat_routes(
 async def _takes(session: AsyncSession, route: Route, row: Rider) -> bool:
     """The route takes this rider: an adult on a forming or active public route with
     prices, on their trip, Saturday where they want it; a company rider on their company's
-    route, boarding where it passes."""
+    active or paused route (not a draft: GZ-078), boarding where it passes."""
     if row.rider_type is RiderType.CORPORATE:
         return (
             route.route_type is RouteType.CORPORATE
+            and route.status in (RouteStatus.ACTIVE, RouteStatus.PAUSED)
             and route.company_id == row.company_id
             and row.home_area_id is not None
             and await routes.serves(

@@ -2,8 +2,8 @@
 
 Staff record them for their company: name, phone, company and where they board (no
 destination: they ride to the route's B; no plan or Saturday: the company is billed). A
-phone appears once per company. They ride only their company's corporate route, starting
-and leaving on any day (today by default).
+phone appears once per company. They ride only their company's corporate route, active or
+paused (GZ-078: not a draft), starting and leaving on any day (today by default).
 """
 
 import uuid
@@ -213,24 +213,44 @@ async def test_a_company_rider_starts_today_on_their_companys_route(
     assert (seat["status"], seat["start_date"]) == ("active", "2026-11-15")
 
 
-@pytest.mark.parametrize("status", [RouteStatus.DRAFT, RouteStatus.PAUSED])
-async def test_a_company_route_not_running_still_takes_riders(
+async def test_a_paused_company_route_still_takes_riders(
     api: httpx.AsyncClient,
     db_session: AsyncSession,
     trip: Trip,
     member: uuid.UUID,
     company: uuid.UUID,
-    status: RouteStatus,
 ) -> None:
-    """The passenger list is ready before the route starts, and kept through a pause."""
-    route = await _corporate_route(db_session, trip, company, status=status)
+    """Company riders keep their seats through a pause, and new ones join it."""
+    route = await _corporate_route(db_session, trip, company, status=RouteStatus.PAUSED)
     rider = await _recorded(api, member, trip, company)
     response = await api.put(
         seat_path(rider),
         json={"route_id": str(route), "start_date": "2026-11-20"},  # any day
         headers=with_key(member),
     )
-    assert response.json()["seat"]["start_date"] == "2026-11-20"
+    assert response.status_code == 200, response.json()
+    seat = response.json()["seat"]
+    assert (seat["status"], seat["start_date"]) == ("active", "2026-11-20")
+
+
+async def test_a_draft_company_route_takes_no_riders(
+    api: httpx.AsyncClient,
+    db_session: AsyncSession,
+    trip: Trip,
+    member: uuid.UUID,
+    company: uuid.UUID,
+) -> None:
+    """GZ-078 (owner decision, 2026-11-18; before, a draft took riders, each with an active
+    seat on a route that wasn't running): staff start the route first (it only needs an
+    active company). The same 422 as adults on a route that doesn't take them."""
+    route = await _corporate_route(db_session, trip, company, status=RouteStatus.DRAFT)
+    rider = await _recorded(api, member, trip, company)
+    response = await api.put(
+        seat_path(rider), json={"route_id": str(route)}, headers=with_key(member)
+    )
+    assert (response.status_code, response.json()["code"]) == (422, "VALIDATION_FAILED")
+    assert [error["field"] for error in response.json()["errors"]] == ["/route_id"]
+    assert await seats_of(db_session, uuid.UUID(rider)) == []
 
 
 @pytest.mark.parametrize("problem", ["other company", "public", "past", "elsewhere"])
@@ -310,8 +330,12 @@ async def test_an_inactive_companys_riders_are_not_placed(
     member: uuid.UUID,
     company: uuid.UUID,
 ) -> None:
-    """Its routes can't run (GZ-024): the same 409 as launching one."""
-    route = await _corporate_route(db_session, trip, company, status=RouteStatus.DRAFT)
+    """Its routes can't run (GZ-024): the same 409 as launching one. Since GZ-078 the API
+    can't get here: only an active or paused route takes company riders, a deactivation is
+    refused while one runs (COMPANY_IN_USE), and its race with a start is refused too
+    (tests/routes/test_concurrency.py). The check stays as a backstop for a direct data
+    change, set here directly."""
+    route = await _corporate_route(db_session, trip, company)
     rider = await _recorded(api, member, trip, company)
     async with db_session.begin():
         (await db_session.get_one(Company, company)).is_active = False

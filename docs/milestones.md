@@ -574,6 +574,8 @@ Status: done · Depends on: GZ-026, GZ-027
 - Known: an open request typed before GZ-077 with a listed area's name stays typed (a new one names the area, so the two aren't seen as the same request) until that area is renamed to its own name. Production isn't live yet; staging's demo data is to be removed.
 
 ### GZ-078 · Company riders only on active or paused routes
-Status: todo · Depends on: GZ-035
+Status: done · Depends on: GZ-035
 - Asked by the frontend team (backend question 9, 2026-11-18): a company rider can be placed on their company's route in any status, and gets an active seat on a draft route.
 - Owner decision (2026-11-18): only an `active` or `paused` corporate route takes company riders (paused: they keep their seats through a pause); a draft one is a 422 on `route_id`, as for adults. Staff activate it first (it only needs an active company). Seats already held stay.
+- Built (no migration): `riders.service._takes` adds the status to the company rider's rule, so `riders_place` refuses a draft with the 422 on `route_id` adults get (description updated: a contract patch). GZ-035's test that a draft took riders now checks it doesn't; the inactive company's `409 ROUTE_NOT_READY` is now a backstop the API can't reach (a deactivation is refused while a route of the company runs, and its race with a start is refused), tested on an active route with the company set inactive directly.
+- Not changed: seats already held on a draft (none can be added now) stay, and a corporate route can't go back to draft once started, so a company rider's seat is always on an active or paused route from here on. Ending such a seat works; undoing a move or an end back onto it (placing the rider on that draft again) needs the route started first, as for an adult on a paused route.
