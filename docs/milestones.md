@@ -557,9 +557,21 @@ Status: done · Depends on: GZ-027, GZ-053
 - A typed name is compared with `lower()` without an index: requests are a short list, and the filter is paged.
 
 ### GZ-077 · Link requests to an area added later
-Status: todo · Depends on: GZ-026, GZ-027
+Status: done · Depends on: GZ-026, GZ-027
 - Asked by the frontend team (backend question 8, 2026-11-18): a request for "Tulu Dimtu", typed before it was an area, stays "not listed" on Demand after staff add it, so the card can't start a corridor or route.
 - Owner decisions (2026-11-18): when an area is added or renamed, open requests (`new`, `matched`) whose typed end has its name, ignoring case, name the area instead, in the same transaction, audited per request; closed requests keep the typed text. A new request typed with a listed area's name names that area. Both paths lock the name, so a request typed while the area is added isn't missed.
+- Built (no migration, no contract change):
+  - `areas.repository.lock_area_names`: one transaction-level advisory lock, taken first by adding or renaming an area and by recording a request with a typed name (architecture.md, lock order).
+  - Adding an area (`areas_create`) or renaming one (`areas_rename`) links, in the same transaction, the open requests with an end typed as its name (the database's `lower()`, as the summary and GZ-076's filter compare them), locked in id order; one `route_request.area_linked` audit entry each, by the staff member who added or renamed it. Renaming an area to its own name links too: requests typed with a listed name before GZ-077 are linked that way.
+  - A link that would break a rule is skipped and the request keeps its text: the area at both ends, or the same rider's same open request already naming it (both only by a rename).
+  - `route_requests_create`: a typed name that is a live area's names the area (the reply and the duplicate check use the area). The listed area at the other end too is a 422 on the typed field. A deleted area's name stays typed.
+  - The GZ-027 test that a listed area and its typed name were different requests now checks they're the same (409 `ROUTE_REQUEST_EXISTS`).
+- From review:
+  - a rename held the area `FOR UPDATE` and then waited on requests, while accepting a seat offer holds its request and then inserts a rider whose areas are foreign keys (`FOR KEY SHARE`): a deadlock, one of the two answering 503. A rename or delete now locks the area `FOR NO KEY UPDATE` (neither changes the key); a test holds a request, starts a rename and checks a foreign key check on the area doesn't wait (it timed out before);
+  - a request edit (phone or name) committed between the duplicate check and the link made the unique index fail the whole rename (500). Each link is flushed in a savepoint, and one the index refuses is skipped;
+  - the add-versus-request race is tested in both orders (typed first: the add links it, audited);
+  - a refused rename or add (`AREA_NAME_TAKEN`) links nothing.
+- Known: an open request typed before GZ-077 with a listed area's name stays typed (a new one names the area, so the two aren't seen as the same request) until that area is renamed to its own name. Production isn't live yet; staging's demo data is to be removed.
 
 ### GZ-078 · Company riders only on active or paused routes
 Status: todo · Depends on: GZ-035

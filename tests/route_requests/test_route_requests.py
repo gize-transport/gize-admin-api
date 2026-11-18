@@ -194,16 +194,19 @@ async def test_one_open_request_per_rider_and_pair(
     assert (await api.post(REQUESTS, json=body, headers=with_key(member_id))).status_code == 201
 
 
-async def test_areas_given_by_id_or_by_name_are_different_requests(
+async def test_a_listed_area_typed_by_name_is_the_same_request(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
-    """A typed name is for an area not listed yet; once it is listed, staff use its id."""
+    """A typed name is for an area not listed yet; a listed area's name names the area
+    (owner decision, GZ-077: before, the two were different requests)."""
     member_id = (await add_staff(db_session)).id
     ayat = await _area(db_session, "Ayat")
     by_name = _new_areas(from_area_name="Ayat", to_area_name="Bole")
     by_id = _new_areas(from_area_id=str(ayat), to_area_name="Bole")
-    for body in (by_name, by_id):
-        assert (await api.post(REQUESTS, json=body, headers=with_key(member_id))).status_code == 201
+    first = await api.post(REQUESTS, json=by_name, headers=with_key(member_id))
+    assert (first.status_code, first.json()["from_area"]["id"]) == (201, str(ayat))
+    again = await api.post(REQUESTS, json=by_id, headers=with_key(member_id))
+    assert (again.status_code, again.json()["code"]) == (409, "ROUTE_REQUEST_EXISTS")
 
 
 async def test_what_a_request_refers_to_must_exist_and_fit(

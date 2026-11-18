@@ -64,7 +64,8 @@ async def create(
 ) -> Response:
     """A `new` request from `staff`. Requires `Idempotency-Key`. 409 ROUTE_REQUEST_EXISTS:
     the same rider already has an open request for this. An area or route that doesn't exist
-    or doesn't fit is a 422 on its field."""
+    or doesn't fit is a 422 on its field. A typed area name that is a listed area's, ignoring
+    case, names that area (422 on the typed field if it is the other end's)."""
     response = await service.create(session, caller, request, idempotent)
     response.headers["Cache-Control"] = "no-store"
     return response

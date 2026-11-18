@@ -7,6 +7,7 @@ matched, and deleting an area or route takes an update lock, then refuses while 
 request names it, so the two never cross.
 """
 
+import dataclasses
 import uuid
 from typing import NoReturn
 
@@ -16,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.areas.models import Area
-from gize_api.areas.repository import get_live_area
+from gize_api.areas.repository import get_live_area, live_area_named, lock_area_names
 from gize_api.core import audit, schedule
 from gize_api.core.db import violated_unique_constraint
 from gize_api.core.errors import AppError, ErrorCode, invalid_field
@@ -78,9 +79,21 @@ async def create(
         claimed = await claim(session, scope=f"staff:{caller.id}", request=idempotent)
         if claimed.stored is not None:
             return replay_response(claimed.stored)
+        if request.from_area_name is not None or request.to_area_name is not None:
+            await lock_area_names(session)  # before any row lock (areas.repository)
         # What it names first: one that doesn't exist or fit is a 422, whatever else.
         from_area = await _area_to_refer_to(session, request.from_area_id, "from_area_id")
         to_area = await _area_to_refer_to(session, request.to_area_id, "to_area_id")
+        # A typed name that is a listed area's names the area (GZ-077).
+        from_area_name, to_area_name = request.from_area_name, request.to_area_name
+        if from_area_name is not None and (area := await live_area_named(session, from_area_name)):
+            from_area, from_area_name = area, None
+            if to_area is not None and to_area.id == area.id:
+                raise invalid_field("body", "from_area_name")
+        if to_area_name is not None and (area := await live_area_named(session, to_area_name)):
+            to_area, to_area_name = area, None
+            if from_area is not None and from_area.id == area.id:
+                raise invalid_field("body", "to_area_name")
         route = None
         if request.route_id is not None:
             route = await _route_to_refer_to(session, request.route_id, "route_id")
@@ -88,14 +101,21 @@ async def create(
                 route, request.rider_type, request.school_name
             ):
                 raise invalid_field("body", "route_id")
-        if await repository.open_request_exists(session, _asked(request), except_id=None):
+        asked = dataclasses.replace(
+            _asked(request),
+            from_area_id=None if from_area is None else from_area.id,
+            from_area_name=from_area_name,
+            to_area_id=None if to_area is None else to_area.id,
+            to_area_name=to_area_name,
+        )
+        if await repository.open_request_exists(session, asked, except_id=None):
             raise AppError(ErrorCode.ROUTE_REQUEST_EXISTS)
         row = RouteRequest(
             kind=request.kind,
             from_area=from_area,
-            from_area_name=request.from_area_name,
+            from_area_name=from_area_name,
             to_area=to_area,
-            to_area_name=request.to_area_name,
+            to_area_name=to_area_name,
             route=route,
             rider_type=request.rider_type,
             rider_name=request.rider_name,
@@ -123,6 +143,49 @@ async def create(
         location = f"/v1/route-requests/{row.id}"
         await record(session, claimed, status=201, body=payload, headers={"Location": location})
     return JSONResponse(payload, status_code=201, headers={"Location": location})
+
+
+async def link_to_area(session: AsyncSession, caller: CurrentStaff, area: Area) -> None:
+    """GZ-077, in the caller's transaction, under `lock_area_names`, after the area is added
+    or renamed (flushed): open requests with an end typed as its name name it instead, one
+    audit entry each. A link that would break a rule is skipped (the text stays): the area
+    at both ends, or the same rider's same open request already naming it (checked first;
+    an edit committed meanwhile is caught by the unique index, in a savepoint)."""
+    for typed in await repository.open_requests_typed(session, area.name):
+        row = typed.request
+        from_id = area.id if typed.from_end else row.from_area_id
+        to_id = area.id if typed.to_end else row.to_area_id
+        if from_id is not None and from_id == to_id:
+            continue
+        asked = dataclasses.replace(
+            _asked(row),
+            from_area_id=from_id,
+            from_area_name=None if typed.from_end else row.from_area_name,
+            to_area_id=to_id,
+            to_area_name=None if typed.to_end else row.to_area_name,
+        )
+        if await repository.open_request_exists(session, asked, except_id=row.id):
+            continue
+        before = audit.snapshot(ROUTE_REQUEST_AUDIT, row)
+        try:
+            async with session.begin_nested():
+                if typed.from_end:
+                    row.from_area_id, row.from_area_name = area.id, None
+                if typed.to_end:
+                    row.to_area_id, row.to_area_name = area.id, None
+                await _flush(session)
+        except AppError:  # ROUTE_REQUEST_EXISTS: an edit made it a repeat meanwhile
+            continue
+        await session.refresh(row, ["updated_at"])
+        audit.record(
+            session,
+            actor_id=caller.id,
+            action="route_request.area_linked",
+            entity=ROUTE_REQUEST_AUDIT,
+            entity_id=row.id,
+            before=before,
+            after=audit.snapshot(ROUTE_REQUEST_AUDIT, row),
+        )
 
 
 async def add_from_app(

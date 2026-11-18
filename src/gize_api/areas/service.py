@@ -21,6 +21,7 @@ from gize_api.core.security import CurrentStaff
 from gize_api.corridors.repository import uses_area as corridor_uses_area
 from gize_api.riders.repository import lives_or_goes_to as rider_uses_area
 from gize_api.route_requests.repository import names_area as request_names_area
+from gize_api.route_requests.service import link_to_area
 from gize_api.routes.repository import serves_area as route_serves_area
 
 
@@ -32,11 +33,13 @@ async def create(
         claimed = await claim(session, scope=f"staff:{caller.id}", request=idempotent)
         if claimed.stored is not None:
             return replay_response(claimed.stored)
+        await repository.lock_area_names(session)
         if await repository.name_taken(session, area.name, except_id=None):
             raise AppError(ErrorCode.AREA_NAME_TAKEN)
         row = Area(name=area.name)
         session.add(row)
         await _flush(session)
+        await link_to_area(session, caller, row)
         audit.record(
             session,
             actor_id=caller.id,
@@ -77,8 +80,10 @@ async def get(session: AsyncSession, area_id: uuid.UUID) -> AreaRead:
 async def rename(
     session: AsyncSession, caller: CurrentStaff, area_id: uuid.UUID, change: AreaWrite
 ) -> AreaRead:
-    """Renaming to the current name changes and records nothing."""
+    """Renaming to the current name changes and records nothing for the area. Either way,
+    open requests typed with its name are linked to it (GZ-077)."""
     async with session.begin():
+        await repository.lock_area_names(session)  # before the row (areas.repository)
         row = await _live(session, area_id, lock="update")
         if await repository.name_taken(session, change.name, except_id=row.id):
             raise AppError(ErrorCode.AREA_NAME_TAKEN)
@@ -95,6 +100,7 @@ async def rename(
             before=before,
             after=audit.snapshot(AREA_AUDIT, row),
         )
+        await link_to_area(session, caller, row)
         return AreaRead.model_validate(row)
 
 

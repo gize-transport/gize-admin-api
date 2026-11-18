@@ -4416,7 +4416,7 @@
         ]
       },
       "post": {
-        "description": "Requires `Idempotency-Key`. 409 AREA_NAME_TAKEN: a live area has this name, ignoring\ncase.",
+        "description": "Requires `Idempotency-Key`. 409 AREA_NAME_TAKEN: a live area has this name, ignoring\ncase. Open route requests that typed this name, ignoring case, now name the area.",
         "operationId": "areas_create",
         "parameters": [
           {
@@ -5205,7 +5205,7 @@
         ]
       },
       "patch": {
-        "description": "Everything that refers to the area shows the new name. Renaming to the current name\nchanges nothing.",
+        "description": "Everything that refers to the area shows the new name. Renaming to the current name\nchanges nothing on the area. Either way, open route requests that typed its name,\nignoring case, now name the area.",
         "operationId": "areas_update",
         "parameters": [
           {
@@ -15087,7 +15087,7 @@
         ]
       },
       "post": {
-        "description": "A `new` request from `staff`. Requires `Idempotency-Key`. 409 ROUTE_REQUEST_EXISTS:\nthe same rider already has an open request for this. An area or route that doesn't exist\nor doesn't fit is a 422 on its field.",
+        "description": "A `new` request from `staff`. Requires `Idempotency-Key`. 409 ROUTE_REQUEST_EXISTS:\nthe same rider already has an open request for this. An area or route that doesn't exist\nor doesn't fit is a 422 on its field. A typed area name that is a listed area's, ignoring\ncase, names that area (422 on the typed field if it is the other end's).",
         "operationId": "route_requests_create",
         "parameters": [
           {
