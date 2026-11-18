@@ -172,8 +172,8 @@ async def place(
 ) -> Response:
     """Requires `Idempotency-Key`. An adult rides a public route that takes their trip
     (a reservation on a `forming` one, a place on an `active` one) from a 1st; a company
-    rider their company's route from any day. A move ends the seat they hold the day
-    before (a reservation just ends).
+    rider their company's `active` or `paused` route (not a draft) from any day. A move
+    ends the seat they hold the day before (a reservation just ends).
 
     - 409 ROUTE_FULL: not a seat free on every day from the start (record a route request).
     - 409 ROUTE_HAS_WAITING_REQUESTS: an adult on an active route ahead of other people's
