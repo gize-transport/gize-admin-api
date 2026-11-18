@@ -545,3 +545,23 @@ Status: done · Depends on: GZ-040
   - Offers past their 48 hours but still stored `open` are tested here and elsewhere: here the request goes after the others, elsewhere it's free again, as the offer sees it.
   - Also tested: ties across a page boundary, and closed and deleted requests.
   - Positions are as of each page's read: an offer made between two pages moves its request to the end.
+
+### GZ-076 · Filter requests by area and routes by driver
+Status: done · Depends on: GZ-027, GZ-053
+- Asked by the frontend team (gize-admin-web, backend questions 7 and 11, 2026-11-18): a Demand card ("Ayat → Piassa: 6 requests for a new route") couldn't open just its requests, and a driver's page couldn't say which routes they drive, and after a refusal to deactivate or delete them (`409 DRIVER_ASSIGNED`) the portal couldn't name the routes to change.
+- Owner decision (2026-11-18): an end typed as not listed is found by its name too, so cards for areas not added yet open exactly their requests.
+- Built (no migration, additive):
+  - `GET /v1/route-requests`: `from_area_id`, `to_area_id` (a listed area), `from_area_name`, `to_area_name` (a typed one, the same name ignoring case, as the summary groups it; it finds typed ends only). One end is an id or a name, never both (422). The card's requests: `kind=new_areas&status=new` plus its two ends.
+  - `GET /v1/routes`: `driver_id` (live routes only, any status, as `DRIVER_ASSIGNED` counts them; `ix_routes_driver_id`). The 409 itself is unchanged: the portal looks the routes up with this filter.
+- From review: a test opens every card the summary returns through the filters and checks each lists as many requests as it counts, so the two can't drift apart.
+- A typed name is compared with `lower()` without an index: requests are a short list, and the filter is paged.
+
+### GZ-077 · Link requests to an area added later
+Status: todo · Depends on: GZ-026, GZ-027
+- Asked by the frontend team (backend question 8, 2026-11-18): a request for "Tulu Dimtu", typed before it was an area, stays "not listed" on Demand after staff add it, so the card can't start a corridor or route.
+- Owner decisions (2026-11-18): when an area is added or renamed, open requests (`new`, `matched`) whose typed end has its name, ignoring case, name the area instead, in the same transaction, audited per request; closed requests keep the typed text. A new request typed with a listed area's name names that area. Both paths lock the name, so a request typed while the area is added isn't missed.
+
+### GZ-078 · Company riders only on active or paused routes
+Status: todo · Depends on: GZ-035
+- Asked by the frontend team (backend question 9, 2026-11-18): a company rider can be placed on their company's route in any status, and gets an active seat on a draft route.
+- Owner decision (2026-11-18): only an `active` or `paused` corporate route takes company riders (paused: they keep their seats through a pause); a draft one is a 422 on `route_id`, as for adults. Staff activate it first (it only needs an active company). Seats already held stay.

@@ -21,7 +21,14 @@ from gize_api.main import GizeAPI, create_app
 from gize_api.routes import service
 from gize_api.routes.models import Route, RouteStatus, RouteType
 from tests.factories import CorridorFactory
-from tests.routes.support import ROUTES, add_company, add_corridor, add_route, route_path
+from tests.routes.support import (
+    ROUTES,
+    add_company,
+    add_corridor,
+    add_driver,
+    add_route,
+    route_path,
+)
 from tests.staff.support import add_admin, add_staff, audit_entries, signed_in, with_key
 from tests.support import SettingsFactory
 
@@ -288,6 +295,31 @@ async def test_filters(api: httpx.AsyncClient, db_session: AsyncSession) -> None
     assert await found(q="bole-0", status="draft") == {str(on_corridor)}
 
 
+async def test_staff_list_the_routes_a_driver_drives(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """GZ-076 (frontend, GZW-050): a driver's page names their routes. After a refusal to
+    deactivate or delete them (409 DRIVER_ASSIGNED), the same list names the routes to
+    change: both count every live route, whatever its status. Deleted routes are gone."""
+    member = await add_staff(db_session)
+    bereket = await add_driver(db_session)
+    other = await add_driver(db_session, "Tesfaye Alemu")
+    await add_route(db_session, code="B-07", driver_id=bereket)
+    await add_route(db_session, code="R-21", driver_id=bereket, status="paused")
+    await add_route(db_session, code="X-01", driver_id=bereket, deleted_at=START)
+    await add_route(db_session, code="C-03", driver_id=other)
+    await add_route(db_session, code="N-01")
+
+    async def codes(**params: str) -> list[str]:
+        response = await api.get(ROUTES, params=params, headers=signed_in(member.id))
+        assert response.status_code == 200
+        return [item["code"] for item in response.json()["items"]]
+
+    assert sorted(await codes(driver_id=str(bereket))) == ["B-07", "R-21"]
+    assert await codes(driver_id=str(bereket), status="paused") == ["R-21"]
+    assert await codes(driver_id=str(uuid.uuid4())) == []
+
+
 async def test_pages_follow_the_cursor(api: httpx.AsyncClient, db_session: AsyncSession) -> None:
     member = await add_staff(db_session)
     made = [await add_route(db_session, created_at=START + timedelta(minutes=i)) for i in range(5)]
@@ -336,6 +368,7 @@ async def test_a_page_takes_the_same_queries_however_long(
         ({"status": "gone"}, "VALIDATION_FAILED"),
         ({"route_type": "shuttle"}, "VALIDATION_FAILED"),
         ({"corridor_id": "nope"}, "VALIDATION_FAILED"),
+        ({"driver_id": "Bereket"}, "VALIDATION_FAILED"),
         ({"cursor": "garbage"}, "INVALID_CURSOR"),
     ],
 )

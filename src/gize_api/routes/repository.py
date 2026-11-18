@@ -118,6 +118,7 @@ def live_routes(
     status: RouteStatus | None,
     corridor_id: uuid.UUID | None,
     company_id: uuid.UUID | None,
+    driver_id: uuid.UUID | None,
 ) -> Select[Route]:
     """The filtered routes with their places, unordered: `paginate` orders and bounds."""
     statement = select(Route).options(*_WITH_PLACES).where(Route.not_deleted())
@@ -130,6 +131,7 @@ def live_routes(
         (Route.status, status),
         (Route.corridor_id, corridor_id),
         (Route.company_id, company_id),
+        (Route.driver_id, driver_id),
     ):
         if value is not None:
             statement = statement.where(column == value)

@@ -355,8 +355,13 @@ def live_requests(
     kind: RequestKind | None,
     open_only: bool | None,
     route_id: uuid.UUID | None,
+    from_area_id: uuid.UUID | None,
+    from_area_name: str | None,
+    to_area_id: uuid.UUID | None,
+    to_area_name: str | None,
 ) -> Select[RouteRequest]:
-    """The filtered requests with what they name, unordered: `paginate` orders and bounds."""
+    """The filtered requests with what they name, unordered: `paginate` orders and bounds.
+    A typed area name matches ignoring case."""
     statement = select(RouteRequest).options(*_WITH_PLACES).where(RouteRequest.not_deleted())
     if status is not None:
         statement = statement.where(RouteRequest.status == status)
@@ -368,6 +373,18 @@ def live_requests(
         statement = statement.where(
             or_(RouteRequest.route_id == route_id, RouteRequest.matched_route_id == route_id)
         )
+    for listed, area_id in (
+        (RouteRequest.from_area_id, from_area_id),
+        (RouteRequest.to_area_id, to_area_id),
+    ):
+        if area_id is not None:
+            statement = statement.where(listed == area_id)
+    for typed, name in (
+        (RouteRequest.from_area_name, from_area_name),
+        (RouteRequest.to_area_name, to_area_name),
+    ):
+        if name is not None:
+            statement = statement.where(func.lower(typed) == func.lower(name))
     return statement
 
 

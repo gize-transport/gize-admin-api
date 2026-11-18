@@ -339,3 +339,4 @@ class RouteListParams(PageParams):
     status: RouteStatus | None = None
     corridor_id: uuid.UUID | None = None
     company_id: uuid.UUID | None = None
+    driver_id: uuid.UUID | None = Field(default=None, description="Routes this driver drives.")

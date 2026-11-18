@@ -165,12 +165,32 @@ class RouteRequestPage(Page[RouteRequestRead]):
 
 class RouteRequestListParams(PageParams):
     """Filters, combined with AND. `open`: `new` or `matched` (true) or closed (false);
-    `route_id`: requests asking for that route or matched to it."""
+    `route_id`: requests asking for that route or matched to it.
+
+    Each end (GZ-076): a listed area (`*_area_id`) or one typed as not listed
+    (`*_area_name`, the same name ignoring case, as the summary groups it), never both.
+    A typed name finds typed ends only."""
 
     status: RequestStatus | None = None
     kind: RequestKind | None = None
     open: bool | None = None
     route_id: uuid.UUID | None = None
+    from_area_id: uuid.UUID | None = Field(default=None, description="A listed area at A.")
+    from_area_name: ShortText | None = Field(
+        default=None, description="An area typed as not listed at A, ignoring case."
+    )
+    to_area_id: uuid.UUID | None = Field(default=None, description="A listed area at B.")
+    to_area_name: ShortText | None = Field(
+        default=None, description="An area typed as not listed at B, ignoring case."
+    )
+
+    @model_validator(mode="after")
+    def _one_way_to_name_each_end(self) -> Self:
+        if self.from_area_id is not None and self.from_area_name is not None:
+            raise ValueError("from_area_id or from_area_name, not both")
+        if self.to_area_id is not None and self.to_area_name is not None:
+            raise ValueError("to_area_id or to_area_name, not both")
+        return self
 
 
 class AreaPairDemand(BaseModel):
