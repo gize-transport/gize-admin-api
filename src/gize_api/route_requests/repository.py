@@ -388,6 +388,30 @@ def live_requests(
     return statement
 
 
+@dataclass(frozen=True)
+class TypedEnds:
+    """An open request with an end typed as `name` (GZ-077), and which ends."""
+
+    request: RouteRequest
+    from_end: bool
+    to_end: bool
+
+
+async def open_requests_typed(session: AsyncSession, name: str) -> list[TypedEnds]:
+    """Live, open requests with an end typed as `name`, ignoring case (the database's
+    `lower()`, as the summary groups them), locked (`FOR UPDATE`) in id order."""
+    from_end = func.lower(RouteRequest.from_area_name) == func.lower(literal(name, String))
+    to_end = func.lower(RouteRequest.to_area_name) == func.lower(literal(name, String))
+    statement = (
+        select(RouteRequest, from_end, to_end)
+        .where(RouteRequest.not_deleted(), _OPEN, or_(from_end, to_end))
+        .order_by(RouteRequest.id)
+        .with_for_update(of=RouteRequest)
+    )
+    rows = (await session.execute(statement)).all()
+    return [TypedEnds(row[0], bool(row[1]), bool(row[2])) for row in rows]
+
+
 async def names_area(session: AsyncSession, area_id: uuid.UUID) -> bool:
     """A live, open request names this area at either end (indexed both ways)."""
     statement = exists().where(

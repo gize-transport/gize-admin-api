@@ -51,7 +51,7 @@ async def create(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Response:
     """Requires `Idempotency-Key`. 409 AREA_NAME_TAKEN: a live area has this name, ignoring
-    case."""
+    case. Open route requests that typed this name, ignoring case, now name the area."""
     response = await service.create(session, caller, area, idempotent)
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -105,7 +105,8 @@ async def rename(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> AreaRead:
     """Everything that refers to the area shows the new name. Renaming to the current name
-    changes nothing."""
+    changes nothing on the area. Either way, open route requests that typed its name,
+    ignoring case, now name the area."""
     response.headers["Cache-Control"] = "no-store"
     return await service.rename(session, caller, area_id, change)
 

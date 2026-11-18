@@ -231,7 +231,8 @@ The list of neighbourhoods and landmarks everyone picks from (GZ-026), so "Ayat"
 | `PATCH /v1/areas/{area_id}` (`areas_update`) | staff | Rename. |
 | `DELETE /v1/areas/{area_id}` (`areas_delete`) | admin | Soft delete: hidden from lists, name free again, history kept. `204`. |
 
-- Names are trimmed and kept as typed. They're unique ignoring case among areas that aren't deleted (`409 AREA_NAME_TAKEN`). Two people adding the same name at once get one area and one `409`: the database's index decides.
+- Names are trimmed and kept as typed. They're unique ignoring case among areas that aren't deleted (`409 AREA_NAME_TAKEN`). Two people adding the same name at once get one area and one `409`: adds and renames take turns (one lock on area names), and the database's index backs the check.
+- **Requests typed before the area existed** (GZ-077): adding an area, or renaming one, links the open route requests whose typed end has its name, ignoring case, in the same change (`route_request.area_linked`, one per request). Closed requests keep the text. A link that would repeat the same rider's open request, or put the area at both ends, is skipped. Renaming an area to its own name links requests typed with a listed name before GZ-077.
 - Deleted areas answer `404`, like unknown ones.
 - Every change is audited (`area.created`, `area.renamed`, `area.deleted`), by value: areas hold no personal data.
 - Deleting an area a live corridor uses, a live route serves, or an open route request names is refused (`409 AREA_IN_USE`). Riders add their check in M3.
@@ -328,7 +329,7 @@ Unmet demand from individual riders (GZ-027): there is no waitlist. Staff record
 | `DELETE /v1/route-requests/{request_id}` (`route_requests_delete`) | admin | Soft delete, for a mistaken record. `204`. |
 
 - **Two kinds:**
-  - `new_areas`: from A to B, each a listed area (`from_area_id`, `to_area_id`) or one not listed yet (`from_area_name`, `to_area_name`), A and B different.
+  - `new_areas`: from A to B, each a listed area (`from_area_id`, `to_area_id`) or one not listed yet (`from_area_name`, `to_area_name`), A and B different. A typed name that is a listed area's, ignoring case, names that area (GZ-077); the list filters by either (GZ-076).
   - `route`: a specific running route (`active` or `paused`), usually full.
 - **Who:** `rider_type` `adult` or `student`; `rider_name` is who will ride (a student's own name), `contact_name` and `contact_phone` who to call (a parent for a student). A student names their school; a `route` request's route must fit the rider: public for adults, student of the same school (ignoring case) for students. A route or area that doesn't exist or doesn't fit is a `422` on its field.
 - **One open request** per phone, kind, route or area pair (names ignoring case) and rider (`409 ROUTE_REQUEST_EXISTS`); siblings are separate requests. A partial unique index enforces it, so two at once record one.
@@ -336,7 +337,7 @@ Unmet demand from individual riders (GZ-027): there is no waitlist. Staff record
 - **What a request asks for doesn't change**: to ask for something else, decline it and record a new one.
 - **Summary:** area pairs count open `new_areas` requests not matched yet (a name not listed yet counts ignoring case and shows as first recorded); routes count each open request once, against the route it was matched to, else the one it asks for. Busiest first, at most 100 of each, with `*_truncated` when there were more.
 - **What open requests name stays:** an area or route an open request names can't be deleted (`409 AREA_IN_USE`, `409 ROUTE_HAS_REQUESTS`). Requests share-lock them while being recorded or matched.
-- **Personal data:** rider and contact names, phone, school, notes and the decline reason are shown as `[redacted]` in the audit log (`route_request.created`, `.updated`, `.status_changed`, `.deleted`); kind, areas, routes, times and status by value. Phones never go in URLs, so the list has no phone filter.
+- **Personal data:** rider and contact names, phone, school, notes and the decline reason are shown as `[redacted]` in the audit log (`route_request.created`, `.updated`, `.status_changed`, `.area_linked`, `.deleted`); kind, areas, routes, times and status by value. Phones never go in URLs, so the list has no phone filter.
 
 ## Audit log
 
