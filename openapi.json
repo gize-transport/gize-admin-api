@@ -14777,6 +14777,84 @@
               ],
               "title": "Route Id"
             }
+          },
+          {
+            "description": "A listed area at A.",
+            "in": "query",
+            "name": "from_area_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A listed area at A.",
+              "title": "From Area Id"
+            }
+          },
+          {
+            "description": "An area typed as not listed at A, ignoring case.",
+            "in": "query",
+            "name": "from_area_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An area typed as not listed at A, ignoring case.",
+              "title": "From Area Name"
+            }
+          },
+          {
+            "description": "A listed area at B.",
+            "in": "query",
+            "name": "to_area_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A listed area at B.",
+              "title": "To Area Id"
+            }
+          },
+          {
+            "description": "An area typed as not listed at B, ignoring case.",
+            "in": "query",
+            "name": "to_area_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An area typed as not listed at B, ignoring case.",
+              "title": "To Area Name"
+            }
           }
         ],
         "responses": {
@@ -16721,6 +16799,25 @@
                 }
               ],
               "title": "Company Id"
+            }
+          },
+          {
+            "description": "Routes this driver drives.",
+            "in": "query",
+            "name": "driver_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Routes this driver drives.",
+              "title": "Driver Id"
             }
           }
         ],

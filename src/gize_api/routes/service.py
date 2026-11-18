@@ -221,6 +221,7 @@ async def list_routes(session: AsyncSession, params: RouteListParams) -> RoutePa
                 status=params.status,
                 corridor_id=params.corridor_id,
                 company_id=params.company_id,
+                driver_id=params.driver_id,
             ),
             params,
             created_at=Route.created_at,

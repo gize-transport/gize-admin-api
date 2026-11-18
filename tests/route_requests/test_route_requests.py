@@ -352,6 +352,92 @@ async def test_staff_list_requests_oldest_first(
     assert [item["id"] for item in rest.json()["items"]] == [str(declined), str(matched)]
 
 
+async def test_staff_list_the_requests_behind_a_demand_card(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """GZ-076 (frontend, GZW-041): a Demand card such as "Ayat → Piassa" opens exactly its
+    requests. Each end is a listed area (`*_area_id`) or a typed one (`*_area_name`, the
+    same name ignoring case, as the summary groups them)."""
+    member_id = (await add_staff(db_session)).id
+    ayat = await _area(db_session, "Ayat")
+    piassa = await _area(db_session, "Piassa")
+    bole = await _area(db_session, "Bole")
+    card = await add_request(
+        db_session, from_area_id=ayat, from_area_name=None, to_area_id=piassa, to_area_name=None
+    )
+    reverse = await add_request(
+        db_session, from_area_id=piassa, from_area_name=None, to_area_id=ayat, to_area_name=None
+    )
+    elsewhere = await add_request(
+        db_session, from_area_id=ayat, from_area_name=None, to_area_id=bole, to_area_name=None
+    )
+    typed = await add_request(
+        db_session, from_area_name="Tulu Dimtu", to_area_id=piassa, to_area_name=None
+    )
+    typed_both = await add_request(db_session, from_area_name="Ayat", to_area_name="tulu dimtu")
+    await add_request(
+        db_session, from_area_id=ayat, from_area_name=None, to_area_id=piassa,
+        to_area_name=None, deleted_at=START,
+    )  # fmt: skip
+
+    async def ids(**params: str) -> set[uuid.UUID]:
+        response = await api.get(REQUESTS, params=params, headers=signed_in(member_id))
+        assert response.status_code == 200
+        return {uuid.UUID(item["id"]) for item in response.json()["items"]}
+
+    assert await ids(from_area_id=str(ayat), to_area_id=str(piassa)) == {card}
+    assert await ids(from_area_id=str(ayat)) == {card, elsewhere}
+    assert await ids(to_area_id=str(ayat)) == {reverse}
+    assert await ids(to_area_id=str(piassa)) == {card, typed}
+    assert await ids(from_area_name="TULU DIMTU ", to_area_id=str(piassa)) == {typed}
+    assert await ids(to_area_name="Tulu Dimtu") == {typed_both}
+    # A typed name finds typed ends only: "Ayat" typed is not the listed Ayat.
+    assert await ids(from_area_name="ayat") == {typed_both}
+    assert await ids(from_area_id=str(ayat), kind="new_areas", status="matched") == set()
+
+
+async def test_every_demand_card_opens_exactly_its_requests(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """GZ-076: each area pair the summary counts, opened through the filters with the
+    card's own conditions (`kind=new_areas&status=new`), lists as many requests as it
+    counts. Pins the filters to the summary's grouping, typed names and case included."""
+    member_id = (await add_staff(db_session)).id
+    ayat = await _area(db_session, "Ayat")
+    piassa = await _area(db_session, "Piassa")
+    route = await add_route(db_session, status="active")
+    for _ in range(3):
+        await add_request(
+            db_session, from_area_id=ayat, from_area_name=None, to_area_id=piassa,
+            to_area_name=None,
+        )  # fmt: skip
+    await add_request(
+        db_session, from_area_id=piassa, from_area_name=None, to_area_id=ayat, to_area_name=None
+    )
+    for typed in ("Tulu Dimtu", "TULU DIMTU", "tulu dimtu"):
+        await add_request(db_session, from_area_name=typed, to_area_id=piassa, to_area_name=None)
+    await add_request(db_session, from_area_name="Ayat", to_area_name="Piassa")
+    await add_request(  # not counted: matched, or asking for a route
+        db_session, from_area_id=ayat, from_area_name=None, to_area_id=piassa,
+        to_area_name=None, status="matched", matched_route_id=route,
+    )  # fmt: skip
+    await add_request(
+        db_session, kind="route", route_id=route, from_area_name=None, to_area_name=None
+    )
+    summary = await api.get(f"{REQUESTS}/summary", headers=signed_in(member_id))
+    cards = summary.json()["area_pairs"]
+    assert sorted(card["open"] for card in cards) == [1, 1, 3, 3]
+    for card in cards:
+        params = {"kind": "new_areas", "status": "new"}
+        for end in ("from", "to"):
+            if card[f"{end}_area"] is not None:
+                params[f"{end}_area_id"] = card[f"{end}_area"]["id"]
+            else:
+                params[f"{end}_area_name"] = card[f"{end}_area_name"]
+        response = await api.get(REQUESTS, params=params, headers=signed_in(member_id))
+        assert len(response.json()["items"]) == card["open"], card
+
+
 async def test_a_page_takes_the_same_queries_however_long(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -388,6 +474,14 @@ async def test_a_page_takes_the_same_queries_however_long(
         ({"open": "maybe"}, "VALIDATION_FAILED"),
         ({"status": "waiting"}, "VALIDATION_FAILED"),
         ({"route_id": "AYAT-01"}, "VALIDATION_FAILED"),
+        ({"from_area_id": "Ayat"}, "VALIDATION_FAILED"),
+        ({"to_area_id": "1"}, "VALIDATION_FAILED"),
+        ({"from_area_name": " "}, "VALIDATION_FAILED"),
+        ({"to_area_name": "x" * 101}, "VALIDATION_FAILED"),
+        ({"from_area_name": "Ayat\nBole"}, "VALIDATION_FAILED"),
+        # One end is listed or typed, never both.
+        ({"from_area_id": str(uuid.uuid4()), "from_area_name": "Ayat"}, "VALIDATION_FAILED"),
+        ({"to_area_id": str(uuid.uuid4()), "to_area_name": "Ayat"}, "VALIDATION_FAILED"),
         ({"limit": "101"}, "VALIDATION_FAILED"),
         ({"cursor": "garbage"}, "INVALID_CURSOR"),
     ],
