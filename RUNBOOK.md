@@ -27,10 +27,18 @@ Never put any of these in chat, code, tickets or logs. Each lives in exactly the
 | `DATABASE_URL` (`gize_app`) | Render (`gize-api-staging` → Environment); your local `.env.staging` | the API |
 | `MIGRATOR_DATABASE_URL` (`gize_migrator`) | GitHub → Settings → Secrets and variables → Actions: `STAGING_MIGRATOR_DATABASE_URL`; `.env.staging` | the deploy workflow's migrations |
 | `SUPABASE_SECRET_KEY` | Render; `.env.staging` | staff invites; the first-admin command |
-| `VERIFIED_PHONE_TOKEN_KEY` | Render only | phone verification (GZ-031) |
-| `AFROMESSAGE_TOKEN` | Render only (AfroMessage's dashboard makes it) | sending SMS (GZ-038) |
+| `VERIFIED_PHONE_TOKEN_KEY` | Render only; **not set while SMS is paused** | phone verification (GZ-031) |
+| `AFROMESSAGE_TOKEN` | Render only (AfroMessage's dashboard makes it); **not set while SMS is paused** | sending SMS (GZ-038) |
 | Render deploy hook URL | GitHub: `RENDER_STAGING_DEPLOY_HOOK_URL` | the deploy workflow |
 | The `postgres` database password | Supabase; your password manager; `.env.staging` only while bootstrapping | the bootstrap |
+
+### SMS is paused
+
+Owner decision (2026-11-19, GZ-079): no SMS is sent anywhere. Leave `AFROMESSAGE_TOKEN` and `VERIFIED_PHONE_TOKEN_KEY` unset until the owner lifts the pause. Nothing in the code changes:
+- **Website sign-up:** phone codes answer 503, so riders can't register on the website. Staff register them in the portal.
+- **Offers:** made as usual; each shows `sms_status: failed`. Staff phone the rider and accept the offer for them.
+- **Launches:** done as usual; the launch messages read failed. Staff phone the riders.
+- **Lifting it:** remove the demo data ("Demo data"), set both secrets, redeploy. Never retry launch messages that failed during the pause: riders would get texts about old launches.
 
 ## First staging setup (once)
 
@@ -328,7 +336,7 @@ A request failed with an error nothing handled: a bug.
 - **Do:** open a fix ticket with that detail. If it blocks riders or staff, roll back to the previous deploy ("Rolling back").
 
 ### GizeApiMisconfigured
-Production started without a setting it needs: `observability_disabled` names it, and `sms_disabled` means `AFROMESSAGE_TOKEN` is missing. A missing Grafana endpoint can't alert here, since nothing is shipped then; production refuses to start without it unless explicitly opted out.
+Production started without a setting it needs: `observability_disabled` names it, and `sms_disabled` means `AFROMESSAGE_TOKEN` is missing. While SMS is paused ("SMS is paused"), `sms_disabled` is expected. A missing Grafana endpoint can't alert here, since nothing is shipped then; production refuses to start without it unless explicitly opted out.
 - **Do:** set it on Render and redeploy ("Production secrets" once production exists).
 
 ### GizeApiServerErrors
@@ -342,7 +350,7 @@ More than 5% of requests answered 5xx, out of at least 20, in 5 minutes. Counted
 - **Do:** as for those two. After a deploy, roll back first and investigate after.
 
 ### GizeApiSmsFailing
-Production: 3 or more SMS sends failed in 15 minutes (AfroMessage unavailable, refusing or timing out, or a bug in our sender).
+Production: 3 or more SMS sends failed in 15 minutes (AfroMessage unavailable, refusing or timing out, or a bug in our sender). While SMS is paused, every send fails as `unavailable`, so this fires on purpose.
 Counted from `sms_failed` log lines: every failed send writes one, whatever went wrong.
 - **What riders see:** phone codes answer 503, so people can't register on the website. Launch messages are marked failed, and offers show `sms_status: failed`.
 - **Look:**
