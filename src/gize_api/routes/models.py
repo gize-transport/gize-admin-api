@@ -260,7 +260,7 @@ class RouteAssignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("status IN ('reserved', 'active', 'ended')", name="status"),
         CheckConstraint("end_date IS NULL OR end_date >= start_date", name="dates"),
         Index("ix_route_assignments_route_id_start_date", "route_id", "start_date"),
-        # Seats not ended, by status and end (GZ-064's riding and reserved counts).
+        # Seats not ended, by status and end (the overview's rider counts: GZ-064, GZ-080).
         Index(
             "ix_route_assignments_held",
             "status",

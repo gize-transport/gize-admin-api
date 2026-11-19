@@ -2,7 +2,8 @@
 
 `GET /v1/overview` (staff): counts only, each one query, whatever the data's size. Live
 (not deleted) rows only. Driver applications awaiting review went with GZ-052 (deferred):
-active routes without a driver take their place.
+active routes without a driver take their place. GZ-080: riders whose seat starts after
+today count as `starting` (a route launched for a later 1st), until that day.
 """
 
 import uuid
@@ -15,13 +16,16 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core import schedule
-from gize_api.core.db import get_session
+from gize_api.core.db import borrowed, get_session
 from gize_api.drivers.models import Driver
 from gize_api.main import GizeAPI
 from gize_api.offers.models import OfferStatus, SeatOffer
+from gize_api.riders.models import Rider
 from gize_api.route_requests.models import RequestStatus
 from gize_api.routes.models import AssignmentStatus, RouteAssignment, RouteStatus
 from tests.factories import RiderFactory, RouteRequestFactory
+from tests.registrations.support import add_route as add_public_route
+from tests.registrations.support import add_trip
 from tests.routes.support import add_route
 from tests.staff.support import add_staff, signed_in
 
@@ -58,7 +62,7 @@ async def test_an_empty_system_counts_zero(
             "draft": 0, "forming": 0, "active": 0, "paused": 0,
             "ready_to_launch": 0, "active_without_driver": 0,
         },
-        "riders": {"total": 0, "riding": 0, "reserved": 0},
+        "riders": {"total": 0, "riding": 0, "reserved": 0, "starting": 0},
         "route_requests": {"open": 0},
         "seat_offers": {"open": 0},
         "drivers": {"active": 0},
@@ -92,6 +96,7 @@ async def test_the_overview_counts_what_staff_act_on(
     await _seat(db_session, driven, status=AssignmentStatus.ACTIVE, start_date=date(2026, 11, 1))
     await _seat(db_session, driven, status=AssignmentStatus.ACTIVE,
                 start_date=date(2026, 10, 1), end_date=date(2026, 10, 31))  # fmt: skip
+    await _seat(db_session, driven, status=AssignmentStatus.ACTIVE)  # starts 1 December
     async with db_session.begin():
         await RiderFactory().create(db_session, deleted_at=datetime.now(UTC))
         open_request = await RouteRequestFactory().create(  # waiting for `driven`
@@ -117,7 +122,7 @@ async def test_the_overview_counts_what_staff_act_on(
             "draft": 1, "forming": 2, "active": 2, "paused": 1,
             "ready_to_launch": 1, "active_without_driver": 1,
         },
-        "riders": {"total": 6, "riding": 1, "reserved": 3},
+        "riders": {"total": 7, "riding": 1, "reserved": 3, "starting": 1},
         "route_requests": {"open": 2},
         "seat_offers": {"open": 1},
         "drivers": {"active": 1},
@@ -213,3 +218,88 @@ async def test_on_the_1st_the_launch_day_is_today(
     monkeypatch.setattr(schedule, "addis_today", lambda: date(2026, 12, 1))
     counts = await _counts(api, member)
     assert (counts["as_of"], counts["routes"]["ready_to_launch"]) == ("2026-12-01", 1)
+
+
+async def test_a_route_launched_for_a_later_1st_counts_its_riders_as_starting(
+    api: httpx.AsyncClient, api_app: GizeAPI, db_session: AsyncSession
+) -> None:
+    """Launched on 15 November for 1 December: no longer reserved, not riding yet."""
+    api_app.state.sessionmaker = borrowed(db_session)  # the launch's messages, after it
+    member = (await add_staff(db_session)).id
+    route = await add_public_route(db_session, await add_trip(db_session), launch_minimum=2)
+    for _ in range(2):
+        await _seat(db_session, route)
+    before = (await _counts(api, member))["riders"]
+    launched = await api.put(f"/v1/routes/{route}/status", headers=signed_in(member),
+                             json={"status": "active", "launch_date": "2026-12-01"})  # fmt: skip
+    assert launched.status_code == 200, launched.json()
+    after = (await _counts(api, member))["riders"]
+    assert (before, after) == (
+        {"total": 2, "riding": 0, "reserved": 2, "starting": 0},
+        {"total": 2, "riding": 0, "reserved": 0, "starting": 2},
+    )
+
+
+async def test_on_its_start_day_a_seat_counts_as_riding(
+    api: httpx.AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    member = (await add_staff(db_session)).id
+    route = await add_route(db_session, status=RouteStatus.ACTIVE)
+    await _seat(db_session, route, status=AssignmentStatus.ACTIVE, start_date=date(2026, 12, 1))
+    assert (await _counts(api, member))["riders"] == {
+        "total": 1, "riding": 0, "reserved": 0, "starting": 1,
+    }  # fmt: skip
+    monkeypatch.setattr(schedule, "addis_today", lambda: date(2026, 12, 1))
+    assert (await _counts(api, member))["riders"] == {
+        "total": 1, "riding": 1, "reserved": 0, "starting": 0,
+    }  # fmt: skip
+
+
+async def test_a_rider_moving_on_the_1st_counts_as_riding_only(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """A move keeps today's seat to the day before the new one starts: both are held."""
+    member = (await add_staff(db_session)).id
+    old = await add_route(db_session, status=RouteStatus.ACTIVE)
+    new = await add_route(db_session, status=RouteStatus.ACTIVE)
+    rider = await _seat(db_session, old, status=AssignmentStatus.ACTIVE,
+                        start_date=date(2026, 10, 1), end_date=date(2026, 11, 30))  # fmt: skip
+    async with db_session.begin():
+        db_session.add(RouteAssignment(route_id=new, rider_id=rider, start_date=date(2026, 12, 1),
+                                       status=AssignmentStatus.ACTIVE))  # fmt: skip
+    assert (await _counts(api, member))["riders"] == {
+        "total": 1, "riding": 1, "reserved": 0, "starting": 0,
+    }  # fmt: skip
+
+
+async def test_a_rider_whose_old_seat_ends_today_counts_as_riding_only(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """A company rider moved mid-month: the old seat ends today, the new one starts tomorrow."""
+    member = (await add_staff(db_session)).id
+    old = await add_route(db_session, status=RouteStatus.ACTIVE)
+    new = await add_route(db_session, status=RouteStatus.ACTIVE)
+    rider = await _seat(db_session, old, status=AssignmentStatus.ACTIVE,
+                        start_date=date(2026, 10, 1), end_date=date(2026, 11, 15))  # fmt: skip
+    async with db_session.begin():
+        db_session.add(RouteAssignment(route_id=new, rider_id=rider, start_date=date(2026, 11, 16),
+                                       status=AssignmentStatus.ACTIVE))  # fmt: skip
+    assert (await _counts(api, member))["riders"] == {
+        "total": 1, "riding": 1, "reserved": 0, "starting": 0,
+    }  # fmt: skip
+
+
+async def test_ended_seats_and_deleted_riders_are_not_starting(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    member = (await add_staff(db_session)).id
+    route = await add_route(db_session, status=RouteStatus.ACTIVE)
+    await _seat(db_session, route, status=AssignmentStatus.ENDED)
+    rider = await _seat(db_session, route, status=AssignmentStatus.ACTIVE)
+    async with db_session.begin():
+        gone = await db_session.get(Rider, rider)
+        assert gone is not None
+        gone.deleted_at = datetime.now(UTC)
+    assert (await _counts(api, member))["riders"] == {
+        "total": 1, "riding": 0, "reserved": 0, "starting": 0,
+    }  # fmt: skip

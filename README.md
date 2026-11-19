@@ -488,7 +488,7 @@ Every change is in the audit log, with names and phones redacted.
 
 ## Overview
 
-`GET /v1/overview` (`overview_get`, staff): the admin home page's counts, as of today in Addis Ababa. Routes by status, forming ones ready to launch and active ones with no driver; riders (total, riding today, reserved); open route requests and seat offers; active drivers. Live records only, and a snapshot: a count may move a moment later.
+`GET /v1/overview` (`overview_get`, staff): the admin home page's counts, as of today in Addis Ababa. Routes by status, forming ones ready to launch and active ones with no driver; riders (total, riding today, reserved, and `starting`: an active seat that starts after today, placed from a later 1st or on a route launched for one; they count as riding from that day); open route requests and seat offers; active drivers. Live records only, and a snapshot: a count may move a moment later.
 
 ## Drivers
 

@@ -587,3 +587,11 @@ Status: done · Depends on: GZ-038
 - Recorded in RUNBOOK ("SMS is paused").
 - Before production goes live while SMS is still paused: GizeApiMisconfigured (`sms_disabled` at every start) and GizeApiSmsFailing (every launch or offer) would fire on purpose. Decide then how to quiet them (a ticket).
 - Lifting the pause: remove the staging demo data first, set both secrets, and never retry launch messages that failed during the pause (riders would get texts about old launches).
+
+### GZ-080 · "Starting soon" on the overview
+Status: done · Depends on: GZ-064
+- Found in GZ-063 (owner question): a route launched for a later 1st turns its reservations into active seats from that day, so until then its riders counted as neither *riding* nor *reserved* on the overview.
+- Owner decision (2026-11-19): a third count, `riders.starting`. *Riding* and *reserved* keep their meaning.
+- Built (no migration): `GET /v1/overview` adds `riders.starting`: riders holding an active seat that starts after today, and not riding today (a rider moving on the 1st holds today's seat and the next, and counts as riding only). Still one query: per rider, then counted. A contract minor (a new response field).
+- From review: placing someone on a running route also gives a seat from the next 1st, so they count as starting too (the descriptions say so); a move whose old seat ends today counts as riding only (tested).
+- Not changed: a rider riding today who also holds a reservation on a forming route still counts as both riding and reserved.

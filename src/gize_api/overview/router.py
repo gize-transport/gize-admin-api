@@ -39,8 +39,8 @@ async def get(
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> Overview:
     """Live records only: routes by status (forming ones ready to launch, active ones with
-    no driver), riders (riding today, reserved), open route requests and seat offers,
-    active drivers. A snapshot: counts can move a moment later. It takes no parameters:
-    422 VALIDATION_FAILED for any."""
+    no driver), riders (riding today, reserved, starting on a later day), open route
+    requests and seat offers, active drivers. A snapshot: counts can move a moment later.
+    It takes no parameters: 422 VALIDATION_FAILED for any."""
     response.headers["Cache-Control"] = "no-store"
     return await service.overview(session)
