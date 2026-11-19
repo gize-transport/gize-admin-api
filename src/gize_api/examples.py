@@ -311,7 +311,7 @@ def examples() -> tuple[BaseModel, ...]:
                     "ready_to_launch": 2,
                     "active_without_driver": 1,
                 },
-                "riders": {"total": 180, "riding": 150, "reserved": 24},
+                "riders": {"total": 180, "riding": 140, "reserved": 24, "starting": 10},
                 "route_requests": {"open": 9},
                 "seat_offers": {"open": 2},
                 "drivers": {"active": 13},

@@ -25,6 +25,11 @@ class RiderCounts(_Counts):
     total: int
     riding: int = Field(description="Holding an active seat today.")
     reserved: int = Field(description="Holding a reservation on a forming route.")
+    starting: int = Field(
+        description="Holding an active seat that starts after today (placed from a later "
+        "1st, or on a route launched for one), and not riding today. They count as riding "
+        "from that day."
+    )
 
 
 class OpenCount(_Counts):

@@ -41,19 +41,27 @@ async def overview(session: AsyncSession) -> Overview:
             ),
         )
         held = (*routes.holds_a_seat_from(today), Rider.not_deleted())
+        active = RouteAssignment.status == AssignmentStatus.ACTIVE
+        # One row per rider with a held seat: a moved rider holds today's seat and the next.
+        per_rider = (
+            select(
+                func.bool_or(active & (RouteAssignment.start_date <= today)).label("riding"),
+                func.bool_or(RouteAssignment.status == AssignmentStatus.RESERVED).label("reserved"),
+                func.bool_or(active & (RouteAssignment.start_date > today)).label("starting"),
+            )
+            .join(Rider, Rider.id == RouteAssignment.rider_id)
+            .where(*held)
+            .group_by(RouteAssignment.rider_id)
+            .subquery()
+        )
         riders = (
             await session.execute(
                 select(
-                    func.count(func.distinct(RouteAssignment.rider_id)).filter(
-                        RouteAssignment.status == AssignmentStatus.ACTIVE,
-                        RouteAssignment.start_date <= today,
-                    ),
-                    func.count(func.distinct(RouteAssignment.rider_id)).filter(
-                        RouteAssignment.status == AssignmentStatus.RESERVED
-                    ),
+                    func.count().filter(per_rider.c.riding),
+                    func.count().filter(per_rider.c.reserved),
+                    # Not riding today: a rider moving on the 1st is still riding.
+                    func.count().filter(per_rider.c.starting, ~per_rider.c.riding),
                 )
-                .join(Rider, Rider.id == RouteAssignment.rider_id)
-                .where(*held)
             )
         ).one()
         total_riders = await _count(session, select(func.count()).where(Rider.not_deleted()))
@@ -80,7 +88,12 @@ async def overview(session: AsyncSession) -> Overview:
             ready_to_launch=ready,
             active_without_driver=driverless,
         ),
-        riders=RiderCounts(total=total_riders, riding=int(riders[0]), reserved=int(riders[1])),
+        riders=RiderCounts(
+            total=total_riders,
+            riding=int(riders[0]),
+            reserved=int(riders[1]),
+            starting=int(riders[2]),
+        ),
         route_requests=OpenCount(open=open_requests),
         seat_offers=OpenCount(open=open_offers),
         drivers=ActiveCount(active=active_drivers),
