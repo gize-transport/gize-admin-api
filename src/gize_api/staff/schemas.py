@@ -14,7 +14,7 @@ from pydantic import (
 )
 
 from gize_api.core.contact import EMAIL_MAX_LENGTH, Email
-from gize_api.core.pagination import Page, PageParams
+from gize_api.core.pagination import KeyKind, NameSortedParams, Order, Page
 from gize_api.core.text import no_control_characters
 from gize_api.core.updates import PartialUpdate
 from gize_api.staff.models import FULL_NAME_MAX_LENGTH, StaffRole
@@ -64,8 +64,10 @@ class StaffPage(Page[StaffRead]):
     """A page of staff members (a named schema: generated clients keep the name)."""
 
 
-class StaffListParams(PageParams):
+class StaffListParams(NameSortedParams):
     """Filters, both optional and combined with AND; unknown parameters are refused."""
+
+    name_order = Order("name", KeyKind.TEXT, ignore_case=True, max_length=FULL_NAME_MAX_LENGTH)
 
     role: StaffRole | None = None
     is_active: bool | None = None

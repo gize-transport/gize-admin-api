@@ -208,10 +208,12 @@ async def test_pages_follow_the_cursor(api: httpx.AsyncClient, db_session: Async
     assert (seen, cursor) == ([str(c) for c in reversed(made)], None)
 
 
+@pytest.mark.parametrize("sort", ["newest", "name"])
 async def test_a_page_takes_the_same_queries_however_long(
-    api: httpx.AsyncClient, db_session: AsyncSession
+    api: httpx.AsyncClient, db_session: AsyncSession, sort: str
 ) -> None:
-    """Area names come with the page, not one query per corridor."""
+    """Area names come with the page, not one query per corridor (sorted by name too:
+    GZ-082)."""
     member = await add_staff(db_session)
     bind = db_session.bind
     assert isinstance(bind, AsyncConnection)
@@ -226,7 +228,8 @@ async def test_a_page_takes_the_same_queries_however_long(
 
         event.listen(bind.sync_engine, "before_cursor_execute", capture)
         try:
-            assert (await api.get(CORRIDORS, headers=signed_in(member.id))).status_code == 200
+            response = await api.get(CORRIDORS, params={"sort": sort}, headers=signed_in(member.id))
+            assert response.status_code == 200
         finally:
             event.remove(bind.sync_engine, "before_cursor_execute", capture)
         counts.append(len([s for s in statements if s.lstrip().upper().startswith("SELECT")]))

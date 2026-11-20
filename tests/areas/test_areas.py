@@ -463,7 +463,7 @@ def test_areas_are_in_the_contract(make_settings: SettingsFactory) -> None:
     assert member["delete"]["responses"]["404"]["x-error-codes"] == ["NOT_FOUND"]
     assert "204" in member["delete"]["responses"]
     names = {p["name"] for p in collection["get"]["parameters"]}
-    assert names == {"limit", "cursor", "q"}
+    assert names == {"limit", "cursor", "q", "sort"}
     assert schema["components"]["schemas"]["AreaWrite"]["additionalProperties"] is False
 
 

@@ -1224,6 +1224,14 @@
         "title": "MonthSeats",
         "type": "object"
       },
+      "NameSort": {
+        "enum": [
+          "newest",
+          "name"
+        ],
+        "title": "NameSort",
+        "type": "string"
+      },
       "NotOfferable": {
         "description": "Why a request waiting for a route can't be offered its seat (GZ-075): it has an open\noffer (on any route), or it's a student's (seats are offered to adults).",
         "enum": [
@@ -4208,7 +4216,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -4216,6 +4224,17 @@
                 }
               ],
               "title": "Cursor"
+            }
+          },
+          {
+            "description": "`newest` first, or by `name` A to Z ignoring case. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/NameSort",
+              "default": "newest",
+              "description": "`newest` first, or by `name` A to Z ignoring case. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another."
             }
           },
           {
@@ -5546,7 +5565,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -5852,7 +5871,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -5860,6 +5879,17 @@
                 }
               ],
               "title": "Cursor"
+            }
+          },
+          {
+            "description": "`newest` first, or by `name` A to Z ignoring case. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/NameSort",
+              "default": "newest",
+              "description": "`newest` first, or by `name` A to Z ignoring case. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another."
             }
           },
           {
@@ -7241,7 +7271,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -7249,6 +7279,17 @@
                 }
               ],
               "title": "Cursor"
+            }
+          },
+          {
+            "description": "`newest` first, or by `name`: the A area's name A to Z ignoring case, then the B area's. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/NameSort",
+              "default": "newest",
+              "description": "`newest` first, or by `name`: the A area's name A to Z ignoring case, then the B area's. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another."
             }
           },
           {
@@ -8634,7 +8675,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -8642,6 +8683,17 @@
                 }
               ],
               "title": "Cursor"
+            }
+          },
+          {
+            "description": "`newest` first, or by `name` A to Z ignoring case. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/NameSort",
+              "default": "newest",
+              "description": "`newest` first, or by `name` A to Z ignoring case. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another."
             }
           },
           {
@@ -11106,7 +11158,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -11666,7 +11718,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -12209,7 +12261,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -14746,7 +14798,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -16762,7 +16814,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -20410,7 +20462,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -20715,7 +20767,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -22135,7 +22187,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maxLength": 700,
+                  "maxLength": 1200,
                   "type": "string"
                 },
                 {
@@ -22143,6 +22195,17 @@
                 }
               ],
               "title": "Cursor"
+            }
+          },
+          {
+            "description": "`newest` first, or by `name` A to Z ignoring case. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/NameSort",
+              "default": "newest",
+              "description": "`newest` first, or by `name` A to Z ignoring case. A cursor pages the sort it was made with: 422 INVALID_CURSOR with another."
             }
           },
           {

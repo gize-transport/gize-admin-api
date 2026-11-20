@@ -72,7 +72,7 @@ async def create(
 
 
 async def list_companies(session: AsyncSession, params: CompanyListParams) -> CompanyPage:
-    """Newest first."""
+    """Newest first, or by name (GZ-082)."""
     async with session.begin():
         page = await paginate(
             session,
@@ -81,6 +81,7 @@ async def list_companies(session: AsyncSession, params: CompanyListParams) -> Co
             created_at=Company.created_at,
             id=Company.id,
             newest_first=True,
+            sort_keys={"name": Company.name},  # on the unique lower(name) index
         )
         return CompanyPage(
             items=[CompanyRead.model_validate(company) for company in page.items],

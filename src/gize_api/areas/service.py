@@ -56,7 +56,7 @@ async def create(
 
 
 async def list_areas(session: AsyncSession, params: AreaListParams) -> AreaPage:
-    """Newest first."""
+    """Newest first, or by name (GZ-082)."""
     async with session.begin():
         page = await paginate(
             session,
@@ -65,6 +65,7 @@ async def list_areas(session: AsyncSession, params: AreaListParams) -> AreaPage:
             created_at=Area.created_at,
             id=Area.id,
             newest_first=True,
+            sort_keys={"name": Area.name},  # on the unique lower(name) index
         )
         return AreaPage(
             items=[AreaRead.model_validate(area) for area in page.items],

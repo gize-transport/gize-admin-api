@@ -70,18 +70,20 @@ async def create(
 
 
 async def list_corridors(session: AsyncSession, params: CorridorListParams) -> CorridorPage:
-    """Newest first, with both areas' names."""
+    """Newest first or by name (A area, then B), with both areas' names."""
     async with session.begin():
         page = await paginate(
             session,
             repository.live_corridors(
                 origin_area_id=params.origin_area_id,
                 destination_area_id=params.destination_area_id,
+                by_name=params.order is not None,
             ),
             params,
             created_at=Corridor.created_at,
             id=Corridor.id,
             newest_first=True,
+            sort_keys={"name": repository.BY_NAME},
         )
         return CorridorPage(
             items=[CorridorRead.model_validate(corridor) for corridor in page.items],

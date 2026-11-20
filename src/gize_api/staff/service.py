@@ -59,7 +59,7 @@ async def get_me(session: AsyncSession, caller: CurrentStaff) -> StaffMe:
 
 
 async def list_staff(session: AsyncSession, params: StaffListParams) -> StaffPage:
-    """Newest first, deactivated members included unless filtered out."""
+    """Newest first or by name (GZ-082), deactivated members included unless filtered out."""
     async with session.begin():
         page = await paginate(
             session,
@@ -68,6 +68,7 @@ async def list_staff(session: AsyncSession, params: StaffListParams) -> StaffPag
             created_at=Staff.created_at,
             id=Staff.id,
             newest_first=True,
+            sort_keys={"name": Staff.full_name},
         )
         return StaffPage(
             items=[StaffRead.model_validate(staff) for staff in page.items],
