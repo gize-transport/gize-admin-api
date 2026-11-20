@@ -211,7 +211,8 @@ async def copy(
 
 
 async def list_routes(session: AsyncSession, params: RouteListParams) -> RoutePage:
-    """Newest first, with places and seat counts (three queries, however long the page)."""
+    """Newest first, by code or by morning departure, with places and seat counts (three
+    queries, however long the page)."""
     async with session.begin():
         page = await paginate(
             session,
@@ -227,6 +228,7 @@ async def list_routes(session: AsyncSession, params: RouteListParams) -> RoutePa
             created_at=Route.created_at,
             id=Route.id,
             newest_first=True,
+            sort_keys={"code": Route.code, "morning_time": Route.morning_time},
         )
         today = schedule.addis_today()
         counts = await repository.seat_counts(session, [route.id for route in page.items], today)

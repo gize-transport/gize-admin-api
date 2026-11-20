@@ -134,7 +134,8 @@ async def create(
 
 
 async def list_riders(session: AsyncSession, params: RiderListParams) -> RiderPage:
-    """Newest first, each with their seats and open requests (four queries per page)."""
+    """Newest first or by name, each with their seats and open requests (four queries per
+    page)."""
     today = schedule.addis_today()
     seat = params.seat
     async with session.begin():
@@ -152,6 +153,7 @@ async def list_riders(session: AsyncSession, params: RiderListParams) -> RiderPa
             created_at=Rider.created_at,
             id=Rider.id,
             newest_first=True,
+            sort_keys={"name": Rider.full_name},
         )
         return RiderPage(
             items=await _listed(session, page.items, today), next_cursor=page.next_cursor

@@ -141,7 +141,7 @@ All tables in schema `gize`. UUID primary keys. `created_at`, `updated_at` (UTC,
 - All routes under `/v1/`, except `/health/live` and `/health/ready` (for the load balancer; not in the OpenAPI contract). Plural nouns: `/v1/routes`, `/v1/routes/{id}/areas`.
 - JSON, snake_case. Timestamps (`created_at` and the like) are ISO 8601 UTC; the client converts to Africa/Addis_Ababa. Schedule times of day (a route's leave and arrive times) are local Addis Ababa time, `"HH:MM"`: a daily timetable, not a moment (Ethiopia has no daylight saving).
 - Errors: RFC 9457 `application/problem+json` with `type`, `title`, `status`, `code` (stable machine code, e.g. `ROUTE_FULL`), `request_id`. Validation errors list field names and reasons only.
-- Lists: cursor pagination – `?limit=25&cursor=…` (max 100); response `{ "items": [...], "next_cursor": "…" | null }`. Stable ordering (`created_at, id`).
+- Lists: cursor pagination – `?limit=25&cursor=…` (max 100); response `{ "items": [...], "next_cursor": "…" | null }`. Stable ordering (`created_at, id`). A list may offer other orders through `sort` (GZ-081): by that key, then `id`, with an index on both; its cursor names the sort, so it never pages another.
 - `Idempotency-Key` header **required** on POSTs that create or trigger side effects (creating a record, registration, a route request, approve driver, send SMS). Same key + same body → same stored response; same key + different body → 422.
 - `ETag`/`If-Match` optional later; for now use `updated_at` checks in services where concurrent edits matter.
 - Every response carries `X-Request-ID`.

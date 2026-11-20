@@ -8,7 +8,7 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from gize_api.core.contact import MOBILE_E164_LENGTH, EthiopianMobile
-from gize_api.core.pagination import Page, PageParams
+from gize_api.core.pagination import KeyKind, Order, Page, PageParams
 from gize_api.core.schedule import LocalDate
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, SearchText, ShortText
 from gize_api.core.updates import PartialUpdate
@@ -155,6 +155,14 @@ class RiderPage(Page[RiderListItem]):
     """A page of riders (a named schema: generated clients keep the name)."""
 
 
+class RiderSort(StrEnum):
+    NEWEST = "newest"
+    NAME = "name"
+
+
+RIDER_ORDERS = {RiderSort.NAME: Order("name", KeyKind.TEXT, ignore_case=True)}
+
+
 class RiderListParams(PageParams):
     """Filters, combined with AND. `q`: names starting with it, ignoring case (blank: no
     filter). `seat`: holding a reserved or active seat today or later, or none. `route_id`:
@@ -164,6 +172,15 @@ class RiderListParams(PageParams):
     rider_type: RiderType | None = None
     seat: SeatState | None = None
     route_id: uuid.UUID | None = None
+    sort: RiderSort = Field(
+        default=RiderSort.NEWEST,
+        description="`newest` first, or by `name` A to Z ignoring case (GZ-081). A cursor "
+        "pages the sort it was made with: 422 INVALID_CURSOR with another.",
+    )
+
+    @property
+    def order(self) -> Order | None:
+        return RIDER_ORDERS.get(self.sort)
 
 
 class SeatPlacement(BaseModel):
