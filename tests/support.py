@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -240,3 +241,22 @@ async def public_resolver(host: str, port: int) -> list[str]:
 def memory_log_exporter() -> InMemoryLogRecordExporter:
     """The SDK's in-memory log exporter (GZ-066), whose constructor is untyped."""
     return InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]
+
+
+async def every_page(
+    api: httpx.AsyncClient, path: str, headers: dict[str, str], **params: str
+) -> list[str]:
+    """Every item's id in a list, following `next_cursor` two at a time (GZ-081): the
+    order across pages, failing on a repeat or an endless walk."""
+    ids: list[str] = []
+    cursor: str | None = None
+    for _ in range(50):
+        query = {**params, "limit": "2", **({"cursor": cursor} if cursor else {})}
+        response = await api.get(path, params=query, headers=headers)
+        assert response.status_code == 200, response.json()
+        ids += [item["id"] for item in response.json()["items"]]
+        cursor = response.json()["next_cursor"]
+        if cursor is None:
+            assert len(ids) == len(set(ids)), ids
+            return ids
+    raise AssertionError("the pages never ended")

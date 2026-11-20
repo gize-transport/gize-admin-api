@@ -227,7 +227,7 @@ async def add_from_app(
 
 
 async def list_requests(session: AsyncSession, params: RouteRequestListParams) -> RouteRequestPage:
-    """Oldest first: the order requests are served in."""
+    """Oldest first (the order requests are served in), or newest first."""
     async with session.begin():
         page = await paginate(
             session,
@@ -244,6 +244,7 @@ async def list_requests(session: AsyncSession, params: RouteRequestListParams) -
             params,
             created_at=RouteRequest.created_at,
             id=RouteRequest.id,
+            sort_keys={"newest": RouteRequest.created_at},
         )
         return RouteRequestPage(
             items=[RouteRequestRead.model_validate(row) for row in page.items],

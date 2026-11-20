@@ -14,7 +14,7 @@ phones are personal data: never logged.
 import uuid
 from enum import StrEnum
 
-from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, String, text
+from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from gize_api.areas.models import Area
@@ -124,6 +124,12 @@ class Rider(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         Index("ix_riders_home_area_id", "home_area_id"),  # "area in use"
         Index("ix_riders_destination_area_id", "destination_area_id"),
         Index("ix_riders_created_at_id", "created_at", "id"),  # GZ-034's list
+        Index(  # the list by name (GZ-081)
+            "ix_riders_lower_full_name_id",
+            func.lower(text("full_name")),
+            "id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_riders_company_id", "company_id"),  # "company in use"
     )
 

@@ -136,6 +136,7 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
 ## Building blocks for features
 
 - **Lists:** `core/pagination.py`. `?limit=&cursor=` (limit 1–100, default 25), `{items, next_cursor}`; ordered by `(created_at, id)`, so list tables need an index on those two columns. A tampered cursor is `422 INVALID_CURSOR`.
+- **Sorting (GZ-081):** a list's params may add `sort`, returning an `Order` from `order` (None: the default above); its service gives `paginate` the column for each order (`sort_keys`). A sorted page orders by that key, then `id` (names by `lower`, ignoring case), so it needs an index on both. Its cursor is `[sort, key, id]`: another sort's cursor, or the default's, is `422 INVALID_CURSOR`.
 - **Side-effecting POSTs:** `core/idempotency.py`. The `Idempotency-Key` header (a UUID) is required (`428 IDEMPOTENCY_KEY_REQUIRED`).
   - The service calls `claim` as the **first** statement of its transaction block and `record` before the block ends. A retry replays the stored status, body and `Location`/`ETag` headers, with `Idempotent-Replayed: true`.
   - A failure must **raise** (an `AppError` for a client error): the rollback frees the key. A claim left unrecorded makes the commit fail.
@@ -280,7 +281,7 @@ A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run l
 | Endpoint | What it does |
 | --- | --- |
 | `POST /v1/routes` (`routes_create`) | `{code, corridor_id, route_type, school_name?, company_id?, morning_time, morning_arrival_time, return_time, return_arrival_time, seats, launch_minimum?}`. Requires `Idempotency-Key`. Created `draft`. |
-| `GET /v1/routes` (`routes_list`) | Newest first, with corridor, areas, company and seat counts; filters `q` (code prefix), `route_type`, `status`, `corridor_id`, `company_id`. |
+| `GET /v1/routes` (`routes_list`) | Newest first, with corridor, areas, company and seat counts; filters `q` (code prefix), `route_type`, `status`, `corridor_id`, `company_id`. `sort`: `newest` (default), `code` (A to Z) or `morning_time` (earliest first). |
 | `GET /v1/routes/{route_id}` (`routes_get`) | One route. |
 | `PATCH /v1/routes/{route_id}` (`routes_update`) | Change code, corridor, school or company, times, seats, launch minimum. |
 | `PUT /v1/routes/{route_id}/areas` (`routes_set_areas`) | The areas the route passes between A and B, in order: `{area_ids}`, the whole list (empty clears). Not A or B themselves, each once, at most 20. Shown on every route as `served_areas`. A route serving areas can't change corridor until they're cleared. |
@@ -321,7 +322,7 @@ Unmet demand from individual riders (GZ-027): there is no waitlist. Staff record
 | Endpoint | Who | What it does |
 | --- | --- | --- |
 | `POST /v1/route-requests` (`route_requests_create`) | staff | Record a request, `new`. Requires `Idempotency-Key`. |
-| `GET /v1/route-requests` (`route_requests_list`) | staff | Oldest first (the order free seats are offered in); filters `status`, `kind`, `open`, `route_id` (asked for or matched to). |
+| `GET /v1/route-requests` (`route_requests_list`) | staff | Oldest first (the order free seats are offered in), or `sort=newest`; filters `status`, `kind`, `open`, `route_id` (asked for or matched to). |
 | `GET /v1/route-requests/summary` (`route_requests_summary`) | staff | Where the demand is: open requests per area pair and per route, next to free seats next month. |
 | `GET /v1/route-requests/{request_id}` (`route_requests_get`) | staff | One request. |
 | `PATCH /v1/route-requests/{request_id}` (`route_requests_update`) | staff | Correct who and when: rider and contact names, phone, school, preferred times, notes. |
@@ -476,7 +477,7 @@ Staff manage riders (GZ-034) and their seats (GZ-035); admins delete them. Phone
 | Endpoint | What it does |
 | --- | --- |
 | `POST /v1/riders` (`riders_create`) | Record an adult who called in: name, phone, home and destination areas, plan, Saturday add-on. Requires `Idempotency-Key`. `409 RIDER_EXISTS` when a live adult has the phone. |
-| `GET /v1/riders` (`riders_list`) | Newest first, paginated. Filters: `q` (name starts with), `rider_type`, `seat` (`reserved`, `active` or `none`), `route_id`. Phones are masked (`+2519****4567`). |
+| `GET /v1/riders` (`riders_list`) | Newest first, or `sort=name` (A to Z ignoring case), paginated. Filters: `q` (name starts with), `rider_type`, `seat` (`reserved`, `active` or `none`), `route_id`. Phones are masked (`+2519****4567`). |
 | `POST /v1/riders/lookup` (`riders_lookup`) | Body `{phone}`: the live riders with that phone. A POST so the number stays out of URLs and logs. |
 | `GET /v1/riders/{rider_id}` (`riders_get`) | One rider, phone in full, with the seat they hold (route, status, dates) and their open requests. |
 | `PATCH /v1/riders/{rider_id}` (`riders_update`) | Change any field. A rider holding a seat must still fit its route: boarding at A or an area it serves, going to B, Saturday only where the route offers it (`422` on the field). |

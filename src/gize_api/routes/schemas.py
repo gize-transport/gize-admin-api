@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-from gize_api.core.pagination import Page, PageParams
+from gize_api.core.pagination import KeyKind, Order, Page, PageParams
 from gize_api.core.schedule import LocalDate, LocalTime
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, ShortText
 from gize_api.core.updates import PartialUpdate
@@ -331,6 +331,18 @@ class RoutePage(Page[RouteRead]):
     """A page of routes (a named schema: generated clients keep the name)."""
 
 
+class RouteSort(StrEnum):
+    NEWEST = "newest"
+    CODE = "code"
+    MORNING_TIME = "morning_time"
+
+
+ROUTE_ORDERS = {
+    RouteSort.CODE: Order("code", KeyKind.TEXT),
+    RouteSort.MORNING_TIME: Order("morning_time", KeyKind.TIME),
+}
+
+
 class RouteListParams(PageParams):
     """Filters, combined with AND; `q` finds codes starting with it (blank: no filter)."""
 
@@ -340,3 +352,13 @@ class RouteListParams(PageParams):
     corridor_id: uuid.UUID | None = None
     company_id: uuid.UUID | None = None
     driver_id: uuid.UUID | None = Field(default=None, description="Routes this driver drives.")
+    sort: RouteSort = Field(
+        default=RouteSort.NEWEST,
+        description="`newest` first, by `code` A to Z, or by `morning_time` (leaving A) "
+        "earliest first (GZ-081). A cursor pages the sort it was made with: 422 "
+        "INVALID_CURSOR with another.",
+    )
+
+    @property
+    def order(self) -> Order | None:
+        return ROUTE_ORDERS.get(self.sort)

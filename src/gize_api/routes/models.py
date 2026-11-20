@@ -167,6 +167,12 @@ class Route(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         Index("ix_routes_corridor_id", "corridor_id"),  # filter, "corridor in use"
         Index("ix_routes_company_id", "company_id"),  # filter, "company in use"
         Index("ix_routes_created_at_id", "created_at", "id"),  # the list's order
+        Index(  # the list by morning departure (GZ-081); by code: uq_routes_code
+            "ix_routes_morning_time_id",
+            "morning_time",
+            "id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_routes_driver_id", "driver_id"),  # a driver's routes (GZ-053)
     )
 

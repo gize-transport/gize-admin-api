@@ -5,6 +5,8 @@ company). Type is fixed at creation (owner decision). Status and prices have the
 tickets (GZ-024, GZ-022). Seat counts are in test_seats.py.
 """
 
+import base64
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, time, timedelta
@@ -30,7 +32,7 @@ from tests.routes.support import (
     route_path,
 )
 from tests.staff.support import add_admin, add_staff, audit_entries, signed_in, with_key
-from tests.support import SettingsFactory
+from tests.support import SettingsFactory, every_page
 
 START = datetime(2026, 10, 29, 6, 30, tzinfo=UTC)
 
@@ -333,6 +335,47 @@ async def test_pages_follow_the_cursor(api: httpx.AsyncClient, db_session: Async
     assert (seen, cursor) == ([str(r) for r in reversed(made)], None)
 
 
+async def test_staff_sort_routes_by_code(api: httpx.AsyncClient, db_session: AsyncSession) -> None:
+    """GZ-081: the codes staff use, A to Z."""
+    member = await add_staff(db_session)
+    made = {code: await add_route(db_session, code=code)
+            for code in ("SCH-01", "BOLE-02", "ACME-01", "BOLE-01", "CMC-07")}  # fmt: skip
+    await add_route(db_session, code="AAA-01", deleted_at=START)
+    expected = [str(made[code]) for code in ("ACME-01", "BOLE-01", "BOLE-02", "CMC-07", "SCH-01")]
+    headers = signed_in(member.id)
+    assert await every_page(api, ROUTES, headers, sort="code") == expected
+    assert await every_page(api, ROUTES, headers, sort="code", q="bole") == expected[1:3]
+
+
+async def test_staff_sort_routes_by_morning_departure(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """GZ-081: earliest first; routes leaving at the same time always in one order (by
+    id), so pages repeat and skip none."""
+    member = await add_staff(db_session)
+    made = {leaves: [await add_route(db_session, morning_time=leaves) for _ in range(count)]
+            for leaves, count in ((time(7, 0), 1), (time(6, 30), 3), (time(6, 0), 1))}  # fmt: skip
+    expected = [*made[time(6, 0)], *sorted(made[time(6, 30)]), *made[time(7, 0)]]
+    headers = signed_in(member.id)
+    assert await every_page(api, ROUTES, headers, sort="morning_time") == [str(r) for r in expected]
+
+
+@pytest.mark.parametrize("sorts", [("code", "morning_time"), ("newest", "code"),
+                                   ("morning_time", "newest")], ids=str)  # fmt: skip
+async def test_a_cursor_from_another_sort_is_422(
+    api: httpx.AsyncClient, db_session: AsyncSession, sorts: tuple[str, str]
+) -> None:
+    member = await add_staff(db_session)
+    for _ in range(2):
+        await add_route(db_session)
+    made, used = sorts
+    first = await api.get(ROUTES, params={"sort": made, "limit": "1"},
+                          headers=signed_in(member.id))  # fmt: skip
+    response = await api.get(ROUTES, params={"sort": used, "cursor": first.json()["next_cursor"]},
+                             headers=signed_in(member.id))  # fmt: skip
+    assert (response.status_code, response.json()["code"]) == (422, "INVALID_CURSOR")
+
+
 async def test_a_page_takes_the_same_queries_however_long(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -369,7 +412,28 @@ async def test_a_page_takes_the_same_queries_however_long(
         ({"route_type": "shuttle"}, "VALIDATION_FAILED"),
         ({"corridor_id": "nope"}, "VALIDATION_FAILED"),
         ({"driver_id": "Bereket"}, "VALIDATION_FAILED"),
+        ({"sort": "seats"}, "VALIDATION_FAILED"),
+        ({"sort": "CODE"}, "VALIDATION_FAILED"),
         ({"cursor": "garbage"}, "INVALID_CURSOR"),
+        ({"sort": "code", "cursor": "garbage"}, "INVALID_CURSOR"),
+        (
+            {
+                "sort": "code",
+                "cursor": base64.urlsafe_b64encode(
+                    json.dumps(["code", "\ud800", str(uuid.uuid4())]).encode()
+                ).decode(),
+            },
+            "INVALID_CURSOR",
+        ),
+        (
+            {
+                "sort": "morning_time",
+                "cursor": base64.urlsafe_b64encode(
+                    json.dumps(["morning_time", "25:00", str(uuid.uuid4())]).encode()
+                ).decode(),
+            },
+            "INVALID_CURSOR",
+        ),
     ],
 )
 async def test_invalid_list_parameters_are_422(

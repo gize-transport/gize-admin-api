@@ -595,3 +595,13 @@ Status: done · Depends on: GZ-064
 - Built (no migration): `GET /v1/overview` adds `riders.starting`: riders holding an active seat that starts after today, and not riding today (a rider moving on the 1st holds today's seat and the next, and counts as riding only). Still one query: per rider, then counted. A contract minor (a new response field).
 - From review: placing someone on a running route also gives a seat from the next 1st, so they count as starting too (the descriptions say so); a move whose old seat ends today counts as riding only (tested).
 - Not changed: a rider riding today who also holds a reservation on a forming route still counts as both riding and reserved.
+
+### GZ-081 · Sort riders, routes and requests
+Status: done · Depends on: GZ-008
+- Owner decision (2026-11-20): staff sort the big lists server-side (a list comes a page at a time, so the browser can't). Riders by name (A to Z); routes by code or morning departure; requests newest first. Defaults unchanged (riders and routes newest first, requests oldest first). The audit log, offers, the offer queue and the public lists keep their fixed order.
+- Built: `core/pagination`: `Order` (tag, key kind, direction, `ignore_case`), `PageParams.order`, `paginate(sort_keys=…)` paging by the key then `id`; the cursor `[sort, key, id]` (names stored as written, compared by `lower` on both sides); a cursor made for another sort, or the default's in a sort, is `422 INVALID_CURSOR`. `MAX_CURSOR_LENGTH` 200 → 700 (a 100-character name in any script; a request limit relaxed). `sort` on `riders_list` (`newest`, `name`), `routes_list` (`newest`, `code`, `morning_time`), `route_requests_list` (`oldest`, `newest`). Migration 0021 (expand): `ix_riders_lower_full_name_id`, `ix_routes_morning_time_id` (live rows); codes use `uq_routes_code`, requests' newest first `ix_route_requests_created_at_id` backwards (plans checked). A contract minor.
+- From review: a text key in a cursor is refused (422 INVALID_CURSOR) if it holds a control character or is longer than a short text: a NUL or a lone surrogate passed decoding and failed in the database, a 500. Tampered sorted cursors are tested through the endpoints.
+
+### GZ-082 · Sort the other staff lists by name
+Status: planned · Depends on: GZ-081
+- Owner decision (2026-11-20): drivers, companies, areas, corridors and staff sort by name (A to Z) through GZ-081's `sort`; newest first stays the default.

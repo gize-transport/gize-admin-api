@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, time
+from enum import StrEnum
 from typing import Self
 
 from pydantic import (
@@ -14,7 +15,7 @@ from pydantic import (
 )
 
 from gize_api.core.contact import MOBILE_E164_LENGTH, EthiopianMobile
-from gize_api.core.pagination import Page, PageParams
+from gize_api.core.pagination import KeyKind, Order, Page, PageParams
 from gize_api.core.schedule import LocalTime
 from gize_api.core.text import NOTES_MAX_LENGTH, SHORT_TEXT_MAX_LENGTH, Notes, ShortText
 from gize_api.core.updates import PartialUpdate
@@ -163,6 +164,14 @@ class RouteRequestPage(Page[RouteRequestRead]):
     """A page of requests (a named schema: generated clients keep the name)."""
 
 
+class RouteRequestSort(StrEnum):
+    OLDEST = "oldest"
+    NEWEST = "newest"
+
+
+REQUEST_ORDERS = {RouteRequestSort.NEWEST: Order("newest", KeyKind.TIMESTAMP, descending=True)}
+
+
 class RouteRequestListParams(PageParams):
     """Filters, combined with AND. `open`: `new` or `matched` (true) or closed (false);
     `route_id`: requests asking for that route or matched to it.
@@ -183,6 +192,15 @@ class RouteRequestListParams(PageParams):
     to_area_name: ShortText | None = Field(
         default=None, description="An area typed as not listed at B, ignoring case."
     )
+    sort: RouteRequestSort = Field(
+        default=RouteRequestSort.OLDEST,
+        description="`oldest` first (the order requests are served in) or `newest` first "
+        "(GZ-081). A cursor pages the sort it was made with: 422 INVALID_CURSOR with another.",
+    )
+
+    @property
+    def order(self) -> Order | None:
+        return REQUEST_ORDERS.get(self.sort)
 
     @model_validator(mode="after")
     def _one_way_to_name_each_end(self) -> Self:

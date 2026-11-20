@@ -28,7 +28,7 @@ from tests.factories import AreaFactory, RouteRequestFactory
 from tests.route_requests.support import REQUESTS, add_request, request_path
 from tests.routes.support import add_company, add_route
 from tests.staff.support import add_admin, add_staff, audit_entries, signed_in, with_key
-from tests.support import SettingsFactory
+from tests.support import SettingsFactory, every_page
 
 START = datetime(2026, 10, 29, 6, 30, tzinfo=UTC)
 CALLER = {
@@ -355,6 +355,42 @@ async def test_staff_list_requests_oldest_first(
     assert [item["id"] for item in rest.json()["items"]] == [str(declined), str(matched)]
 
 
+async def test_staff_sort_requests_newest_first(
+    api: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """GZ-081: newest first on request; oldest first stays the default (the order they're
+    served in). Requests made at the same moment always come in one order (by id)."""
+    member_id = (await add_staff(db_session)).id
+    at = [datetime(2026, 11, day, tzinfo=UTC) for day in (1, 2, 2, 2, 3)]
+    made = [await add_request(db_session, created_at=moment) for moment in at]
+    declined = await add_request(db_session, status="declined", decline_reason="Too far.",
+                                 created_at=datetime(2026, 11, 4, tzinfo=UTC))  # fmt: skip
+    oldest = [made[0], *sorted(made[1:4]), made[4], declined]
+    headers = signed_in(member_id)
+    expected = [str(i) for i in oldest]
+    assert await every_page(api, REQUESTS, headers) == expected
+    assert await every_page(api, REQUESTS, headers, sort="oldest") == expected
+    assert await every_page(api, REQUESTS, headers, sort="newest") == expected[::-1]
+    assert await every_page(api, REQUESTS, headers, sort="newest", open="true") == [
+        str(i) for i in reversed(oldest[:-1])
+    ]
+
+
+@pytest.mark.parametrize("sorts", [("oldest", "newest"), ("newest", "oldest")], ids=str)
+async def test_a_cursor_from_another_sort_is_422(
+    api: httpx.AsyncClient, db_session: AsyncSession, sorts: tuple[str, str]
+) -> None:
+    member_id = (await add_staff(db_session)).id
+    for day in (1, 2):
+        await add_request(db_session, created_at=datetime(2026, 11, day, tzinfo=UTC))
+    made, used = sorts
+    first = await api.get(REQUESTS, params={"sort": made, "limit": "1"},
+                          headers=signed_in(member_id))  # fmt: skip
+    response = await api.get(REQUESTS, params={"sort": used, "cursor": first.json()["next_cursor"]},
+                             headers=signed_in(member_id))  # fmt: skip
+    assert (response.status_code, response.json()["code"]) == (422, "INVALID_CURSOR")
+
+
 async def test_staff_list_the_requests_behind_a_demand_card(
     api: httpx.AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -486,7 +522,9 @@ async def test_a_page_takes_the_same_queries_however_long(
         ({"from_area_id": str(uuid.uuid4()), "from_area_name": "Ayat"}, "VALIDATION_FAILED"),
         ({"to_area_id": str(uuid.uuid4()), "to_area_name": "Ayat"}, "VALIDATION_FAILED"),
         ({"limit": "101"}, "VALIDATION_FAILED"),
+        ({"sort": "name"}, "VALIDATION_FAILED"),
         ({"cursor": "garbage"}, "INVALID_CURSOR"),
+        ({"sort": "newest", "cursor": "garbage"}, "INVALID_CURSOR"),
     ],
 )
 async def test_invalid_list_parameters_are_422(

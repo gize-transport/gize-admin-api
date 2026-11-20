@@ -7,6 +7,8 @@ their route. Names and phones are personal data: redacted in the audit log, mask
 lists.
 """
 
+import base64
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
@@ -25,6 +27,7 @@ from gize_api.routes.models import AssignmentStatus, RouteAssignment
 from tests.factories import AreaFactory, RiderFactory, RouteRequestFactory
 from tests.registrations.support import Trip, add_route, add_trip
 from tests.staff.support import add_admin, add_staff, audit_entries, signed_in, with_key
+from tests.support import every_page
 
 RIDERS = "/v1/riders"
 PHONE = "+251911234567"
@@ -314,10 +317,74 @@ async def test_the_list_comes_in_pages(
     assert (len(first["items"]), len(second["items"]), second["next_cursor"]) == (2, 1, None)
 
 
+async def test_staff_sort_riders_by_name(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    """GZ-081: A to Z ignoring case. The same name always comes in one order (by id), so
+    pages split between them repeat and skip no one."""
+    made = {
+        name: [(await _rider(db_session, trip, full_name=name)).id for _ in range(count)]
+        for name, count in (("Chaltu Bekele", 1), ("abebe kebede", 1), ("Almaz Tesfaye", 1),
+                            ("Abebe Kebede", 2), ("bekele Girma", 1))
+    }  # fmt: skip
+    await _rider(db_session, trip, full_name="Aaron Deleted", deleted_at=datetime.now(UTC))
+    abebes = sorted([*made["abebe kebede"], *made["Abebe Kebede"]])
+    expected = [*abebes, *made["Almaz Tesfaye"], *made["bekele Girma"], *made["Chaltu Bekele"]]
+    headers = signed_in(member)
+    assert await every_page(api, RIDERS, headers, sort="name") == [str(i) for i in expected]
+    assert await every_page(api, RIDERS, headers, sort="name", q="a") == [
+        str(i) for i in [*abebes, *made["Almaz Tesfaye"]]
+    ]
+
+
+async def test_newest_first_is_the_default_sort(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID
+) -> None:
+    made = [
+        (await _rider(db_session, trip, created_at=datetime(2026, 10, day, tzinfo=UTC))).id
+        for day in (1, 2, 3)
+    ]
+    newest = [str(i) for i in reversed(made)]
+    headers = signed_in(member)
+    assert await every_page(api, RIDERS, headers) == newest
+    assert await every_page(api, RIDERS, headers, sort="newest") == newest
+
+
+@pytest.mark.parametrize("sorts", [("name", "newest"), ("newest", "name")], ids=str)
+async def test_a_cursor_from_another_sort_is_422(
+    api: httpx.AsyncClient, db_session: AsyncSession, trip: Trip, member: uuid.UUID,
+    sorts: tuple[str, str],
+) -> None:  # fmt: skip
+    for name in ("Abebe Kebede", "Almaz Tesfaye"):
+        await _rider(db_session, trip, full_name=name)
+    made, used = sorts
+    first = await api.get(RIDERS, params={"sort": made, "limit": "1"}, headers=signed_in(member))
+    cursor = first.json()["next_cursor"]
+    response = await api.get(
+        RIDERS, params={"sort": used, "cursor": cursor}, headers=signed_in(member)
+    )
+    assert (response.status_code, response.json()["code"]) == (422, "INVALID_CURSOR")
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    ["garbage", base64.urlsafe_b64encode(json.dumps(["name", "A\u0000", str(uuid.uuid4())])
+                                         .encode()).decode()],
+    ids=["garbage", "nul"],
+)  # fmt: skip
+async def test_a_tampered_sorted_cursor_is_422(
+    api: httpx.AsyncClient, member: uuid.UUID, cursor: str
+) -> None:
+    response = await api.get(
+        RIDERS, params={"sort": "name", "cursor": cursor}, headers=signed_in(member)
+    )
+    assert (response.status_code, response.json()["code"]) == (422, "INVALID_CURSOR")
+
+
 @pytest.mark.parametrize(
     "params",
     [{"seat": "maybe"}, {"rider_type": "child"}, {"route_id": "r1"}, {"phone": PHONE},
-     {"limit": "0"}, {"q": "x" * 101}],
+     {"limit": "0"}, {"q": "x" * 101}, {"sort": "phone"}, {"sort": "-name"}, {"sort": ""}],
     ids=str,
 )  # fmt: skip
 async def test_bad_list_parameters_are_422(

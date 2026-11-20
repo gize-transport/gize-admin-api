@@ -1,13 +1,18 @@
-"""GZ-008: cursor pagination: opaque cursors, bounded limits, strict query parameters."""
+"""GZ-008: cursor pagination: opaque cursors, bounded limits, strict query parameters.
+
+GZ-081: a list sorted another way than its default pages by that key, and its cursor
+names the sort: one made for another sort is INVALID_CURSOR."""
 
 import base64
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 
 import httpx
 import pytest
 from fastapi import Depends, FastAPI
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from gize_api.core.errors import AppError, ErrorCode
 from gize_api.core.pagination import (
@@ -15,12 +20,20 @@ from gize_api.core.pagination import (
     MAX_CURSOR_LENGTH,
     MAX_LIMIT,
     Cursor,
+    KeyCursor,
+    KeyKind,
+    Order,
     PageParams,
     decode_cursor,
+    decode_key_cursor,
     encode_cursor,
+    encode_key_cursor,
     page_params,
+    paginate,
 )
+from gize_api.core.text import SHORT_TEXT_MAX_LENGTH
 from gize_api.main import create_app
+from gize_api.staff.models import Staff
 from tests.support import SettingsFactory
 
 
@@ -92,7 +105,7 @@ async def test_limit_defaults_and_accepts_the_maximum(make_settings: SettingsFac
         "?limit=-1",
         "?limit=ten",
         "?sort=name",
-        "?cursor=" + "a" * 201,
+        "?cursor=" + "a" * (MAX_CURSOR_LENGTH + 1),
     ],
 )
 async def test_invalid_page_parameters_are_422(make_settings: SettingsFactory, query: str) -> None:
@@ -106,3 +119,85 @@ async def test_a_bad_cursor_is_422_invalid_cursor(make_settings: SettingsFactory
     assert response.status_code == 422
     assert response.json()["code"] == "INVALID_CURSOR"
     assert "bm90" not in response.text  # the cursor is not echoed
+
+
+NAME = Order("name", KeyKind.TEXT, ignore_case=True)
+MORNING = Order("morning_time", KeyKind.TIME)
+NEWEST = Order("newest", KeyKind.TIMESTAMP, descending=True)
+ID = uuid.uuid4()
+
+
+@pytest.mark.parametrize(
+    ("order", "value"),
+    [
+        (NAME, "Abebe Kebede"),
+        (NAME, "አበበ ከበደ"),
+        (MORNING, time(6, 30)),
+        (NEWEST, datetime(2026, 11, 20, 6, 30, 15, 123456, tzinfo=UTC)),
+    ],
+    ids=str,
+)
+def test_key_cursors_round_trip(order: Order, value: str | time | datetime) -> None:
+    token = encode_key_cursor(order, value, ID)
+    assert decode_key_cursor(token, order) == KeyCursor(value=value, id=ID)
+    for character in "=+/":
+        assert character not in token
+
+
+def test_the_longest_name_fits_in_a_cursor() -> None:
+    """Names are up to 100 characters, any script: four bytes each at most in UTF-8."""
+    token = encode_key_cursor(NAME, "\U0001f68c" * SHORT_TEXT_MAX_LENGTH, ID)
+    assert len(token) <= MAX_CURSOR_LENGTH
+    params = PageParams(cursor=token)
+    assert params.cursor == token
+
+
+@pytest.mark.parametrize(
+    ("order", "token"),
+    [
+        (NAME, encode_cursor(Cursor(created_at=datetime(2026, 10, 28, tzinfo=UTC), id=ID))),
+        (MORNING, encode_key_cursor(NAME, "Abebe", ID)),  # made for another sort
+        (NEWEST, encode_key_cursor(Order("oldest", KeyKind.TIMESTAMP), datetime.now(UTC), ID)),
+        (NAME, _token(["name", "Abebe"])),
+        (NAME, _token(["name", "Abebe", str(ID), "extra"])),
+        (NAME, _token(["name", 5, str(ID)])),
+        (NAME, _token(["name", "Abe\u0000be", str(ID)])),  # the database refuses a NUL
+        (NAME, _token(["name", "\ud800", str(ID)])),  # a lone surrogate isn't UTF-8
+        (NAME, _token(["name", "Abebe\nKebede", str(ID)])),
+        (NAME, _token(["name", "x" * (SHORT_TEXT_MAX_LENGTH + 1), str(ID)])),
+        (NAME, _token(["name", "Abebe", "not-a-uuid"])),
+        (NAME, _token(["name", "Abebe", 5])),
+        (NAME, _token({"name": "Abebe"})),
+        (MORNING, _token(["morning_time", "six thirty", str(ID)])),
+        (MORNING, _token(["morning_time", "06:30:00+03:00", str(ID)])),  # a time zone
+        (NEWEST, _token(["newest", "2026-10-28T06:30:00", str(ID)])),  # no time zone
+        (NEWEST, _token(["newest", "0001-01-01T00:00:00+14:00", str(ID)])),
+        (NAME, "not base64 !"),
+        (NAME, base64.urlsafe_b64encode(b"\xff\xfe").decode()),
+        (NAME, ""),
+    ],
+)
+def test_tampered_or_foreign_key_cursors_are_invalid(order: Order, token: str) -> None:
+    with pytest.raises(AppError) as exc_info:
+        decode_key_cursor(token, order)
+    assert exc_info.value.code is ErrorCode.INVALID_CURSOR
+
+
+def test_a_sorted_lists_cursor_is_invalid_in_the_default_order() -> None:
+    with pytest.raises(AppError) as exc_info:
+        decode_cursor(encode_key_cursor(NAME, "Abebe", ID))
+    assert exc_info.value.code is ErrorCode.INVALID_CURSOR
+
+
+async def test_an_order_with_no_column_is_a_wiring_bug(db_session: AsyncSession) -> None:
+    """A list offering a sort its service gives no column for fails loudly, never pages
+    some other way."""
+
+    class Sorted(PageParams):
+        @property
+        def order(self) -> Order | None:
+            return NAME
+
+    with pytest.raises(LookupError):
+        await paginate(db_session, select(Staff), Sorted(), created_at=Staff.created_at,
+                       id=Staff.id, sort_keys={"code": Staff.full_name})  # fmt: skip
