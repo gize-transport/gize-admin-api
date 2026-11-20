@@ -15,7 +15,7 @@ from pydantic import (
 )
 
 from gize_api.core.contact import MOBILE_E164_LENGTH, EthiopianMobile
-from gize_api.core.pagination import Page, PageParams
+from gize_api.core.pagination import NameSortedParams, Page
 from gize_api.core.text import (
     SHORT_TEXT_MAX_LENGTH,
     SearchText,
@@ -110,7 +110,7 @@ class DriverPage(Page[DriverRead]):
     """A page of drivers (a named schema: generated clients keep the name)."""
 
 
-class DriverListParams(PageParams):
+class DriverListParams(NameSortedParams):
     """`q`: names, or plates (any case or spacing), starting with it; blank is no filter."""
 
     q: SearchText = None

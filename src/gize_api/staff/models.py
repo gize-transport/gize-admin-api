@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Index, String, true
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Index, String, func, text, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gize_api.core.audit import AuditedEntity
@@ -41,6 +41,7 @@ class Staff(TimestampMixin, Base):
         CheckConstraint("email = lower(btrim(email)) AND position('@' in email) > 1", name="email"),
         CheckConstraint("btrim(full_name) <> ''", name="full_name"),
         Index("ix_staff_created_at_id", "created_at", "id"),  # the staff list's order
+        Index("ix_staff_lower_full_name_id", func.lower(text("full_name")), "id"),  # GZ-082
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)  # the Supabase user ID

@@ -5,8 +5,10 @@ from typing import Literal
 
 from sqlalchemy import Select, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import aliased, contains_eager, joinedload
 
+from gize_api.areas.models import Area
+from gize_api.core.pagination import SortKey
 from gize_api.corridors.models import Corridor
 
 Lock = Literal["update", "share"]
@@ -65,11 +67,33 @@ async def uses_area(session: AsyncSession, area_id: uuid.UUID) -> bool:
     return bool(await session.scalar(select(statement)))
 
 
+# A corridor's name (GZ-082): its A area's, then its B area's. The list is small (a pair
+# of places per corridor), so it sorts without an index.
+_ORIGIN = aliased(Area)
+_DESTINATION = aliased(Area)
+BY_NAME = SortKey(
+    columns=(_ORIGIN.name, _DESTINATION.name),
+    read=lambda corridor: (corridor.origin_area.name, corridor.destination_area.name),
+)
+
+
 def live_corridors(
-    *, origin_area_id: uuid.UUID | None, destination_area_id: uuid.UUID | None
+    *, origin_area_id: uuid.UUID | None, destination_area_id: uuid.UUID | None, by_name: bool
 ) -> Select[Corridor]:
-    """The filtered corridors with their areas, unordered: `paginate` orders and bounds."""
-    statement = select(Corridor).options(*_WITH_AREAS).where(Corridor.not_deleted())
+    """The filtered corridors with their areas, unordered: `paginate` orders and bounds.
+    `by_name` joins the areas `BY_NAME` sorts on and loads them from those joins."""
+    statement = select(Corridor).where(Corridor.not_deleted())
+    if by_name:
+        statement = (
+            statement.join(_ORIGIN, _ORIGIN.id == Corridor.origin_area_id)
+            .join(_DESTINATION, _DESTINATION.id == Corridor.destination_area_id)
+            .options(
+                contains_eager(Corridor.origin_area.of_type(_ORIGIN)),
+                contains_eager(Corridor.destination_area.of_type(_DESTINATION)),
+            )
+        )
+    else:
+        statement = statement.options(*_WITH_AREAS)
     if origin_area_id is not None:
         statement = statement.where(Corridor.origin_area_id == origin_area_id)
     if destination_area_id is not None:

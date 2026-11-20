@@ -6,7 +6,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from gize_api.core.pagination import Page, PageParams
+from gize_api.core.pagination import KeyKind, NameSort, NameSortedParams, Order, Page
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH
 from gize_api.core.updates import PartialUpdate
 
@@ -54,8 +54,17 @@ class CorridorPage(Page[CorridorRead]):
     """A page of corridors (a named schema: generated clients keep the name)."""
 
 
-class CorridorListParams(PageParams):
+class CorridorListParams(NameSortedParams):
     """Filters, combined with AND; unknown parameters are refused."""
+
+    name_order = Order("name", KeyKind.TEXT, ignore_case=True, parts=2)
+
+    sort: NameSort = Field(
+        default=NameSort.NEWEST,
+        description="`newest` first, or by `name`: the A area's name A to Z ignoring case, "
+        "then the B area's. A cursor pages the sort it was made with: 422 INVALID_CURSOR "
+        "with another.",
+    )
 
     origin_area_id: uuid.UUID | None = None
     destination_area_id: uuid.UUID | None = None

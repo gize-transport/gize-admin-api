@@ -136,7 +136,7 @@ The container runs as an unprivileged user (uid 10001). The API finishes in-flig
 ## Building blocks for features
 
 - **Lists:** `core/pagination.py`. `?limit=&cursor=` (limit 1–100, default 25), `{items, next_cursor}`; ordered by `(created_at, id)`, so list tables need an index on those two columns. A tampered cursor is `422 INVALID_CURSOR`.
-- **Sorting (GZ-081):** a list's params may add `sort`, returning an `Order` from `order` (None: the default above); its service gives `paginate` the column for each order (`sort_keys`). A sorted page orders by that key, then `id` (names by `lower`, ignoring case), so it needs an index on both. Its cursor is `[sort, key, id]`: another sort's cursor, or the default's, is `422 INVALID_CURSOR`.
+- **Sorting (GZ-081):** a list's params may add `sort`, returning an `Order` from `order` (None: the default above); its service gives `paginate` the column for each order (`sort_keys`). A sorted page orders by that key, then `id` (names by `lower`, ignoring case), so it needs an index on both. Its cursor is `[sort, key, id]`: another sort's cursor, or the default's, is `422 INVALID_CURSOR`. Lists sorted newest first or by name subclass `NameSortedParams` (GZ-082); a key of several columns (a corridor's two area names) is a `SortKey`, its cursor key a list.
 - **Side-effecting POSTs:** `core/idempotency.py`. The `Idempotency-Key` header (a UUID) is required (`428 IDEMPOTENCY_KEY_REQUIRED`).
   - The service calls `claim` as the **first** statement of its transaction block and `record` before the block ends. A retry replays the stored status, body and `Location`/`ETag` headers, with `Idempotent-Replayed: true`.
   - A failure must **raise** (an `AppError` for a client error): the rollback frees the key. A claim left unrecorded makes the commit fail.
@@ -202,7 +202,7 @@ Admins manage staff under `/v1/staff` (GZ-013). Every route is for **active admi
 | Endpoint | What it does |
 | --- | --- |
 | `POST /v1/staff` (`staff_invite`) | Body `{email, full_name, role}`. Supabase emails them an invitation; they are active staff in that role at once and can sign in when they have accepted. `201` with `Location`. Requires `Idempotency-Key`; 20 invites an hour per admin (refusals and replays don't count). |
-| `GET /v1/staff` (`staff_list`) | Newest first, cursor-paginated, filtered by `role` and `is_active`. Deactivated members are listed; `first_signed_in_at` is null while an invitation is pending. |
+| `GET /v1/staff` (`staff_list`) | Newest first, or `sort=name` (A to Z ignoring case), cursor-paginated, filtered by `role` and `is_active`. Deactivated members are listed; `first_signed_in_at` is null while an invitation is pending. |
 | `GET /v1/staff/{staff_id}` (`staff_get`) | One member, or `404`. |
 | `PATCH /v1/staff/{staff_id}` (`staff_update`) | Body `{full_name?, role?, is_active?}`, at least one, never `null`. Correct a name (trimmed; audited as `staff.renamed` without the names), promote, demote, deactivate (locks them out on their next request) or reactivate. The email can't change: it is the person's sign-in. The name an invite stored in the Supabase user's metadata isn't updated: the API never reads it, and `gize.staff` is the record (the portal should show `full_name` from the API, not from the sign-in token). No key needed: setting what is already there changes nothing. |
 
@@ -227,7 +227,7 @@ The list of neighbourhoods and landmarks everyone picks from (GZ-026), so "Ayat"
 | Endpoint | Who | What it does |
 | --- | --- | --- |
 | `POST /v1/areas` (`areas_create`) | staff | `{name}`. Requires `Idempotency-Key`. `201` with `Location`. |
-| `GET /v1/areas` (`areas_list`) | staff | Newest first, cursor-paginated. `q` finds names starting with it, ignoring case. |
+| `GET /v1/areas` (`areas_list`) | staff | Newest first, or `sort=name` (A to Z ignoring case), cursor-paginated. `q` finds names starting with it, ignoring case. |
 | `GET /v1/areas/{area_id}` (`areas_get`) | staff | One area. |
 | `PATCH /v1/areas/{area_id}` (`areas_update`) | staff | Rename. |
 | `DELETE /v1/areas/{area_id}` (`areas_delete`) | admin | Soft delete: hidden from lists, name free again, history kept. `204`. |
@@ -245,7 +245,7 @@ A corridor is a pair of areas, from (`origin`) and to (`destination`), that rout
 | Endpoint | What it does |
 | --- | --- |
 | `POST /v1/corridors` (`corridors_create`) | `{origin_area_id, destination_area_id}`, two different live areas. Requires `Idempotency-Key`. `201` with `Location`. |
-| `GET /v1/corridors` (`corridors_list`) | Newest first, with both areas' names; filters `origin_area_id`, `destination_area_id`. |
+| `GET /v1/corridors` (`corridors_list`) | Newest first, or `sort=name` (A area's name A to Z ignoring case, then B's), with both areas' names; filters `origin_area_id`, `destination_area_id`. |
 | `GET /v1/corridors/{corridor_id}` (`corridors_get`) | One corridor. |
 | `PATCH /v1/corridors/{corridor_id}` (`corridors_update`) | Change one end or both (leave one out to keep it; never `null`). |
 | `DELETE /v1/corridors/{corridor_id}` (`corridors_delete`) | Admins. Soft delete, `204`. |
@@ -264,7 +264,7 @@ Postpaid customers whose staff ride their own corporate routes (GZ-029). Staff m
 | Endpoint | What it does |
 | --- | --- |
 | `POST /v1/companies` (`companies_create`) | `{name, contact_name, contact_phone, contact_email, notes?}`. Requires `Idempotency-Key`. Created active, billing `postpaid`. |
-| `GET /v1/companies` (`companies_list`) | Newest first; `q` (names starting with it) and `is_active`. |
+| `GET /v1/companies` (`companies_list`) | Newest first, or `sort=name` (A to Z ignoring case); `q` (names starting with it) and `is_active`. |
 | `GET /v1/companies/{company_id}` (`companies_get`) | One company. |
 | `PATCH /v1/companies/{company_id}` (`companies_update`) | Change any field except billing; `is_active: false` deactivates; empty `notes` clear them. |
 | `DELETE /v1/companies/{company_id}` (`companies_delete`) | Admins. Soft delete, `204`. |
@@ -498,7 +498,7 @@ Who drives the vans (GZ-050): basic information only for the MVP. Staff manage t
 | Endpoint | What it does |
 | --- | --- |
 | `POST /v1/drivers` (`drivers_create`) | `{full_name, phone, address, plate}`. The phone typed any usual way (stored `+2519…`), the plate any case or spacing (stored `AA 3-B12345`). Requires `Idempotency-Key`. `409 DRIVER_EXISTS` (a live driver has the phone), `409 PLATE_TAKEN`. |
-| `GET /v1/drivers` (`drivers_list`) | Newest first, paginated. `q` finds a name or a plate starting with it; `is_active` filters. |
+| `GET /v1/drivers` (`drivers_list`) | Newest first, or `sort=name` (A to Z ignoring case), paginated. `q` finds a name or a plate starting with it; `is_active` filters. |
 | `GET /v1/drivers/{driver_id}` (`drivers_get`) | One driver. |
 | `PATCH /v1/drivers/{driver_id}` (`drivers_update`) | Change any field; `is_active: false` deactivates them. |
 | `DELETE /v1/drivers/{driver_id}` (`drivers_delete`) | Admins only, soft: the phone and plate are free again. |

@@ -603,5 +603,7 @@ Status: done · Depends on: GZ-008
 - From review: a text key in a cursor is refused (422 INVALID_CURSOR) if it holds a control character or is longer than a short text: a NUL or a lone surrogate passed decoding and failed in the database, a 500. Tampered sorted cursors are tested through the endpoints.
 
 ### GZ-082 · Sort the other staff lists by name
-Status: planned · Depends on: GZ-081
+Status: done · Depends on: GZ-081
 - Owner decision (2026-11-20): drivers, companies, areas, corridors and staff sort by name (A to Z) through GZ-081's `sort`; newest first stays the default.
+- Built: `core/pagination.NameSortedParams` (`sort`: `newest` or `name`) on `drivers_list`, `companies_list`, `areas_list`, `corridors_list` and `staff_list`. Corridors have no name of their own: by the A area's name, then the B area's (a key of two parts: `SortKey`, the cursor's key a list). Staff names are up to 200 characters (`Order.max_length`), so `MAX_CURSOR_LENGTH` 700 → 1200 (a request limit relaxed). Migration 0022 (expand): `ix_drivers_lower_full_name_id` (live), `ix_staff_lower_full_name_id`; companies and areas use their unique `lower(name)` indexes; corridors, a small list, sort unindexed (plans checked). A contract minor.
+- From review (no defects): a staff page boundary on a 190-character name is tested through the endpoint (fails without the staff `max_length`); corridors sorted by name load their areas from the sort's own joins (`contains_eager`) and stay one statement a page (tested).

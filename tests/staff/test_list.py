@@ -229,7 +229,7 @@ def test_staff_management_is_in_the_contract(make_settings: SettingsFactory) -> 
     page = collection["get"]["responses"]["200"]["content"]["application/json"]["schema"]
     assert page == {"$ref": "#/components/schemas/StaffPage"}
     names = {parameter["name"] for parameter in collection["get"]["parameters"]}
-    assert names == {"limit", "cursor", "role", "is_active"}
+    assert names == {"limit", "cursor", "role", "is_active", "sort"}
 
     update = member["patch"]["responses"]
     assert update["404"]["x-error-codes"] == ["NOT_FOUND"]

@@ -1,7 +1,8 @@
 """GZ-008: cursor pagination: opaque cursors, bounded limits, strict query parameters.
 
 GZ-081: a list sorted another way than its default pages by that key, and its cursor
-names the sort: one made for another sort is INVALID_CURSOR."""
+names the sort: one made for another sort is INVALID_CURSOR. GZ-082: a key may have
+several parts (a corridor's two area names) and a longer text (a staff name)."""
 
 import base64
 import json
@@ -24,6 +25,7 @@ from gize_api.core.pagination import (
     KeyKind,
     Order,
     PageParams,
+    SortKey,
     decode_cursor,
     decode_key_cursor,
     encode_cursor,
@@ -124,6 +126,8 @@ async def test_a_bad_cursor_is_422_invalid_cursor(make_settings: SettingsFactory
 NAME = Order("name", KeyKind.TEXT, ignore_case=True)
 MORNING = Order("morning_time", KeyKind.TIME)
 NEWEST = Order("newest", KeyKind.TIMESTAMP, descending=True)
+CORRIDOR = Order("name", KeyKind.TEXT, ignore_case=True, parts=2)
+STAFF = Order("name", KeyKind.TEXT, ignore_case=True, max_length=200)
 ID = uuid.uuid4()
 
 
@@ -138,26 +142,47 @@ ID = uuid.uuid4()
     ids=str,
 )
 def test_key_cursors_round_trip(order: Order, value: str | time | datetime) -> None:
-    token = encode_key_cursor(order, value, ID)
-    assert decode_key_cursor(token, order) == KeyCursor(value=value, id=ID)
+    token = encode_key_cursor(order, (value,), ID)
+    assert decode_key_cursor(token, order) == KeyCursor(values=(value,), id=ID)
     for character in "=+/":
         assert character not in token
 
 
-def test_the_longest_name_fits_in_a_cursor() -> None:
-    """Names are up to 100 characters, any script: four bytes each at most in UTF-8."""
-    token = encode_key_cursor(NAME, "\U0001f68c" * SHORT_TEXT_MAX_LENGTH, ID)
+def test_a_key_of_two_parts_round_trips() -> None:
+    token = encode_key_cursor(CORRIDOR, ("Bole", "Mexico"), ID)
+    assert decode_key_cursor(token, CORRIDOR) == KeyCursor(values=("Bole", "Mexico"), id=ID)
+
+
+@pytest.mark.parametrize(
+    ("order", "values"),
+    [
+        (NAME, ("\U0001f68c" * SHORT_TEXT_MAX_LENGTH,)),  # a name: 100 characters
+        (STAFF, ("\U0001f68c" * 200,)),  # a staff name: 200
+        (CORRIDOR, ("\U0001f68c" * SHORT_TEXT_MAX_LENGTH,) * 2),  # two area names
+    ],
+    ids=["name", "staff", "corridor"],
+)
+def test_the_longest_keys_fit_in_a_cursor(order: Order, values: tuple[str, ...]) -> None:
+    """Any script: four bytes a character at most in UTF-8."""
+    token = encode_key_cursor(order, values, ID)
     assert len(token) <= MAX_CURSOR_LENGTH
-    params = PageParams(cursor=token)
-    assert params.cursor == token
+    assert PageParams(cursor=token).cursor == token
+    assert decode_key_cursor(token, order).values == values
 
 
 @pytest.mark.parametrize(
     ("order", "token"),
     [
         (NAME, encode_cursor(Cursor(created_at=datetime(2026, 10, 28, tzinfo=UTC), id=ID))),
-        (MORNING, encode_key_cursor(NAME, "Abebe", ID)),  # made for another sort
-        (NEWEST, encode_key_cursor(Order("oldest", KeyKind.TIMESTAMP), datetime.now(UTC), ID)),
+        (MORNING, encode_key_cursor(NAME, ("Abebe",), ID)),  # made for another sort
+        (NEWEST, encode_key_cursor(Order("oldest", KeyKind.TIMESTAMP), (datetime.now(UTC),), ID)),
+        (STAFF, _token(["name", "x" * 201, str(ID)])),
+        (CORRIDOR, encode_key_cursor(NAME, ("Bole",), ID)),  # one part for two
+        (CORRIDOR, _token(["name", ["Bole"], str(ID)])),
+        (CORRIDOR, _token(["name", ["Bole", "Mexico", "CMC"], str(ID)])),
+        (CORRIDOR, _token(["name", ["Bole", 5], str(ID)])),
+        (CORRIDOR, _token(["name", ["Bole", "\u0000"], str(ID)])),
+        (NAME, _token(["name", ["Bole"], str(ID)])),  # a list for one part
         (NAME, _token(["name", "Abebe"])),
         (NAME, _token(["name", "Abebe", str(ID), "extra"])),
         (NAME, _token(["name", 5, str(ID)])),
@@ -185,7 +210,7 @@ def test_tampered_or_foreign_key_cursors_are_invalid(order: Order, token: str) -
 
 def test_a_sorted_lists_cursor_is_invalid_in_the_default_order() -> None:
     with pytest.raises(AppError) as exc_info:
-        decode_cursor(encode_key_cursor(NAME, "Abebe", ID))
+        decode_cursor(encode_key_cursor(NAME, ("Abebe",), ID))
     assert exc_info.value.code is ErrorCode.INVALID_CURSOR
 
 
@@ -201,3 +226,17 @@ async def test_an_order_with_no_column_is_a_wiring_bug(db_session: AsyncSession)
     with pytest.raises(LookupError):
         await paginate(db_session, select(Staff), Sorted(), created_at=Staff.created_at,
                        id=Staff.id, sort_keys={"code": Staff.full_name})  # fmt: skip
+
+
+async def test_a_sort_key_with_the_wrong_number_of_parts_is_a_wiring_bug(
+    db_session: AsyncSession,
+) -> None:
+    class Sorted(PageParams):
+        @property
+        def order(self) -> Order | None:
+            return CORRIDOR
+
+    key = SortKey(columns=(Staff.full_name,), read=lambda row: (row.full_name,))
+    with pytest.raises(LookupError):
+        await paginate(db_session, select(Staff), Sorted(), created_at=Staff.created_at,
+                       id=Staff.id, sort_keys={"name": key})  # fmt: skip

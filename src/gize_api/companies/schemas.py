@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from gize_api.companies.models import CompanyBilling
 from gize_api.core.contact import EMAIL_MAX_LENGTH, MOBILE_E164_LENGTH, Email, EthiopianMobile
-from gize_api.core.pagination import Page, PageParams
+from gize_api.core.pagination import NameSortedParams, Page
 from gize_api.core.text import NOTES_MAX_LENGTH, SHORT_TEXT_MAX_LENGTH, Notes, SearchText, ShortText
 from gize_api.core.updates import PartialUpdate
 
@@ -56,7 +56,7 @@ class CompanyPage(Page[CompanyRead]):
     """A page of companies (a named schema: generated clients keep the name)."""
 
 
-class CompanyListParams(PageParams):
+class CompanyListParams(NameSortedParams):
     """`q`: names starting with it, ignoring case; blank is no filter."""
 
     q: SearchText = None

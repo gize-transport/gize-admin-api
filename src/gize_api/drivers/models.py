@@ -6,7 +6,7 @@ and the plate number of the van they drive. Documents, inspection and approval c
 address are personal data: redacted in the audit log, never in a URL or a log.
 """
 
-from sqlalchemy import Boolean, CheckConstraint, Index, String, text, true
+from sqlalchemy import Boolean, CheckConstraint, Index, String, func, text, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gize_api.core.audit import AuditedEntity
@@ -42,6 +42,12 @@ class Driver(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
             DRIVER_PLATE_UNIQUE, "plate", unique=True, postgresql_where=text("deleted_at IS NULL")
         ),
         Index("ix_drivers_created_at_id", "created_at", "id"),  # the list's order
+        Index(  # the list by name (GZ-082)
+            "ix_drivers_lower_full_name_id",
+            func.lower(text("full_name")),
+            "id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     full_name: Mapped[str] = mapped_column(String(SHORT_TEXT_MAX_LENGTH))

@@ -64,7 +64,7 @@ async def create(
 
 
 async def list_drivers(session: AsyncSession, params: DriverListParams) -> DriverPage:
-    """Newest first."""
+    """Newest first, or by name (GZ-082)."""
     q = params.q or None
     async with session.begin():
         page = await paginate(
@@ -76,6 +76,7 @@ async def list_drivers(session: AsyncSession, params: DriverListParams) -> Drive
             created_at=Driver.created_at,
             id=Driver.id,
             newest_first=True,
+            sort_keys={"name": Driver.full_name},
         )
         return DriverPage(
             items=[DriverRead.model_validate(row) for row in page.items],
