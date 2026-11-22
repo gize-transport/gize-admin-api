@@ -32,13 +32,14 @@ from gize_api.core import audit, schedule
 from gize_api.core.db import borrowed, violated_unique_constraint
 from gize_api.core.errors import AppError, ErrorCode, invalid_field
 from gize_api.core.idempotency import IdempotentRequest, claim, peek, record, replay_response
-from gize_api.core.pagination import paginate
+from gize_api.core.pagination import Slice, paginate
 from gize_api.core.ratelimit import PUBLIC_SIGNUP, RateLimiter
 from gize_api.core.security import CurrentStaff
 from gize_api.core.telemetry import Telemetry
 from gize_api.integrations.sms import SmsSender
 from gize_api.offers.models import OFFER_OPEN_UNIQUE, SEAT_OFFER_AUDIT, OfferStatus, SeatOffer
 from gize_api.offers.schemas import (
+    OPEN_OFFER_ORDER,
     OfferCreate,
     OfferListParams,
     OfferPage,
@@ -46,6 +47,7 @@ from gize_api.offers.schemas import (
     OfferQueuePage,
     OfferQueueParams,
     OfferRead,
+    OpenOfferListParams,
     PublicOfferAccepted,
     encode_queue_cursor,
 )
@@ -183,12 +185,33 @@ async def list_offers(
             id=SeatOffer.id,
             newest_first=True,
         )
-        ids = [offer.id for offer in page.items]
-        listed = await session.execute(_offers().where(SeatOffer.id.in_(ids)))
-        rows = {row[0].id: row for row in listed}
-        return OfferPage(
-            items=[_from_row(rows[offer_id]) for offer_id in ids], next_cursor=page.next_cursor
+        return await _page(session, page)
+
+
+async def list_open(session: AsyncSession, params: OpenOfferListParams) -> OfferPage:
+    """The offers holding a seat on any route (`holding_offers`: what the overview counts),
+    soonest to run out first (GZ-084). One transaction, so `now()` is one moment for the
+    page and its items."""
+    async with session.begin():
+        page = await paginate(
+            session,
+            select(SeatOffer).where(*routes.holding_offers()),
+            params,
+            created_at=SeatOffer.created_at,
+            id=SeatOffer.id,
+            sort_keys={OPEN_OFFER_ORDER.tag: SeatOffer.expires_at},
         )
+        return await _page(session, page)
+
+
+async def _page(session: AsyncSession, page: Slice[SeatOffer]) -> OfferPage:
+    """A page's offers with their route codes, names and SMS, in the page's order."""
+    ids = [offer.id for offer in page.items]
+    listed = await session.execute(_offers().where(SeatOffer.id.in_(ids)))
+    rows = {row[0].id: row for row in listed}
+    return OfferPage(
+        items=[_from_row(rows[offer_id]) for offer_id in ids], next_cursor=page.next_cursor
+    )
 
 
 async def queue(

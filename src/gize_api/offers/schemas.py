@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from gize_api.core.errors import AppError, ErrorCode
-from gize_api.core.pagination import Page, PageParams
+from gize_api.core.pagination import KeyKind, Order, Page, PageParams
 from gize_api.core.schedule import LocalDate
 from gize_api.core.text import SHORT_TEXT_MAX_LENGTH, ShortText
 from gize_api.offers.models import NEXT, NOT_OFFERABLE, NotOfferable, OfferStatus, QueueKey
@@ -61,6 +61,17 @@ class OfferPage(Page[OfferRead]):
 
 class OfferListParams(PageParams):
     """Newest first."""
+
+
+OPEN_OFFER_ORDER = Order("expires_at", KeyKind.TIMESTAMP)
+
+
+class OpenOfferListParams(PageParams):
+    """Soonest to run out first, then by id: the list's one order (GZ-084)."""
+
+    @property
+    def order(self) -> Order:
+        return OPEN_OFFER_ORDER
 
 
 class PublicOfferAccept(BaseModel):
