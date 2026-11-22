@@ -119,9 +119,14 @@ def live_routes(
     corridor_id: uuid.UUID | None,
     company_id: uuid.UUID | None,
     driver_id: uuid.UUID | None,
+    ready_to_launch: bool | None,
+    today: date,
 ) -> Select[Route]:
     """The filtered routes with their places, unordered: `paginate` orders and bounds."""
     statement = select(Route).options(*_WITH_PLACES).where(Route.not_deleted())
+    if ready_to_launch is not None:
+        ready = is_ready_to_launch(today)
+        statement = statement.where(ready if ready_to_launch else ~ready)
     if q:
         statement = statement.where(
             Route.code.startswith(func.upper(literal(escape_like(q))), escape=LIKE_ESCAPE)
@@ -358,9 +363,11 @@ async def has_riders(session: AsyncSession, route_id: uuid.UUID, today: date) ->
     return bool(await session.scalar(select(statement)))
 
 
-async def ready_to_launch(session: AsyncSession, today: date) -> int:
-    """Forming routes whose riders reserved for the next launch day reach their launch
-    minimum (GZ-064): launch progress's rule (`_reserved_for`), one query."""
+def is_ready_to_launch(today: date) -> ColumnElement[bool]:
+    """A forming route whose riders reserved for the next launch day reach its launch
+    minimum: launch progress's rule (`_reserved_for`). Never NULL (a route without a
+    minimum fails `is_not(None)`), so its negation is every other route. The overview's
+    count (GZ-064) and the list's filter (GZ-083)."""
     launch_day = next_launch_day(today)
     reserved = (
         select(func.count())
@@ -368,12 +375,16 @@ async def ready_to_launch(session: AsyncSession, today: date) -> int:
         .correlate(Route)
         .scalar_subquery()
     )
-    statement = select(func.count()).where(
-        Route.not_deleted(),
+    return and_(
         Route.status == RouteStatus.FORMING,
         Route.launch_minimum.is_not(None),
         reserved >= Route.launch_minimum,
     )
+
+
+async def ready_to_launch(session: AsyncSession, today: date) -> int:
+    """Forming routes ready to launch (`is_ready_to_launch`), one query."""
+    statement = select(func.count()).where(Route.not_deleted(), is_ready_to_launch(today))
     return int(await session.scalar(statement) or 0)
 
 

@@ -16,7 +16,7 @@ class RouteCounts(_Counts):
     paused: int
     ready_to_launch: int = Field(
         description="Forming routes whose riders reserved for the next launch day reach "
-        "their launch minimum."
+        "their launch minimum: the routes `routes_list` lists with `ready_to_launch=true`."
     )
     active_without_driver: int
 
