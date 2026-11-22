@@ -607,3 +607,14 @@ Status: done · Depends on: GZ-081
 - Owner decision (2026-11-20): drivers, companies, areas, corridors and staff sort by name (A to Z) through GZ-081's `sort`; newest first stays the default.
 - Built: `core/pagination.NameSortedParams` (`sort`: `newest` or `name`) on `drivers_list`, `companies_list`, `areas_list`, `corridors_list` and `staff_list`. Corridors have no name of their own: by the A area's name, then the B area's (a key of two parts: `SortKey`, the cursor's key a list). Staff names are up to 200 characters (`Order.max_length`), so `MAX_CURSOR_LENGTH` 700 → 1200 (a request limit relaxed). Migration 0022 (expand): `ix_drivers_lower_full_name_id` (live), `ix_staff_lower_full_name_id`; companies and areas use their unique `lower(name)` indexes; corridors, a small list, sort unindexed (plans checked). A contract minor.
 - From review (no defects): a staff page boundary on a 190-character name is tested through the endpoint (fails without the staff `max_length`); corridors sorted by name load their areas from the sort's own joins (`contains_eager`) and stay one statement a page (tested).
+
+### GZ-083 · "Ready to launch" as a list
+Status: done · Depends on: GZ-064, GZ-081
+- Frontend question (2026-11-19): the overview's "ready to launch" card opened every forming route, and staff had to find the ready ones themselves.
+- Built (no migration): `GET /v1/routes` gains `ready_to_launch`: `true` lists only forming routes whose riders reserved for the next launch day reach their launch minimum; `false` lists every other route. One rule for both (`routes.repository.is_ready_to_launch`), so the list and the overview's count always agree (tested on the same data). It combines with the other filters, every sort and paging. A contract minor.
+- From review (no defects): a test for the 1st itself (a rider reserved from that day makes the route ready that day).
+
+### GZ-084 · Open seat offers across all routes
+Status: planned · Depends on: GZ-040, GZ-064
+- Frontend question (2026-11-19): the overview counts open seat offers, but offers are listed one route at a time. While SMS is paused staff phone riders about offers, so they need one list.
+- Plan (owner approved 2026-11-22): `GET /v1/offers` (staff): the offers the overview counts (open, in time, request still waiting: `holding_offers`), soonest to run out first, a fixed order. The same item as a route's offer list (rider name, route code, start date, `expires_at`, `sms_status`, `request_id`); no phone numbers (staff open the request). An index on open offers' `expires_at`. A contract minor.

@@ -352,6 +352,12 @@ class RouteListParams(PageParams):
     corridor_id: uuid.UUID | None = None
     company_id: uuid.UUID | None = None
     driver_id: uuid.UUID | None = Field(default=None, description="Routes this driver drives.")
+    ready_to_launch: bool | None = Field(
+        default=None,
+        description="`true`: only forming routes whose riders reserved for the next launch "
+        "day reach their launch minimum, the routes the overview's `ready_to_launch` counts "
+        "(GZ-083). `false`: every other route.",
+    )
     sort: RouteSort = Field(
         default=RouteSort.NEWEST,
         description="`newest` first, by `code` A to Z, or by `morning_time` (leaving A) "

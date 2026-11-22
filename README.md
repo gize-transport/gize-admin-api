@@ -281,7 +281,7 @@ A route is one van from A to B, its corridor (GZ-021, GZ-023): the morning run l
 | Endpoint | What it does |
 | --- | --- |
 | `POST /v1/routes` (`routes_create`) | `{code, corridor_id, route_type, school_name?, company_id?, morning_time, morning_arrival_time, return_time, return_arrival_time, seats, launch_minimum?}`. Requires `Idempotency-Key`. Created `draft`. |
-| `GET /v1/routes` (`routes_list`) | Newest first, with corridor, areas, company and seat counts; filters `q` (code prefix), `route_type`, `status`, `corridor_id`, `company_id`. `sort`: `newest` (default), `code` (A to Z) or `morning_time` (earliest first). |
+| `GET /v1/routes` (`routes_list`) | Newest first, with corridor, areas, company and seat counts; filters `q` (code prefix), `route_type`, `status`, `corridor_id`, `company_id`, `driver_id`, `ready_to_launch` (`true`: the forming routes the overview counts as ready to launch; `false`: every other route). `sort`: `newest` (default), `code` (A to Z) or `morning_time` (earliest first). |
 | `GET /v1/routes/{route_id}` (`routes_get`) | One route. |
 | `PATCH /v1/routes/{route_id}` (`routes_update`) | Change code, corridor, school or company, times, seats, launch minimum. |
 | `PUT /v1/routes/{route_id}/areas` (`routes_set_areas`) | The areas the route passes between A and B, in order: `{area_ids}`, the whole list (empty clears). Not A or B themselves, each once, at most 20. Shown on every route as `served_areas`. A route serving areas can't change corridor until they're cleared. |
@@ -489,7 +489,7 @@ Every change is in the audit log, with names and phones redacted.
 
 ## Overview
 
-`GET /v1/overview` (`overview_get`, staff): the admin home page's counts, as of today in Addis Ababa. Routes by status, forming ones ready to launch and active ones with no driver; riders (total, riding today, reserved, and `starting`: an active seat that starts after today, placed from a later 1st or on a route launched for one; they count as riding from that day); open route requests and seat offers; active drivers. Live records only, and a snapshot: a count may move a moment later.
+`GET /v1/overview` (`overview_get`, staff): the admin home page's counts, as of today in Addis Ababa. Routes by status, forming ones ready to launch (listed by `GET /v1/routes?ready_to_launch=true`) and active ones with no driver; riders (total, riding today, reserved, and `starting`: an active seat that starts after today, placed from a later 1st or on a route launched for one; they count as riding from that day); open route requests and seat offers; active drivers. Live records only, and a snapshot: a count may move a moment later.
 
 ## Drivers
 

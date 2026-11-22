@@ -2527,7 +2527,7 @@
             "type": "integer"
           },
           "ready_to_launch": {
-            "description": "Forming routes whose riders reserved for the next launch day reach their launch minimum.",
+            "description": "Forming routes whose riders reserved for the next launch day reach their launch minimum: the routes `routes_list` lists with `ready_to_launch=true`.",
             "title": "Ready To Launch",
             "type": "integer"
           }
@@ -16924,6 +16924,24 @@
               ],
               "description": "Routes this driver drives.",
               "title": "Driver Id"
+            }
+          },
+          {
+            "description": "`true`: only forming routes whose riders reserved for the next launch day reach their launch minimum, the routes the overview's `ready_to_launch` counts (GZ-083). `false`: every other route.",
+            "in": "query",
+            "name": "ready_to_launch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`true`: only forming routes whose riders reserved for the next launch day reach their launch minimum, the routes the overview's `ready_to_launch` counts (GZ-083). `false`: every other route.",
+              "title": "Ready To Launch"
             }
           },
           {
