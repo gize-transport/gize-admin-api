@@ -28,8 +28,10 @@ projects:
                 value: "8000"
               - key: LOG_LEVEL
                 value: INFO
-              - key: CORS_ALLOWED_ORIGINS  # the admin portal (gize-admin-web); not a secret
-                value: https://admin.gizetransport.com
+              # The admin portals (gize-admin-web); not a secret. Both until production goes
+              # live (GZ-085), then only staging-admin. Comma-separated, no spaces.
+              - key: CORS_ALLOWED_ORIGINS
+                value: https://admin.gizetransport.com,https://staging-admin.gizetransport.com
               # GZ-072: Cloudflare, in front of every Render web service, writes the caller's
               # address here and refuses requests that send their own. Never X-Forwarded-For.
               - key: CLIENT_IP_HEADER
