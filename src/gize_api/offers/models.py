@@ -93,6 +93,12 @@ class SeatOffer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             postgresql_where=text("status = 'open'"),
         ),
         Index("ix_seat_offers_route_id_created_at", "route_id", "created_at"),
+        Index(  # open offers on every route, soonest to run out first (GZ-084)
+            "ix_seat_offers_open_expires_at_id",
+            "expires_at",
+            "id",
+            postgresql_where=text("status = 'open'"),
+        ),
     )
 
     route_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("gize.routes.id", ondelete="RESTRICT"))

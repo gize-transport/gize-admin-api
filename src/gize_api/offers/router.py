@@ -20,6 +20,7 @@ from gize_api.offers.schemas import (
     OfferQueuePage,
     OfferQueueParams,
     OfferRead,
+    OpenOfferListParams,
     PublicOfferAccept,
     PublicOfferAccepted,
 )
@@ -145,6 +146,31 @@ async def offer_queue(
     route, even one that can't be offered from (only forming and active public ones can)."""
     response.headers["Cache-Control"] = "no-store"
     return await service.queue(session, route_id, params)
+
+
+def open_offer_params(params: Annotated[OpenOfferListParams, Query()]) -> OpenOfferListParams:
+    _ = params.after  # a bad cursor is refused before any work
+    return params
+
+
+@router.get(
+    "/v1/offers",
+    operation_id="offers_list_open",
+    summary="Open seat offers on every route, soonest to run out first",
+    responses=problem_responses(ErrorCode.INVALID_CURSOR),
+)
+async def list_open(
+    response: Response,
+    _: CurrentStaff = Depends(current_staff),  # noqa: B008
+    params: OpenOfferListParams = Depends(open_offer_params),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> OfferPage:
+    """The offers the overview counts as open (GZ-084): open, within their 48 hours, their
+    request still waiting for the route. The one running out soonest first (then by id),
+    so staff phone that person first while text messages are paused. Each item is a
+    route's offer list's item: no phone numbers (`request_id` opens the request)."""
+    response.headers["Cache-Control"] = "no-store"
+    return await service.list_open(session, params)
 
 
 @router.get(

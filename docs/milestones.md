@@ -615,6 +615,8 @@ Status: done · Depends on: GZ-064, GZ-081
 - From review (no defects): a test for the 1st itself (a rider reserved from that day makes the route ready that day).
 
 ### GZ-084 · Open seat offers across all routes
-Status: planned · Depends on: GZ-040, GZ-064
+Status: done · Depends on: GZ-040, GZ-064, GZ-081
 - Frontend question (2026-11-19): the overview counts open seat offers, but offers are listed one route at a time. While SMS is paused staff phone riders about offers, so they need one list.
-- Plan (owner approved 2026-11-22): `GET /v1/offers` (staff): the offers the overview counts (open, in time, request still waiting: `holding_offers`), soonest to run out first, a fixed order. The same item as a route's offer list (rider name, route code, start date, `expires_at`, `sms_status`, `request_id`); no phone numbers (staff open the request). An index on open offers' `expires_at`. A contract minor.
+- Owner decision (2026-11-22): open offers only (the phoning list); past offers stay on each route's list.
+- Built: `GET /v1/offers` (`offers_list_open`, any staff): the offers the overview counts (`routes.repository.holding_offers`: open, in time, request still waiting; tested to agree), soonest to run out first, then by id (GZ-081's keyed paging, one fixed order: `OpenOfferListParams`, cursor tag `expires_at`). The same item as a route's offer list (rider name, route code, start date, `expires_at`, `sms_status`, `request_id`); no phone numbers (staff open the request). Migration 0023 (expand): `ix_seat_offers_open_expires_at_id` (open offers; plan checked). A contract minor.
+- From review (no defects): the tests take the time when each offer is made (not once at import), so a slow run can't age their offers out.
