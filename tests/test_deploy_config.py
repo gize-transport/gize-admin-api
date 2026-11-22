@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 from gize_api.core.config import database_ssl_mode, is_database_url
+from tests.support import SettingsFactory
 
 ROOT = Path(__file__).resolve().parent.parent
 BLUEPRINT = (ROOT / "render.yaml").read_text()
@@ -100,6 +101,21 @@ def test_redis_is_private_and_keeps_what_it_holds() -> None:
     assert "ipAllowList: []" in BLUEPRINT
     assert "maxmemoryPolicy: noeviction" in BLUEPRINT
     assert _env_vars()["REDIS_URL"] == "fromService:"
+
+
+def test_staging_takes_both_portals_in_a_shape_the_settings_accept(
+    make_settings: SettingsFactory,
+) -> None:
+    """Owner, 2026-11-22: the staging portal (staging-admin) can call staging before
+    production exists. admin.gizetransport.com comes off staging when production goes live
+    (GZ-085). A malformed list (no https, a path, a trailing slash) fails here, not on Render."""
+    source = _env_vars()["CORS_ALLOWED_ORIGINS"]
+    assert source.startswith("value: ")
+    settings = make_settings(app_env="staging", cors_allowed_origins=source.removeprefix("value: "))
+    assert settings.cors_allowed_origins == (
+        "https://admin.gizetransport.com",
+        "https://staging-admin.gizetransport.com",
+    )
 
 
 # The deploy workflow
