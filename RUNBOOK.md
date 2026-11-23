@@ -1,6 +1,6 @@
 # Runbook – Gize Admin API
 
-How to set up, deploy, roll back and look after the hosted API. Staging only for now. Production gets its own section when it is set up: a paid plan, its own Supabase project, observability required.
+How to set up, deploy, roll back and look after the hosted API: staging, and production (GZ-085). Production has the same shape as staging, on free plans too (owner, until about May 2027), with its own Render workspace, Supabase project and secrets.
 
 ## Staging at a glance
 
@@ -75,6 +75,77 @@ Do the steps in order; each one assumes the ones before it.
    - `/docs` loads.
    - A request with your token to `/v1/staff/me` answers `200`.
 
+## Production at a glance
+
+| Piece | Where | Notes |
+| --- | --- | --- |
+| API | Render web service `gize-api-production` (free plan, Frankfurt), in its own Render workspace | Configured by `render.production.yaml` (its Blueprint Path), with the Blueprint's **Auto Sync off**: a change to that file reaches production only when you press **Manual Sync**. It sleeps after 15 minutes without traffic, like staging, until GZ-087 keeps it awake. |
+| Redis | Render Key Value `gize-redis-production` (free plan) | Private network only. Its own: a workspace gets one free Key Value. |
+| Database and sign-in | Its own Supabase project (Ireland, eu-west-1) | Never staging's: its own users, passwords and keys. The free plan has no automatic backups: don't enter real riders before GZ-086. |
+| Deploys | `.github/workflows/deploy-production.yml` | You start it and approve it; it deploys only main's tip, and only once staging has deployed it ("Deploying to production"). |
+| Admin portal (CORS) | `https://admin.gizetransport.com` | The only browser origin allowed. `staging-admin.gizetransport.com` calls staging. |
+| Errors | Sentry (free plan) | `SENTRY_DSN`. Production refuses to start without it and the OTLP endpoint. |
+| Logs, metrics, traces | The same Grafana Cloud stack as staging | Told apart by `deployment.environment.name=production`. Alerts for production come with GZ-087. |
+
+Not running on production yet:
+- **Backups:** GZ-086. Until then, take a copy by hand before any risky migration ("Backups and restoring").
+- **SMS:** paused (above); production has no SMS secrets at all until you lift the pause.
+- **Invite emails:** Supabase's built-in email only reaches your project team's addresses, a few an hour. Inviting other staff waits for a free email (SMTP) service (README, "Supabase setup before real invites").
+
+## Production secrets
+
+The same kinds as staging, never the same values: new passwords and keys, made for production.
+
+| Secret | Lives in | Used by |
+| --- | --- | --- |
+| `DATABASE_URL` (`gize_app`) | Render (`gize-api-production` → Environment); your local `.env.production` | the API |
+| `MIGRATOR_DATABASE_URL` (`gize_migrator`) | GitHub → Settings → Environments → `production` → Environment secrets: `PRODUCTION_MIGRATOR_DATABASE_URL`; `.env.production` | the deploy workflow's migrations |
+| `SUPABASE_SECRET_KEY` | Render; `.env.production` | staff invites; the first-admin command |
+| `SENTRY_DSN` | Render only | error reports |
+| `OTEL_EXPORTER_OTLP_HEADERS` (and the endpoint) | Render only: the same values as staging's | logs, metrics, traces |
+| Render deploy hook URL | GitHub, the `production` environment: `RENDER_PRODUCTION_DEPLOY_HOOK_URL` | the deploy workflow |
+| The `postgres` database password | Supabase; your password manager; `.env.production` only while bootstrapping | the bootstrap |
+
+Production's GitHub secrets live in the `production` environment, never in the repository's secrets: only a run you approved can read them.
+
+## First production setup (once)
+
+Do the steps in order; each one assumes the ones before it. Copy each secret with `grep '^NAME=' .env.production | cut -d= -f2- | tr -d '\n' | pbcopy`, so nothing extra is pasted.
+
+1. **Supabase:** create a new project in **Ireland (eu-west-1)**, on the free plan. Then the same three settings as staging ("First staging setup", step 1): `gize` not exposed, sign-ups off, asymmetric JWT keys. Also **Authentication → URL Configuration → Site URL:** `https://admin.gizetransport.com`.
+2. **Sentry:** create a free account and a project for Python (FastAPI). Keep its DSN in your password manager.
+3. **Passwords:** new ones for `gize_app` and `gize_migrator`, never staging's. Long, letters and digits only.
+4. **Local file:** `cp .env.production.example .env.production` and fill it in (the comments say where each value is). Git ignores it.
+5. **Bootstrap the database:**
+   ```bash
+   uv run --env-file .env.production python -m gize_api.core.bootstrap
+   ```
+   Then delete the `BOOTSTRAP_ADMIN_DATABASE_URL` line from `.env.production`.
+6. **First migration:** it also proves the database certificate checks out (`verify-full`).
+   ```bash
+   uv run --env-file .env.production alembic upgrade head
+   ```
+7. **GitHub environment:** Settings → Environments → **New environment** `production`:
+   - **Required reviewers:** you. Every production deploy then waits for your approval.
+   - Untick **Allow administrators to bypass configured protection rules**, so no one skips that approval.
+   - **Deployment branches and tags:** selected branches, `main` only.
+   - **Environment secrets:** `PRODUCTION_MIGRATOR_DATABASE_URL` from `.env.production`.
+8. **Render**, in the production workspace:
+   - **New → Blueprint**, pick `gize-transport/gize-admin-api` (connect GitHub first if it asks), and set **Blueprint Path** to `render.production.yaml`.
+   - When it asks, paste `SUPABASE_URL`, `SUPABASE_SECRET_KEY` and `DATABASE_URL` from `.env.production`, the Sentry DSN, and the two `OTEL_EXPORTER_OTLP_*` values copied from `gize-api-staging` → Environment.
+   - It creates `gize-api-production` and `gize-redis-production` and builds main.
+   - Then the Blueprint's **Settings → Auto Sync: No**.
+9. **Deploy hook:** `gize-api-production` → Settings → Deploy Hook, into the `production` environment's secrets as `RENDER_PRODUCTION_DEPLOY_HOOK_URL`.
+10. **First admin:** create your user in the production project (README, "First admin", steps 1 to 3), then:
+    ```bash
+    uv run --env-file .env.production python -m gize_api.cli.first_admin --user-id <UID> --name "Full Name"
+    ```
+11. **Check:**
+    - The service's address, shown at the top of `gize-api-production` in Render (`https://….onrender.com`), with `/health/ready` added, answers `{"status":"ok"}`. Allow a minute if it was asleep.
+    - `/docs` answers `404` (production serves no docs).
+    - The first run of **Deploy production** ("Deploying to production") goes green.
+12. **Switch the portal over:** the frontend team points `admin.gizetransport.com` at the production API. Sign in there and open a list. Then ask the developer for the small PR that removes `admin.gizetransport.com` from staging's `CORS_ALLOWED_ORIGINS` (`render.yaml` and its test). Once it's merged, set the same value on `gize-api-staging` → Environment, so the portal calls production only.
+
 ## Deploying
 
 Merging to `main` deploys, with nothing to do by hand:
@@ -94,14 +165,30 @@ Migrations are expand/contract (engineering standards), so the version still run
 
 Render emails the workspace owner when a deploy fails.
 
+### Deploying to production
+
+Production never deploys on its own. To deploy what staging runs:
+1. Check staging after its deploy:
+   - In Render, `gize-api-staging` → **Events**: the latest deploy is **live** and names the commit you mean to ship. The workflow only knows staging's deploy was started, not that Render switched over.
+   - Sign in on `staging-admin.gizetransport.com` and look at what changed.
+2. **Actions → Deploy production → Run workflow** (branch `main`).
+3. Open the run, **Review deployments → production → Approve and deploy**.
+4. It checks the commit is still main's tip and that **Deploy staging** deployed it, then migrates the production database and calls production's deploy hook. Render switches over once `/health/ready` passes, as on staging.
+
+If it fails with "Staging hasn't deployed …", wait for Deploy staging to finish and run it again. "No longer main's tip" means something merged meanwhile: run it again, after staging has deployed the newer commit. "Before Migrate" and "At Migrate" failures read as staging's above. Re-running an old run never deploys old code: to go back, roll back in Render.
+
+**Never press Manual Deploy on `gize-api-production`**, whatever a message suggests: it deploys main's latest commit, which staging may not have run, without production's migrations. If the workflow fails at "Deploy", run the workflow again; it checks everything again. Likewise, press the Blueprint's **Manual Sync** only right after Deploy production has deployed main's current tip.
+
+**Production lags staging.** A contract migration (one that drops or renames what older code still uses) may merge only after **production** runs the release that stopped using it, not just staging. Otherwise one production deploy can jump from code that still needs a column to a migration that drops it.
+
 ## Rolling back
 
-- **Code:** in Render, open `gize-api-staging` → **Events**, pick the last good deploy and choose **Rollback**. Then revert the bad PR on `main`, so the next deploy doesn't bring it back.
+- **Code:** in Render, open `gize-api-staging` (or `gize-api-production`) → **Events**, pick the last good deploy and choose **Rollback**. Then revert the bad PR on `main`, so the next deploy doesn't bring it back.
 - **Schema:** rarely needed, because the old code runs on the new schema. If a migration itself is wrong, write a new migration that fixes it. Only for a migration that never saw real data, from your machine:
   ```bash
   uv run --env-file .env.staging alembic downgrade -1
   ```
-  Every migration's downgrade is tested in CI.
+  Every migration's downgrade is tested in CI. On production, never once real data is in it: fix forward.
 
 ## Rotating secrets
 
@@ -113,6 +200,8 @@ Render emails the workspace owner when a deploy fails.
 | `AFROMESSAGE_TOKEN` | 1. Generate a new token in AfroMessage's dashboard. 2. Set it in Render. 3. Revoke the old one in AfroMessage. |
 | Deploy hook URL | 1. Regenerate it in Render (`gize-api-staging` → Settings). 2. Update `RENDER_STAGING_DEPLOY_HOOK_URL` in GitHub. The old URL stops working at once. |
 | The `postgres` database password | Reset it in Supabase (Project Settings → Database). Nothing deployed uses it. |
+
+**Production:** the same steps, with `.env.production`, `gize-api-production`, and the `production` environment's secrets (`PRODUCTION_MIGRATOR_DATABASE_URL`, `RENDER_PRODUCTION_DEPLOY_HOOK_URL`). `SENTRY_DSN`: make a new client key in Sentry (the project's Client Keys), set it in Render, then disable the old one.
 
 After any leak, rotate first and investigate second. A leaked `SUPABASE_SECRET_KEY` can create users: check Authentication → Users. A leaked `AFROMESSAGE_TOKEN` spends your balance: check AfroMessage's sent messages.
 
@@ -137,7 +226,7 @@ The copy carries the tables' grants to `gize_app` and the Alembic version, so af
 - `uv run --env-file .env.staging alembic current` names the migration the copy was taken at;
 - `/health/ready` answers.
 
-Practise this on your local database before you rely on it. For production, choose a paid plan with daily backups or point-in-time recovery before launch.
+Practise this on your local database before you rely on it. Production is on the free plan too, so it has no automatic backups either: nightly copies come with GZ-086. Until then, take one by hand the same way (with `.env.production`'s `MIGRATOR_DATABASE_URL`) before any risky migration, and keep real riders out of it.
 
 ## Dependency updates
 
@@ -151,8 +240,8 @@ Dependabot (`.github/dependabot.yml`) opens update PRs on Mondays.
 - After a runtime package or the Python image deploys, check staging's `/health/ready`.
 
 **Bumps CI fails on purpose:** some versions live in two places, so CI fails until both match. Finish these on the PR's branch, push, and CI runs again.
-- **Python image:** set `UV_PYTHON` to the new patch release in every workflow (`ci.yml`, `contract-release.yml`, `deploy-staging.yml`, `pin-check.yml`).
-- **uv image:** set `UV_VERSION` in `ci.yml`, `contract-release.yml` and `deploy-staging.yml`. In `pyproject.toml`, set the floor of `required-version` (a floor only: Dependabot runs its own, newer uv, which a ceiling would refuse) and the range of `uv_build`. Then run `uv lock`.
+- **Python image:** set `UV_PYTHON` to the new patch release in every workflow (`ci.yml`, `contract-release.yml`, `deploy-staging.yml`, `deploy-production.yml`, `pin-check.yml`).
+- **uv image:** set `UV_VERSION` in `ci.yml`, `contract-release.yml`, `deploy-staging.yml` and `deploy-production.yml`. In `pyproject.toml`, set the floor of `required-version` (a floor only: Dependabot runs its own, newer uv, which a ceiling would refuse) and the range of `uv_build`. Then run `uv lock`.
 - **gitleaks hook:** set `GITLEAKS_VERSION` and `GITLEAKS_SHA256` in `ci.yml`.
 - **Compose services (Postgres, Redis):** copy the new `image:` lines into the `services:` of `ci.yml`, so CI tests what developers run.
 

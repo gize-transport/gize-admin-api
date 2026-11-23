@@ -35,7 +35,7 @@ Security
 Database
 - [ ] Multi-step writes in one transaction; locks where concurrency matters
 - [ ] Lists paginated and bounded; no N+1 (query-count test added); indexes added and named
-- [ ] Migration is expand/contract, has a tested downgrade, safe with the currently deployed code
+- [ ] Migration is expand/contract, has a tested downgrade, safe with the currently deployed code (production's too: it lags staging; a contract step waits until production runs the release that stopped using what it removes)
 - [ ] Audit log row written for every staff write; soft delete respected
 
 Reliability

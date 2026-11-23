@@ -1,0 +1,68 @@
+# Render Blueprint for production (GZ-085): the API and its Redis, in the production
+# workspace (its own, so its free hours and its one free Key Value are its own). Created
+# once from that workspace's dashboard: New → Blueprint, Blueprint Path
+# `render.production.yaml`, then Auto Sync off (the Blueprint's Settings), so a change here
+# reaches production only when the owner presses Manual Sync. render.yaml is staging's.
+#
+# Same shape as staging, so the same rules hold (tests/test_deploy_config.py checks both):
+# free plan (owner, until about May 2027), Frankfurt, no worker, no pre-deploy step.
+# Migrations run in .github/workflows/deploy-production.yml, which the owner starts and
+# approves; it calls the deploy hook only for a commit staging already deployed.
+# Secrets are `sync: false`: Render asks for them once, in the dashboard; never here.
+# SMS is paused (owner, 2026-11-19): AFROMESSAGE_* and VERIFIED_PHONE_TOKEN_KEY are added
+# here when the owner lifts it.
+projects:
+  - name: gize-production
+    environments:
+      - name: production
+        services:
+          - type: web
+            name: gize-api-production
+            runtime: docker
+            plan: free
+            region: frankfurt  # nearest to the Supabase project (eu-west-1, Ireland)
+            dockerfilePath: ./Dockerfile
+            dockerContext: .
+            healthCheckPath: /health/ready  # database and Redis, so a broken deploy stays out
+            autoDeployTrigger: "off"
+            envVars:
+              - key: APP_ENV
+                value: production
+              - key: PORT  # where Render sends traffic: the image's uvicorn port
+                value: "8000"
+              - key: LOG_LEVEL
+                value: INFO
+              # The admin portal (gize-admin-web) only; staging-admin calls staging.
+              - key: CORS_ALLOWED_ORIGINS
+                value: https://admin.gizetransport.com
+              # GZ-072: Cloudflare, in front of every Render web service, writes the caller's
+              # address here and refuses requests that send their own. Never X-Forwarded-For.
+              - key: CLIENT_IP_HEADER
+                value: CF-Connecting-IP
+              - key: SUPABASE_URL  # the production project's, https://<ref>.supabase.co
+                sync: false
+              - key: SUPABASE_SECRET_KEY
+                sync: false
+              - key: DATABASE_URL  # gize_app on the session pooler, ?ssl=verify-full
+                sync: false
+              # Production refuses to start without these two (owner, 2026-11-23: Sentry's
+              # free plan; Grafana Cloud as on staging, told apart by deployment.environment).
+              - key: SENTRY_DSN
+                sync: false
+              - key: OTEL_EXPORTER_OTLP_ENDPOINT  # GZ-066: Grafana Cloud's OTLP gateway
+                sync: false
+              - key: OTEL_EXPORTER_OTLP_HEADERS  # its token, as Grafana's snippet writes it
+                sync: false
+              - key: DATABASE_SSL_ROOT_CERT
+                value: /app/certs/supabase-root-2021-ca.crt
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: gize-redis-production
+                  property: connectionString
+          - type: keyvalue
+            name: gize-redis-production
+            plan: free
+            region: frankfurt
+            maxmemoryPolicy: noeviction  # never drop queued jobs or limits silently
+            ipAllowList: []  # Render's private network only
