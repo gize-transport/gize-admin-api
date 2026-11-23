@@ -586,7 +586,7 @@ There is no branch protection on our plan, so CLAUDE.md's merge rules are the pr
 
 **Dependency updates.** Dependabot (`.github/dependabot.yml`) opens update PRs every Monday. Each runs these six checks and is merged by a person only when all are green; nothing auto-merges. `.github/workflows/pin-check.yml` reports, in one issue, the pins Dependabot can't see. RUNBOOK.md, "Dependency updates", says how to finish each kind.
 
-**Deploying.** `.github/workflows/deploy-staging.yml` is not a PR check: after CI passes on `main`, it migrates the staging database and deploys that commit to Render (`render.yaml`). Setup, rollback, secrets and backups are in [RUNBOOK.md](RUNBOOK.md); `tests/test_deploy_config.py` guards both files.
+**Deploying.** `.github/workflows/deploy-staging.yml` is not a PR check: after CI passes on `main`, it migrates the staging database and deploys that commit to Render (`render.yaml`). `.github/workflows/deploy-production.yml` deploys to production (`render.production.yaml`) only when the owner runs and approves it, and only a commit staging already deployed. Setup, rollback, secrets and backups are in [RUNBOOK.md](RUNBOOK.md); `tests/test_deploy_config.py` guards these files.
 
 **If gitleaks finds a real secret** that already reached `main`: rotate the secret first (it is compromised whatever happens to the history), then add the finding's fingerprint (printed by gitleaks) to `.gitleaksignore` with a comment naming the rotation, in its own PR.
 

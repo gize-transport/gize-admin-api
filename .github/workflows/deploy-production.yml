@@ -1,0 +1,115 @@
+# Deploys main to production when the owner asks (GZ-085): Actions → Deploy production →
+# Run workflow, then approve it (the `production` environment's required reviewer). Only a
+# commit that Deploy staging already deployed, and only main's tip. Then, as on staging:
+# migrations first, as gize_migrator, then Render's deploy hook for that exact commit.
+# Migrations are expand/contract, so the version still running keeps working while they
+# apply; Render switches over only when the new version passes /health/ready, and keeps
+# the old one if it doesn't. Render never deploys on its own (render.production.yaml).
+# Secrets, in the `production` environment only: PRODUCTION_MIGRATOR_DATABASE_URL,
+# RENDER_PRODUCTION_DEPLOY_HOOK_URL (RUNBOOK.md, "Production secrets").
+# Third-party actions are pinned to commit SHAs, as in ci.yml.
+name: Deploy production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read  # to find staging's deploy of this commit
+
+concurrency:
+  # One deploy at a time; a newer one waits rather than cancelling a migration halfway.
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  # Keep in step with ci.yml (checked by tests/test_deploy_config.py).
+  UV_PYTHON: "3.12.16"
+  UV_VERSION: "0.13.7"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deploy:
+    name: Migrate and deploy production
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      # Production gets only what staging already runs: a successful Deploy staging run
+      # whose deploy step ran for this very commit (not one that skipped it as no longer
+      # main's tip). And only main's tip, so re-running an old run never deploys old code:
+      # roll back in Render instead (RUNBOOK.md).
+      - name: Check staging already deployed this commit
+        id: staged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.sha }}
+          STEP: Deploy this commit (Render deploy hook)
+        run: |
+          tip="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [ "${tip}" != "${COMMIT}" ]; then
+            echo "::error::${COMMIT} is no longer main's tip (${tip}): run the workflow again."
+            exit 1
+          fi
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-staging.yml/runs?head_sha=${COMMIT}&status=success" \
+            --jq '.workflow_runs[].id')"
+          for run in ${runs}; do
+            deployed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}/jobs" \
+              --jq "[.jobs[].steps[] | select(.name == env.STEP and .conclusion == \"success\")] | length")"
+            if [ "${deployed}" -gt 0 ]; then
+              echo "deployed=true" >> "${GITHUB_OUTPUT}"
+              echo "Staging deployed ${COMMIT} in run ${run}."
+              exit 0
+            fi
+          done
+          echo "::error::Staging hasn't deployed ${COMMIT} yet: wait for Deploy staging to finish, check staging, then run this again."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.staged.outputs.deployed == 'true'
+        with:
+          ref: ${{ github.sha }}  # the commit it checked
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        if: steps.staged.outputs.deployed == 'true'
+        with:
+          python-version: ${{ env.UV_PYTHON }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        if: steps.staged.outputs.deployed == 'true'
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install (fails if uv.lock is out of date with pyproject.toml)
+        if: steps.staged.outputs.deployed == 'true'
+        run: uv sync --locked --no-dev
+      - name: Check the deploy secrets are set
+        if: steps.staged.outputs.deployed == 'true'
+        env:
+          MIGRATOR_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATOR_DATABASE_URL }}
+          DEPLOY_HOOK_URL: ${{ secrets.RENDER_PRODUCTION_DEPLOY_HOOK_URL }}
+        run: |
+          for name in MIGRATOR_DATABASE_URL DEPLOY_HOOK_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is not set: see RUNBOOK.md, Production secrets"
+              exit 1
+            fi
+          done
+      - name: Migrate (alembic upgrade head, as gize_migrator)
+        if: steps.staged.outputs.deployed == 'true'
+        env:
+          APP_ENV: production  # requires ssl=verify-full, against the image's Supabase CA
+          MIGRATOR_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATOR_DATABASE_URL }}
+          DATABASE_SSL_ROOT_CERT: docker/certs/supabase-root-2021-ca.crt
+        run: uv run --no-dev alembic upgrade head
+      - name: Deploy this commit (Render deploy hook)
+        if: steps.staged.outputs.deployed == 'true'
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.RENDER_PRODUCTION_DEPLOY_HOOK_URL }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          curl --fail --silent --show-error --max-time 30 --output /dev/null \
+            --request POST "${DEPLOY_HOOK_URL}&ref=${COMMIT}"
+          echo "Deploy of ${COMMIT} started; Render switches over once /health/ready passes."

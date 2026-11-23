@@ -621,3 +621,32 @@ Status: done · Depends on: GZ-040, GZ-064, GZ-081
 - Owner decision (2026-11-22): open offers only (the phoning list); past offers stay on each route's list.
 - Built: `GET /v1/offers` (`offers_list_open`, any staff): the offers the overview counts (`routes.repository.holding_offers`: open, in time, request still waiting; tested to agree), soonest to run out first, then by id (GZ-081's keyed paging, one fixed order: `OpenOfferListParams`, cursor tag `expires_at`). The same item as a route's offer list (rider name, route code, start date, `expires_at`, `sms_status`, `request_id`); no phone numbers (staff open the request). Migration 0023 (expand): `ix_seat_offers_open_expires_at_id` (open offers; plan checked). A contract minor.
 - From review (no defects): the tests take the time when each offer is made (not once at import), so a slow run can't age their offers out.
+
+### GZ-085 · Production setup
+Status: done (the owner's setup steps follow, RUNBOOK "First production setup") · Depends on: GZ-062, GZ-066, GZ-072
+- Owner decisions (2026-11-20 to 23): production on free plans like staging, until about May 2027; its own Render workspace (each gets 750 free hours and one free Key Value); its own Supabase project in Ireland (eu-west-1), like staging; `admin.gizetransport.com` talks only to production and `staging-admin.gizetransport.com` only to staging; a free Sentry account; invite emails (free SMTP) set up later.
+- Built (no app code, no migration, no contract change):
+  - `render.production.yaml`: `gize-api-production` and `gize-redis-production` (free, Frankfurt, `/health/ready`, auto-deploy off, `APP_ENV=production`, CORS `admin.*` only, `CF-Connecting-IP`; secrets `sync: false`, Sentry and OTLP among them; no SMS secrets while SMS is paused). Created with Blueprint Path set to it and Auto Sync off, so a change reaches production only by Manual Sync.
+  - `.github/workflows/deploy-production.yml`: started by hand on `main` and approved through the `production` environment (required reviewer: the owner), which alone holds its secrets. It deploys only main's tip, and only after a successful Deploy staging run deployed that very commit; then migrations as `gize_migrator` (verify-full) and the deploy hook for that commit, one at a time.
+  - `.env.production.example` for the one-off bootstrap, first migration and first admin (`OBSERVABILITY_REQUIRED=false` there only, since those commands run without Sentry or OTLP).
+  - `tests/test_deploy_config.py`: both blueprints follow the same rules (no secrets, no duplicate keys, their own Redis, free, Frankfurt, health check, auto-deploy off); production's portal and observability; the production workflow's trigger, approval, staging check, order, permissions and secrets.
+  - RUNBOOK: production at a glance, its secrets, first setup (12 steps), deploying, rollback, rotation and backups; architecture.md and README updated.
+- Cutover (RUNBOOK step 12): the frontend points `admin.*` at production; then a small PR removes `admin.*` from staging's CORS origins (and the owner sets it on Render).
+- Staging's CORS change before this (2026-11-22) is under GZ-062.
+- From review (no blockers):
+  - RUNBOOK: never Manual Deploy on production (it would ship main's latest commit without the staging check or migrations); Manual Sync only right after a deploy of main's tip; check in Render that staging's deploy is live before shipping it (the workflow sees only that staging's deploy started).
+  - Production lags staging: a contract migration waits until production runs the release that stopped using what it removes (RUNBOOK, workflow.md and PR checklist).
+  - Tests: the Redis check reads the `fromService` block itself (it passed with production pointing at staging's Redis); the staging check must count only a deploy step that succeeded.
+  - Owner steps: untick the environment's admin bypass; connect GitHub in the new workspace if asked; where the secret key and the service address are; the staging CORS clean-up is a developer PR.
+
+### GZ-086 · Free nightly backups
+Status: planned · Depends on: GZ-085
+- Production has no automatic backups on Supabase's free plan. Proposed (option A, 2026-11-04): a nightly GitHub Actions `pg_dump` as `gize_migrator`, encrypted with a key the owner keeps offline, kept as a workflow artifact for 30 to 90 days; a restore drill. No real riders in production before this.
+
+### GZ-087 · Free-plan alerts and a wake ping
+Status: planned · Depends on: GZ-085, GZ-066
+- Production alerts by email (Telegram paused); a scheduled ping so the free server is awake before the 6:30 a.m. rush. While SMS is paused, GizeApiMisconfigured (`sms_disabled`) and GizeApiSmsFailing would fire on purpose (GZ-079): decide how to quiet them.
+
+### GZ-088 · Production runbook
+Status: planned · Depends on: GZ-085, GZ-086, GZ-087
+- What to do when something goes wrong in production, in plain steps for the owner: the API down or asleep, the database paused or full, a bad deploy, a leaked secret, restoring a backup.
