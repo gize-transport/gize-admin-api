@@ -232,13 +232,37 @@ def test_the_dump_is_the_gize_schema_read_through_its_policies() -> None:
 
 def test_the_restore_check_is_strict() -> None:
     for check in (
-        "--exit-on-error",
+        "ON_ERROR_STOP=1",
         "--single-transaction",
         "gize.alembic_version",
         "TABLE DATA gize",
     ):
         assert check in VERIFY, check
     assert "pg_connection SCRATCH_URL" in VERIFY
+
+
+@pytest.mark.parametrize(
+    ("line", "dropped"),
+    [
+        (
+            "ALTER TABLE ONLY gize.alembic_version ALTER COLUMN version_num SET"
+            " (pg_attver=302045696);",
+            True,
+        ),
+        ('ALTER TABLE ONLY gize.riders ALTER COLUMN "from" SET (pg_attver=1);', True),
+        ("ALTER TABLE ONLY gize.riders ALTER COLUMN name SET (n_distinct=100);", False),
+        ("ALTER TABLE ONLY gize.riders ADD CONSTRAINT riders_pkey PRIMARY KEY (id);", False),
+        ("x\tALTER TABLE ONLY gize.riders ALTER COLUMN a SET (pg_attver=1);", False),
+    ],
+)
+def test_the_check_leaves_out_only_supabase_s_column_stamp(line: str, dropped: bool) -> None:
+    """Supabase stamps each column with pg_attver, which plain Postgres refuses (found on
+    the first production run): the check's restore leaves out exactly those lines, never a
+    data row (COPY rows are tab-separated, so never a whole line like this)."""
+    pattern = re.search(r"grep -vE '(\^ALTER TABLE ONLY gize[^']+)'", VERIFY)
+    assert pattern is not None
+    assert bool(re.search(pattern.group(1), line)) is dropped
+    assert 'psql -X --dbname="$target" --single-transaction -v ON_ERROR_STOP=1' in VERIFY
 
 
 def test_restoring_replaces_the_schema_s_contents_in_one_transaction() -> None:
