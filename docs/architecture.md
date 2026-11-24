@@ -166,4 +166,5 @@ All configuration via environment variables loaded by `core/config.py`; app refu
 
 - One Docker image; commands: `api` (uvicorn with graceful timeout 30 s), `worker` (`python -m gize_api.worker`: Arq with our logging; 20 s to finish running jobs on SIGTERM) and `migrate`.
 - Migrations run as a separate release step with the `gize_migrator` credentials, before the new app version starts.
+- Backups (GZ-086): production is dumped nightly as `gize_backup` (read-only), restored into a throwaway Postgres to prove it, encrypted to the owner's `age` key and kept 90 days as a GitHub Actions artifact (`.github/workflows/backup-production.yml`, `ops/backup/`). Staff sign-ins (Supabase Auth) are not in it.
 - Host-agnostic: no host-specific SDKs or files in application code.

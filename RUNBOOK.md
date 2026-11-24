@@ -81,14 +81,13 @@ Do the steps in order; each one assumes the ones before it.
 | --- | --- | --- |
 | API | Render web service `gize-api-production` (free plan, Frankfurt), in its own Render workspace | Configured by `render.production.yaml` (its Blueprint Path), with the Blueprint's **Auto Sync off**: a change to that file reaches production only when you press **Manual Sync**. It sleeps after 15 minutes without traffic, like staging, until GZ-087 keeps it awake. |
 | Redis | Render Key Value `gize-redis-production` (free plan) | Private network only. Its own: a workspace gets one free Key Value. |
-| Database and sign-in | Its own Supabase project (Ireland, eu-west-1) | Never staging's: its own users, passwords and keys. The free plan has no automatic backups: don't enter real riders before GZ-086. |
+| Database and sign-in | Its own Supabase project (Ireland, eu-west-1) | Never staging's: its own users, passwords and keys. Supabase's free plan keeps no backups of its own: ours run nightly ("Backups and restoring"). |
 | Deploys | `.github/workflows/deploy-production.yml` | You start it and approve it; it deploys only main's tip, and only once staging has deployed it ("Deploying to production"). |
 | Admin portal (CORS) | `https://admin.gizetransport.com` | The only browser origin allowed. `staging-admin.gizetransport.com` calls staging. |
 | Errors | Sentry (free plan) | `SENTRY_DSN`. Production refuses to start without it and the OTLP endpoint. |
 | Logs, metrics, traces | The same Grafana Cloud stack as staging | Told apart by `deployment.environment.name=production`. Alerts for production come with GZ-087. |
 
 Not running on production yet:
-- **Backups:** GZ-086. Until then, take a copy by hand before any risky migration ("Backups and restoring").
 - **SMS:** paused (above); production has no SMS secrets at all until you lift the pause.
 - **Invite emails:** Supabase's built-in email only reaches your project team's addresses, a few an hour. Inviting other staff waits for a free email (SMTP) service (README, "Supabase setup before real invites").
 
@@ -207,26 +206,69 @@ After any leak, rotate first and investigate second. A leaked `SUPABASE_SECRET_K
 
 ## Backups and restoring
 
-Supabase's free plan takes **no automatic backups**, so staging data can't be restored unless you took a copy. Before a risky migration on staging, take one from your machine with Postgres 17 client tools.
+**Production is backed up every night** (GZ-086), at 02:00 Addis Ababa, by **Back up production** (`.github/workflows/backup-production.yml`):
+1. It copies schema `gize` as `gize_backup`, a role that can only read. It first checks that role can read every row of every table, so a copy is never silently short.
+2. It restores the copy into a throwaway Postgres and checks every table came back, with the migration version.
+3. It locks the copy with your `age` public key. Only your private key, kept offline, opens it. The unlocked copy never leaves the run.
+4. It keeps the locked file as the run's artifact for 90 days.
 
-Run it as `gize_migrator`, which owns everything in `gize`. The bootstrap gives `postgres` no access to the schema, and `pg_dump` uses libpq's TLS options rather than the app's `?ssl=`. So build the URL from `MIGRATOR_DATABASE_URL` in `.env.staging`, replacing `?ssl=verify-full` with the libpq form:
+A failed nightly run emails whoever last changed its schedule (the developer's account that merged GZ-086, or whoever re-enables it), if that account's **GitHub → Settings → Notifications → Actions** sends emails for failed workflows: check yours does. A failed run's log never shows data: Postgres's messages can quote rows, so they stay inside the run. Before a risky change, take an extra copy: **Actions → Back up production → Run workflow**.
 
+What isn't in it: **staff sign-ins** (Supabase Auth's own `auth` schema, which only `postgres` can read). After losing the whole project, staff sign-ins must be re-created to match their staff rows by ID: ask the developer. Riders, routes, requests and everything else in `gize` are in it.
+
+GitHub pauses scheduled workflows in a public repository after 60 days without a change to it, and it does so silently. If that happens: **Actions → Back up production → Enable workflow**. Until GZ-087 adds an alert for a missed or failed night, look at **Actions → Back up production** once a week.
+
+### Backup setup (once)
+
+Do steps 1 to 5 before GZ-086 is merged: its migration (0024) needs the role, and staging migrates on merge. Then deploy production right after the merge, or the nightly run fails until 0024 reaches it.
+1. **Install `age`** on your Mac: `brew install age`.
+2. **Make your key:**
+   ```bash
+   age-keygen -o ~/Desktop/gize-backup-key.txt
+   ```
+   It prints `Public key: age1…`. Save the **whole file** (three lines) in your password manager as a secure note, and keep a second copy offline (printed, or a USB stick in a safe place). Then delete the file: `rm ~/Desktop/gize-backup-key.txt`. Without this key no backup can be opened, by you or anyone.
+3. **A password for `gize_backup`:** new, long, letters and digits only. Add the `BACKUP_DATABASE_URL` line from `.env.production.example` to `.env.production` with it.
+4. **Re-run the bootstrap** with GZ-086's code (its branch, before the merge; the developer runs it with you): on production, with `BOOTSTRAP_ADMIN_DATABASE_URL` back in `.env.production` for the run, and on staging, the same in `.env.staging`, without a backup URL (staging isn't backed up). Then remove the bootstrap lines again. Any database bootstrapped before GZ-086 (your local one too) needs this once before it can migrate.
+   ```bash
+   uv run --env-file .env.production python -m gize_api.core.bootstrap
+   ```
+   ```bash
+   uv run --env-file .env.staging python -m gize_api.core.bootstrap
+   ```
+5. **GitHub:** Settings → Environments → **New environment** `production-backup`. No required reviewers (it runs at night). Deployment branches: `main` only. Environment secret `PRODUCTION_BACKUP_DATABASE_URL`: the `BACKUP_DATABASE_URL` value. Environment variable `PRODUCTION_BACKUP_AGE_RECIPIENT`: the public key (`age1…`, not secret).
+6. After the merge and the next production deploy (migration 0024), run **Back up production** once by hand and check it goes green.
+
+### Restoring
+
+Stop deploys first: merge nothing and run no Deploy production until it's done. The unlocked copy holds every rider's data: keep it in `~/gize-restore`, never inside the repository folder (git ignores `*.dump`, but don't rely on it).
+1. **Get the copy:** Actions → **Back up production** → the run (the last green one before the problem) → **Artifacts** → download it into `~/gize-restore` and unzip it there. You get `gize-production-<date>.dump.age`.
+2. **Unlock it.** Copy your key from the password manager, then run, from the repository folder (the key goes into a file only you can read, for this step only):
+   ```bash
+   (umask 077; pbpaste > /tmp/gize-backup-key.txt)
+   age --decrypt --identity /tmp/gize-backup-key.txt --output ~/gize-restore/gize.dump ~/gize-restore/gize-production-<date>.dump.age
+   rm /tmp/gize-backup-key.txt
+   ```
+3. **Check it** on your own machine (the compose test server; nothing else changes):
+   ```bash
+   docker compose up -d postgres-test
+   SCRATCH_URL="$(grep '^TEST_ADMIN_DATABASE_URL=' .env | cut -d= -f2- | sed 's#/[^/]*$#/postgres#')" ops/backup/verify.sh ~/gize-restore/gize.dump
+   ```
+4. **Pause the API:** in Render, `gize-api-production` → Settings → **Suspend Web Service**, so no request waits on the restore.
+5. **Put it back** over production, as `gize_migrator`: every object in `gize` is replaced in one transaction, so on any error nothing changes. It shows where it will write and both migration versions, refuses if they differ (ask the developer: the database must be brought to the copy's migration first), and asks you to type `restore`.
+   ```bash
+   RESTORE_URL="$(grep '^MIGRATOR_DATABASE_URL=' .env.production | cut -d= -f2-)" DATABASE_SSL_ROOT_CERT=docker/certs/supabase-root-2021-ca.crt ops/backup/restore.sh ~/gize-restore/gize.dump
+   ```
+6. **Resume the API** (Render → **Resume Web Service**). Check `/health/ready` answers, then sign in on `admin.gizetransport.com` and open a list.
+7. **Clean up:** `rm -r ~/gize-restore`.
+
+The scripts run Postgres 17's tools in Docker (`docker compose` already needs it), so no Postgres tools are needed on your Mac.
+
+**Practise it** every few months, steps 1 to 3 only: it proves your key opens the copies and they restore, without touching production.
+
+**Staging** isn't backed up (it holds demo data). For a copy by hand before a risky change there, `gize_migrator` can use the same script (unencrypted: keep it outside the repository, and delete it after):
 ```bash
-pg_dump --schema=gize --format=custom --file=staging-$(date +%F).dump \
-  "postgresql://gize_migrator.pahktmbnbyulqkhdruci:<password>@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=verify-full&sslrootcert=docker/certs/supabase-root-2021-ca.crt"
+mkdir -p ~/gize-restore && DUMP_URL="$(grep '^MIGRATOR_DATABASE_URL=' .env.staging | cut -d= -f2-)" DATABASE_SSL_ROOT_CERT=docker/certs/supabase-root-2021-ca.crt ops/backup/dump.sh ~/gize-restore/staging.dump
 ```
-
-**To restore,** stop deploys first: don't merge anything meanwhile. Then run, with the same URL:
-
-```bash
-pg_restore --clean --if-exists --single-transaction --dbname="<same URL>" staging-<date>.dump
-```
-
-The copy carries the tables' grants to `gize_app` and the Alembic version, so afterwards check two things:
-- `uv run --env-file .env.staging alembic current` names the migration the copy was taken at;
-- `/health/ready` answers.
-
-Practise this on your local database before you rely on it. Production is on the free plan too, so it has no automatic backups either: nightly copies come with GZ-086. Until then, take one by hand the same way (with `.env.production`'s `MIGRATOR_DATABASE_URL`) before any risky migration, and keep real riders out of it.
 
 ## Dependency updates
 
@@ -240,6 +282,8 @@ Dependabot (`.github/dependabot.yml`) opens update PRs on Mondays.
 - After a runtime package or the Python image deploys, check staging's `/health/ready`.
 
 **Bumps CI fails on purpose:** some versions live in two places, so CI fails until both match. Finish these on the PR's branch, push, and CI runs again.
+- **Postgres image:** when it changes in `docker-compose.yml`, set the same digest in `ci.yml` and `ops/backup/lib.sh` (`POSTGRES_IMAGE`, which the backup scripts and the nightly check use); the tests fail until they match.
+- **age:** for a new release, set `AGE_VERSION` and `AGE_SHA256` in `backup-production.yml` (the SHA-256 GitHub shows for `age-<version>-linux-amd64.tar.gz` on the release page).
 - **Python image:** set `UV_PYTHON` to the new patch release in every workflow (`ci.yml`, `contract-release.yml`, `deploy-staging.yml`, `deploy-production.yml`, `pin-check.yml`).
 - **uv image:** set `UV_VERSION` in `ci.yml`, `contract-release.yml`, `deploy-staging.yml` and `deploy-production.yml`. In `pyproject.toml`, set the floor of `required-version` (a floor only: Dependabot runs its own, newer uv, which a ceiling would refuse) and the range of `uv_build`. Then run `uv lock`.
 - **gitleaks hook:** set `GITLEAKS_VERSION` and `GITLEAKS_SHA256` in `ci.yml`.

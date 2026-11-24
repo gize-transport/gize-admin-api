@@ -226,6 +226,12 @@ def test_the_pin_check_writes_issues_only_from_a_job_running_no_project_code() -
     assert "python -m scripts.stale_pins" in report_job
 
 
+# Actions that CI itself has no use for, each named with the one workflow that needs it.
+# Pinned to a commit SHA like every action; Dependabot keeps the pin current, so the name,
+# not the SHA, is what's listed here.
+NOT_IN_CI = {"actions/upload-artifact": "backup-production.yml"}
+
+
 def test_every_workflow_uses_ci_s_python_and_actions() -> None:
     """A Dependabot PR updates every workflow at once; these keep a hand edit honest too."""
     ci_python = _one(r'^  UV_PYTHON: "([\d.]+)"$', CI)
@@ -233,4 +239,11 @@ def test_every_workflow_uses_ci_s_python_and_actions() -> None:
     for workflow in WORKFLOWS:
         text = workflow.read_text()
         assert set(re.findall(r'^  UV_PYTHON: "([\d.]+)"$', text, re.MULTILINE)) <= {ci_python}
-        assert set(re.findall(r"uses: (\S+)", text)) <= ci_actions, workflow.name
+        for action in set(re.findall(r"uses: (\S+)", text)) - ci_actions:
+            name = action.split("@", 1)[0]
+            assert NOT_IN_CI.get(name) == workflow.name, (workflow.name, action)
+            assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", action), action
+    ci_names = {action.split("@", 1)[0] for action in ci_actions}
+    for name, owner in NOT_IN_CI.items():  # each exception is still needed, and only there
+        assert name not in ci_names
+        assert f"uses: {name}@" in (WORKFLOWS[0].parent / owner).read_text()

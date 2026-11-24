@@ -78,13 +78,15 @@ def fake_jwt(subject: str = "test") -> str:
 
 @dataclasses.dataclass(frozen=True)
 class DatabaseUrls:
-    """Connection URLs for one test database: admin (superuser), migrator and app."""
+    """Connection URLs for one test database: admin (superuser), migrator, app and the
+    read-only backup role (GZ-086)."""
 
     name: str
 
     admin: str
     migrator: str
     app: str
+    backup: str
 
 
 async def wait_for_lock_waiters(database: DatabaseUrls, count: int = 1) -> None:
@@ -109,6 +111,7 @@ async def wait_for_lock_waiters(database: DatabaseUrls, count: int = 1) -> None:
 # Passwords for the throwaway test roles only; the real ones come from the URLs in .env.
 TEST_APP_PASSWORD = "gize-app-test"  # noqa: S105 - local test role
 TEST_MIGRATOR_PASSWORD = "gize-migrator-test"  # noqa: S105 - local test role
+TEST_BACKUP_PASSWORD = "gize-backup-test"  # noqa: S105 - local test role
 
 
 def database_urls(admin_url: str, database: str) -> DatabaseUrls:
@@ -126,6 +129,7 @@ def database_urls(admin_url: str, database: str) -> DatabaseUrls:
         admin=admin,
         migrator=url("gize_migrator", TEST_MIGRATOR_PASSWORD),
         app=url("gize_app", TEST_APP_PASSWORD),
+        backup=url("gize_backup", TEST_BACKUP_PASSWORD),
     )
 
 

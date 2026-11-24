@@ -1,6 +1,10 @@
 # Environment and secrets
 .env
 .env.*
+# GZ-086: production backups and the key that opens them never belong in this public repo.
+*.dump
+*.dump.age
+gize-backup-key*.txt
 !.env.example
 !.env.staging.example
 !.env.production.example

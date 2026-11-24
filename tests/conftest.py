@@ -142,7 +142,9 @@ async def _create_and_bootstrap(admin_url: str, urls: DatabaseUrls) -> None:
     try:
         await _refuse_a_development_server(conn, urls)
         await conn.execute(f'CREATE DATABASE "{urls.name}"')
-        await bootstrap(urls.admin, urls.app, urls.migrator, create_supabase_roles=True)
+        await bootstrap(
+            urls.admin, urls.app, urls.migrator, create_supabase_roles=True, backup_url=urls.backup
+        )
     finally:
         await conn.close()
 

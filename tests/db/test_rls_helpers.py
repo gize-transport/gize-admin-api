@@ -13,6 +13,18 @@ from gize_api.core.rls import disable_row_level_security, enable_row_level_secur
 from tests.support import DatabaseUrls
 
 
+async def _policies(admin_url: str) -> set[tuple[str, str]]:
+    conn = await asyncpg.connect(admin_url, timeout=3)
+    try:
+        rows = await conn.fetch(
+            "SELECT policyname, cmd FROM pg_policies"
+            " WHERE schemaname = 'gize' AND tablename = 'rls_probe'"
+        )
+    finally:
+        await conn.close()
+    return {(row["policyname"], row["cmd"]) for row in rows}
+
+
 async def _rls_enabled(admin_url: str) -> bool:
     conn = await asyncpg.connect(admin_url, timeout=3)
     try:
@@ -40,9 +52,15 @@ async def test_enable_and_disable(database: DatabaseUrls) -> None:
         async with engine.begin() as conn:
             await conn.run_sync(create_and_enable)
         assert await _rls_enabled(database.admin)
+        # GZ-086: the backup role's read-only policy comes with the app's.
+        assert await _policies(database.admin) == {
+            ("gize_app_all", "ALL"),
+            ("gize_backup_read", "SELECT"),
+        }
         async with engine.begin() as conn:
             await conn.run_sync(disable)
         assert not await _rls_enabled(database.admin)
+        assert await _policies(database.admin) == set()
     finally:
         async with engine.begin() as conn:
             await conn.exec_driver_sql("DROP TABLE IF EXISTS gize.rls_probe")

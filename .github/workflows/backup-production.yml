@@ -1,0 +1,121 @@
+# Backs up the production database every night (GZ-086), and on demand (Run workflow) before
+# a risky change. As gize_backup, which can only read: a dump of schema gize, restored into a
+# throwaway Postgres to prove it works, then encrypted to the owner's age public key and kept
+# as this run's artifact for 90 days. Only the owner's private key, kept offline, opens it;
+# the plain copy never leaves this run. Restoring: RUNBOOK.md, "Backups and restoring".
+# Settings, in the production-backup environment (no approval, main only):
+#   secret PRODUCTION_BACKUP_DATABASE_URL, variable PRODUCTION_BACKUP_AGE_RECIPIENT.
+# A failed scheduled run emails whoever last changed this workflow's schedule (or re-enabled
+# it), if their GitHub notification settings for Actions allow it (RUNBOOK.md).
+# Postgres's error messages can quote rows, and this repository's logs are public: the
+# restore check's messages stay in the run's temporary files, and its server logs nothing
+# below FATAL.
+# Third-party actions are pinned to commit SHAs, as in ci.yml.
+name: Back up production
+
+on:
+  schedule:
+    - cron: "0 23 * * *"  # 02:00 Addis Ababa, before the morning runs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-production
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  backup:
+    name: Back up, check and encrypt
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production-backup
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install age
+        env:
+          AGE_VERSION: "v1.3.2"
+          AGE_SHA256: "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10"
+        run: |
+          mkdir -p "${RUNNER_TEMP}/age"
+          curl --fail --silent --show-error --location --max-time 60 \
+            --output "${RUNNER_TEMP}/age.tar.gz" \
+            "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-amd64.tar.gz"
+          echo "${AGE_SHA256}  ${RUNNER_TEMP}/age.tar.gz" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/age.tar.gz" -C "${RUNNER_TEMP}/age" --strip-components=1 age/age
+          echo "${RUNNER_TEMP}/age" >> "${GITHUB_PATH}"
+      - name: Check the backup settings are set
+        env:
+          DUMP_URL: ${{ secrets.PRODUCTION_BACKUP_DATABASE_URL }}
+          RECIPIENT: ${{ vars.PRODUCTION_BACKUP_AGE_RECIPIENT }}
+        run: |
+          if [ -z "${DUMP_URL}" ]; then
+            echo "::error::PRODUCTION_BACKUP_DATABASE_URL is not set: see RUNBOOK.md, Backups and restoring"
+            exit 1
+          fi
+          source ops/backup/lib.sh
+          pg_connection DUMP_URL  # verify-full, and the password apart
+          if [ -n "${PGPASSWORD}" ]; then
+            echo "::add-mask::${PGPASSWORD}"  # masked on its own, not only inside the URL
+          fi
+          if ! [[ "${RECIPIENT}" =~ ^age1[0-9a-z]{58}$ ]]; then
+            echo "::error::PRODUCTION_BACKUP_AGE_RECIPIENT must be the age public key (age1...): see RUNBOOK.md"
+            exit 1
+          fi
+      - name: Dump the database (as gize_backup)
+        env:
+          DUMP_URL: ${{ secrets.PRODUCTION_BACKUP_DATABASE_URL }}
+          DATABASE_SSL_ROOT_CERT: docker/certs/supabase-root-2021-ca.crt
+        run: |
+          mkdir -p "${RUNNER_TEMP}/plain"
+          ops/backup/dump.sh "${RUNNER_TEMP}/plain/gize.dump"
+      - name: Start a throwaway Postgres for the check
+        run: |
+          source ops/backup/lib.sh
+          docker run --detach --name gize-scratch --env POSTGRES_PASSWORD=scratch-only \
+            --publish 127.0.0.1:5432:5432 "${POSTGRES_IMAGE}" \
+            -c log_min_messages=fatal -c log_min_error_statement=panic > /dev/null
+          for _ in $(seq 1 60); do
+            if docker exec gize-scratch pg_isready --quiet --username postgres; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::The throwaway Postgres didn't start."
+          exit 1
+      - name: Restore the copy and check it
+        env:
+          SCRATCH_URL: postgresql://postgres:scratch-only@127.0.0.1:5432/postgres
+        run: |
+          if ! ops/backup/verify.sh "${RUNNER_TEMP}/plain/gize.dump" 2> "${RUNNER_TEMP}/plain/verify.log"; then
+            echo "::error::The copy didn't restore. Its messages can quote rows, so they stay out of this public log: check last night's copy on your own machine (RUNBOOK.md, Restoring, steps 1 to 3)."
+            exit 1
+          fi
+      - name: Encrypt the copy
+        env:
+          RECIPIENT: ${{ vars.PRODUCTION_BACKUP_AGE_RECIPIENT }}
+        run: |
+          PLAIN="${RUNNER_TEMP}/plain/gize.dump"
+          mkdir -p "${RUNNER_TEMP}/encrypted"
+          name="gize-production-$(date -u +%Y-%m-%dT%H%MZ).dump.age"
+          age --encrypt --recipient "${RECIPIENT}" --output "${RUNNER_TEMP}/encrypted/${name}" "${PLAIN}"
+          rm -f "${PLAIN}"
+          echo "Encrypted: ${name} ($(stat --format=%s "${RUNNER_TEMP}/encrypted/${name}") bytes)."
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: gize-production-backup-${{ github.run_id }}
+          path: ${{ runner.temp }}/encrypted/*.age
+          retention-days: 90
+          if-no-files-found: error
+          compression-level: 0  # already encrypted: it can't shrink
+      - name: Remove the plain copy
+        if: always()
+        run: |
+          rm -rf "${RUNNER_TEMP}/plain"
+          docker rm --force gize-scratch > /dev/null 2>&1 || true

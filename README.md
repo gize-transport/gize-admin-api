@@ -71,26 +71,28 @@ All configuration comes from environment variables (`src/gize_api/core/config.py
 | `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW` | no | Connections per process, 5 and 5 by default (1–50, 0–50). See the connection budget below. |
 | `MIGRATOR_DATABASE_URL` | migrations, secret | Postgres as `gize_migrator`; used by Alembic and the image's `migrate` command, never by the API. Same TLS rules as `DATABASE_URL` (by `APP_ENV`, with `DATABASE_SSL_ROOT_CERT`); direct or session-mode connection only. |
 | `BOOTSTRAP_ADMIN_DATABASE_URL` | bootstrap only, secret | The `postgres` role, for the one-off bootstrap. |
+| `BACKUP_DATABASE_URL` | bootstrap, where backups run; secret | Postgres as `gize_backup` (GZ-086): the bootstrap sets its password from it. Production only (`.env.production`); the nightly backup holds its own copy in GitHub. Without it the role exists but can't sign in, and a re-run leaves its sign-in as it is. |
 | `TEST_ADMIN_DATABASE_URL` | tests only | A superuser on the compose **test** server (`postgres-test`, port 5433), never the development one: tests set the role passwords to test values. Tests create and drop their own databases. |
 | `TEST_REDIS_URL` | tests only | Redis the test suite uses (CI sets it; locally read from `.env`). Tests fail, never skip, without it. |
 
 ## Database
 
-Postgres (Supabase in staging and production), schema `gize`, two roles:
+Postgres (Supabase in staging and production), schema `gize`, three roles:
 
 | Role | Can | Used by |
 | --- | --- | --- |
 | `gize_migrator` | owns schema `gize`: create, alter, drop | Alembic (`MIGRATOR_DATABASE_URL`, the image's `migrate` command) |
 | `gize_app` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` on data tables; nothing else (no DDL, no `TRUNCATE`, no migration table) | the API (`DATABASE_URL`) |
+| `gize_backup` | `SELECT` on every table and sequence (each table gives it a read-only policy, `gize_backup_read`); read-only transactions by default; nothing else | the nightly production backup (GZ-086; RUNBOOK, "Backups and restoring") |
 
-Neither role is superuser, creates roles or databases, bypasses row-level security, is a member of another role, or has an expiring password. `gize_app` has role-level settings: statement timeout 5 s, lock 3 s, idle in transaction 10 s, `search_path` `gize`.
+No role is superuser, creates roles or databases, bypasses row-level security, is a member of another role, or has an expiring password. `gize_app` has role-level settings: statement timeout 5 s, lock 3 s, idle in transaction 10 s, `search_path` `gize`.
 
 What keeps Supabase's API roles out:
 - **No access to the schema.** `anon`, `authenticated`, `service_role` and PUBLIC have no `USAGE` on `gize`, and no one but `gize_app` may execute new functions. This is the guarantee for all three.
-- **Row-level security** on every table, with a single policy for `gize_app`: a mistaken grant to `anon` or `authenticated` still exposes no rows. It does **not** stop `service_role`, which bypasses RLS on Supabase (the local stand-in does too).
+- **Row-level security** on every table, with a policy for `gize_app` and a read-only one for `gize_backup` (the nightly backup reads through it; it checks every table has it first): a mistaken grant to `anon` or `authenticated` still exposes no rows. It does **not** stop `service_role`, which bypasses RLS on Supabase (the local stand-in does too).
 - Views must be created `WITH (security_invoker = true)`, or they would read tables as their owner and skip RLS (a test checks).
 
-Accepted and known: `gize_app`, like every role, can create temporary tables, connect to other databases on the server and change its own session settings and password, because Supabase's own services need those privileges for PUBLIC. It cannot change any table, role or schema.
+Accepted and known: `gize_app` and `gize_backup`, like every role, can create temporary tables, connect to other databases on the server and change its own session settings and password, because Supabase's own services need those privileges for PUBLIC. It cannot change any table, role or schema.
 
 The bootstrap resets the roles' settings (role-wide and for this database) and password expiry. It refuses to run, naming the problem, if it finds drift: a membership either way (our roles in another role, or another role in ours; the admin may keep ADMIN OPTION only), role settings for another database, `CREATE` on schema `gize` or `public` or on the database, `TRUNCATE`/`REFERENCES`/`TRIGGER`/`MAINTAIN` on a table, or an object owned by `gize_app`. After the first run, table grants belong to migrations: re-running never re-grants on existing tables. Create objects in `gize` only through migrations: anything made by hand (the dashboard) is owned by `postgres` and gets neither the default grants nor RLS.
 
