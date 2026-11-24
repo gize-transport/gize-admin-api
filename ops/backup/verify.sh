@@ -42,7 +42,12 @@ BEGIN
 END
 $$;
 SQL
-pg_restore --dbname="$target" --exit-on-error --single-transaction --no-password "$dump"
+# Supabase stamps each column with pg_attver, an option only its own Postgres knows: the
+# check's plain Postgres 17 refuses it, so those lines (DDL, never data) are left out here.
+# A restore into Supabase (restore.sh) keeps them.
+pg_restore --file=- "$dump" \
+  | grep -vE '^ALTER TABLE ONLY gize\.[a-z0-9_]+ ALTER COLUMN [a-z0-9_"]+ SET \(pg_attver=[0-9]+\);$' \
+  | psql -X --dbname="$target" --single-transaction -v ON_ERROR_STOP=1 -q > /dev/null
 in_dump="$(pg_restore --list "$dump" | grep -c ' TABLE DATA gize ' || true)"
 restored="$(psql -X --dbname="$target" -Atc "SELECT count(*) FROM pg_class c
   JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'gize' AND c.relkind = 'r'")"

@@ -661,6 +661,7 @@ Status: done (the owner's setup steps follow, RUNBOOK "Backup setup (once)") · 
   - the dump's check also refuses restrictive policies, and runs against real tables in `tests/db/test_backup_check.py`; the bootstrap's drift check covers column grants and sequences;
   - the RUNBOOK's emails and 60-day pause are stated as GitHub does them; GZ-087 adds the missing-backup alert.
 - Note: a database bootstrapped before GZ-086 (local ones too) needs the bootstrap once before it migrates: the RLS helper's policy names `gize_backup`.
+- First production run (2026-11-24): the dump succeeded, the check failed. Supabase stamps each column with `pg_attver`, an option plain Postgres refuses, so `verify.sh` restores through `psql` and leaves out exactly those lines (DDL, never data; tested). Found privately (the run's log shows no messages, as designed); `restore.sh` into Supabase keeps them.
 
 ### GZ-087 · Free-plan alerts and a wake ping
 Status: planned · Depends on: GZ-085, GZ-066
