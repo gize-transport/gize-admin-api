@@ -2,9 +2,10 @@
 
     uv run --env-file .env python -m gize_api.core.bootstrap [--create-supabase-roles]
 
-Reads BOOTSTRAP_ADMIN_DATABASE_URL (the `postgres` role), DATABASE_URL (gize_app) and
-MIGRATOR_DATABASE_URL (gize_migrator); role passwords are taken from the last two, so they
-can never disagree. The admin connection to any server but this machine must use
+Reads BOOTSTRAP_ADMIN_DATABASE_URL (the `postgres` role), DATABASE_URL (gize_app),
+MIGRATOR_DATABASE_URL (gize_migrator) and, where nightly backups run (GZ-086),
+BACKUP_DATABASE_URL (gize_backup); role passwords are taken from those URLs, so they can
+never disagree. The admin connection to any server but this machine must use
 `ssl=verify-full`, against DATABASE_SSL_ROOT_CERT when set. `--create-supabase-roles`
 creates stand-ins for Supabase's `anon`, `authenticated` and `service_role` (local and
 test databases only).
@@ -14,17 +15,23 @@ Result:
   `gize_app` gets SELECT, INSERT, UPDATE, DELETE on every table the migrator creates, and
   EXECUTE on its functions; no one else gets anything (PUBLIC included). After that,
   migrations own table grants: re-running the bootstrap never re-grants on existing tables.
-- Neither role is superuser, creates roles or databases, replicates, bypasses RLS, is a
+- `gize_backup` (GZ-086) reads: SELECT on every table and sequence the migrator creates
+  (default privileges; migrations give it a read-only policy on each table), read-only
+  transactions by default, nothing else. It always exists, since migrations name it, but
+  can sign in only once BACKUP_DATABASE_URL has given it a password; a re-run without
+  that URL leaves its sign-in as it is.
+- No role is superuser, creates roles or databases, replicates, bypasses RLS, is a
   member of another role, or has a password that expires.
 - Supabase's API roles and PUBLIC have no access to the schema.
 - Role settings: gize_app statement 5 s, lock 3 s, idle in transaction 10 s, search_path
-  `gize`; gize_migrator lock 5 s, statement 5 min.
+  `gize`; gize_migrator lock 5 s, statement 5 min; gize_backup lock 5 s, statement 15 min,
+  read-only transactions.
 
 Re-running resets the roles' settings (role-wide and for this database) and checks for
 drift, stopping and naming it rather than accepting it: memberships either way (our roles
 in others, or others in ours), settings for other databases, CREATE on schemas `gize` and
 `public` or the database, TRUNCATE/REFERENCES/TRIGGER/MAINTAIN on a table, or objects
-owned by gize_app.
+owned by gize_app or gize_backup, and any table privilege of gize_backup's beyond SELECT.
 
 The admin is made a member of gize_migrator only for the run (to create the schema for it
 and set its default privileges); the membership is revoked at the end. Postgres 16+ leaves
@@ -56,6 +63,7 @@ from gize_api.core.db import ssl_argument
 
 APP_ROLE = "gize_app"
 MIGRATOR_ROLE = "gize_migrator"
+BACKUP_ROLE = "gize_backup"
 SCHEMA = "gize"
 SUPABASE_API_ROLES = ("anon", "authenticated", "service_role")
 # Supabase's service_role bypasses RLS; its local stand-in must too, or tests overstate RLS.
@@ -75,9 +83,17 @@ _ROLE_SETTINGS = {
     # The migrator keeps the default search_path: Alembic compares `gize` by name, which
     # breaks if `gize` is the connection's default schema (gize_api.core.migrations).
     MIGRATOR_ROLE: {"lock_timeout": "5s", "statement_timeout": "5min"},
+    # pg_dump sets its own timeouts and a read-only snapshot; these guard any other session.
+    BACKUP_ROLE: {
+        "lock_timeout": "5s",
+        "statement_timeout": "15min",
+        "default_transaction_read_only": "on",
+    },
 }
 # Table privileges beyond data access; gize_app must hold none of them on any object.
 _FORBIDDEN_TABLE_PRIVILEGES = ("TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN")
+# gize_backup reads: every table privilege but SELECT is drift.
+_FORBIDDEN_BACKUP_PRIVILEGES = ("INSERT", "UPDATE", "DELETE", *_FORBIDDEN_TABLE_PRIVILEGES)
 # Postgres 17, as on Supabase: the checks use MAINTAIN and membership options (16+).
 MIN_SERVER_VERSION = 170000
 # Schemas where gize_app must not create anything.
@@ -123,12 +139,16 @@ async def bootstrap(
     *,
     create_supabase_roles: bool,
     ssl_root_cert: Path | None = None,
+    backup_url: str | None = None,
 ) -> None:
     """Create or update roles, schema and grants in the database `admin_url` points at."""
     passwords = {
         APP_ROLE: _password(app_url, APP_ROLE, "DATABASE_URL"),
         MIGRATOR_ROLE: _password(migrator_url, MIGRATOR_ROLE, "MIGRATOR_DATABASE_URL"),
     }
+    backup_password = (
+        None if backup_url is None else _password(backup_url, BACKUP_ROLE, "BACKUP_DATABASE_URL")
+    )
     dsn, ssl_argument = _admin_connection_arguments(admin_url, ssl_root_cert)
     conn = await asyncpg.connect(dsn, timeout=10, ssl=ssl_argument)
     try:
@@ -151,12 +171,21 @@ async def bootstrap(
                 await _set_password(conn, role, password)
                 await _check_attributes(conn, role)
                 await _reset_settings(conn, role)
-                for name, value in _ROLE_SETTINGS[role].items():
-                    await conn.execute(f'ALTER ROLE "{role}" SET {name} = {_quote(value)}')
-            await conn.execute(f'ALTER ROLE "{APP_ROLE}" NOINHERIT')
+                await _apply_settings(conn, role)
+            await _create_role(conn, BACKUP_ROLE, login=False)
+            await conn.execute(f'REVOKE "{BACKUP_ROLE}" FROM CURRENT_USER')
+            if backup_password is not None:
+                await _set_password(conn, BACKUP_ROLE, backup_password)
+            await _check_attributes(conn, BACKUP_ROLE)
+            await _reset_settings(conn, BACKUP_ROLE)
+            await _apply_settings(conn, BACKUP_ROLE)
+            for role in (APP_ROLE, BACKUP_ROLE):
+                await conn.execute(f'ALTER ROLE "{role}" NOINHERIT')
             await _grant_schema(conn)
             await _check_members(conn)
-            await _check_app_privileges(conn)
+            await _check_privileges(conn, APP_ROLE, _FORBIDDEN_TABLE_PRIVILEGES)
+            await _check_privileges(conn, BACKUP_ROLE, _FORBIDDEN_BACKUP_PRIVILEGES)
+            await _check_backup_writes_nothing(conn)
     except asyncpg.exceptions.LockNotAvailableError:
         raise BootstrapError(
             "waited too long for a lock held by another session; try again later"
@@ -251,17 +280,23 @@ async def _reset_settings(conn: asyncpg.Connection, role: str) -> None:
         )
 
 
+async def _apply_settings(conn: asyncpg.Connection, role: str) -> None:
+    for name, value in _ROLE_SETTINGS[role].items():
+        await conn.execute(f'ALTER ROLE "{role}" SET {name} = {_quote(value)}')
+
+
 async def _check_members(conn: asyncpg.Connection) -> None:
     """No role may act as ours. The admin may keep ADMIN OPTION only (Postgres 16+ gives a
     CREATEROLE role that for roles it creates): it manages the roles without acting as them.
     """
     member = await conn.fetchrow(
         "SELECT m.member::regrole::text AS member, m.roleid::regrole::text AS role"
-        " FROM pg_auth_members m WHERE m.roleid IN ($1::regrole, $2::regrole)"
+        " FROM pg_auth_members m WHERE m.roleid IN ($1::regrole, $2::regrole, $3::regrole)"
         " AND NOT (m.member = current_user::regrole AND NOT m.set_option"
         " AND NOT m.inherit_option) ORDER BY 1, 2 LIMIT 1",
         APP_ROLE,
         MIGRATOR_ROLE,
+        BACKUP_ROLE,
     )
     if member is not None:
         raise BootstrapError(
@@ -270,47 +305,80 @@ async def _check_members(conn: asyncpg.Connection) -> None:
         )
 
 
-async def _check_app_privileges(conn: asyncpg.Connection) -> None:
-    """Fail on anything that lets gize_app change structure; the run is rolled back."""
+async def _check_privileges(
+    conn: asyncpg.Connection, role: str, forbidden: tuple[str, ...]
+) -> None:
+    """Fail on anything that lets `role` change structure, or any `forbidden` table
+    privilege; the run is rolled back."""
     for schema in _NO_CREATE_SCHEMAS:
         if await conn.fetchval(
             "SELECT to_regnamespace($2) IS NOT NULL AND has_schema_privilege($1, $2, 'CREATE')",
-            APP_ROLE,
+            role,
             schema,
         ):
-            raise BootstrapError(f"{APP_ROLE} must not have CREATE on schema {schema}")
-    if await conn.fetchval(
-        "SELECT has_database_privilege($1, current_database(), 'CREATE')", APP_ROLE
-    ):
-        raise BootstrapError(f"{APP_ROLE} must not have CREATE on the database")
+            raise BootstrapError(f"{role} must not have CREATE on schema {schema}")
+    if await conn.fetchval("SELECT has_database_privilege($1, current_database(), 'CREATE')", role):
+        raise BootstrapError(f"{role} must not have CREATE on the database")
     owned = await conn.fetchval(
         "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c"
         " JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relowner = $1::regrole"
         " UNION ALL SELECT format('%I', nspname) FROM pg_namespace WHERE nspowner = $1::regrole"
         " UNION ALL SELECT oid::regprocedure::text FROM pg_proc WHERE proowner = $1::regrole"
         " LIMIT 1",
-        APP_ROLE,
+        role,
     )
     if owned is not None:
-        raise BootstrapError(f"{APP_ROLE} must not own {owned}")
+        raise BootstrapError(f"{role} must not own {owned}")
     extra = await conn.fetchrow(
         "SELECT format('%I.%I', n.nspname, c.relname) AS name, p.privilege FROM pg_class c"
         " JOIN pg_namespace n ON n.oid = c.relnamespace"
         " CROSS JOIN unnest($3::text[]) AS p(privilege)"
         " WHERE n.nspname = $2 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')"
-        " AND has_table_privilege($1, c.oid, p.privilege) LIMIT 1",
-        APP_ROLE,
+        " AND has_table_privilege($1, c.oid, p.privilege) ORDER BY 1, 2 LIMIT 1",
+        role,
         SCHEMA,
-        list(_FORBIDDEN_TABLE_PRIVILEGES),
+        list(forbidden),
     )
     if extra is not None:
-        raise BootstrapError(f"{APP_ROLE} must not have {extra['privilege']} on {extra['name']}")
+        raise BootstrapError(f"{role} must not have {extra['privilege']} on {extra['name']}")
+
+
+async def _check_backup_writes_nothing(conn: asyncpg.Connection) -> None:
+    """Beyond table privileges: gize_backup may not change a column or advance a sequence
+    (column grants and sequences escape has_table_privilege's check)."""
+    column = await conn.fetchrow(
+        "SELECT format('%I.%I', n.nspname, c.relname) AS name, p.privilege FROM pg_class c"
+        " JOIN pg_namespace n ON n.oid = c.relnamespace"
+        " CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'REFERENCES']) AS p(privilege)"
+        " WHERE n.nspname = $2 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')"
+        " AND has_any_column_privilege($1, c.oid, p.privilege) ORDER BY 1, 2 LIMIT 1",
+        BACKUP_ROLE,
+        SCHEMA,
+    )
+    if column is not None:
+        raise BootstrapError(
+            f"{BACKUP_ROLE} must not have {column['privilege']} on a column of {column['name']}"
+        )
+    sequence = await conn.fetchrow(
+        "SELECT format('%I.%I', n.nspname, c.relname) AS name, p.privilege FROM pg_class c"
+        " JOIN pg_namespace n ON n.oid = c.relnamespace"
+        " CROSS JOIN unnest(ARRAY['USAGE', 'UPDATE']) AS p(privilege)"
+        " WHERE n.nspname = $2 AND c.relkind = 'S'"
+        " AND has_sequence_privilege($1, c.oid, p.privilege) ORDER BY 1, 2 LIMIT 1",
+        BACKUP_ROLE,
+        SCHEMA,
+    )
+    if sequence is not None:
+        raise BootstrapError(
+            f"{BACKUP_ROLE} must not have {sequence['privilege']} on {sequence['name']}"
+        )
 
 
 async def _grant_schema(conn: asyncpg.Connection) -> None:
     app, migrator, schema = f'"{APP_ROLE}"', f'"{MIGRATOR_ROLE}"', f'"{SCHEMA}"'
+    backup = f'"{BACKUP_ROLE}"'
     database = await conn.fetchval("SELECT format('%I', current_database())")
-    await conn.execute(f"GRANT CONNECT ON DATABASE {database} TO {app}, {migrator}")
+    await conn.execute(f"GRANT CONNECT ON DATABASE {database} TO {app}, {migrator}, {backup}")
     # Lets the admin create the schema for the migrator and set its default privileges.
     await conn.execute(f"GRANT {migrator} TO CURRENT_USER")
     await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema} AUTHORIZATION {migrator}")
@@ -323,7 +391,7 @@ async def _grant_schema(conn: asyncpg.Connection) -> None:
         role = f'"{row["rolname"]}"'
         await conn.execute(f"REVOKE ALL ON SCHEMA {schema} FROM {role}")
         await conn.execute(f"REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM {role}")
-    await conn.execute(f"GRANT USAGE ON SCHEMA {schema} TO {app}")
+    await conn.execute(f"GRANT USAGE ON SCHEMA {schema} TO {app}, {backup}")
     # Postgres lets PUBLIC execute every new function. That default is global, so it is
     # revoked for all of the migrator's functions; a per-schema revoke would do nothing.
     await conn.execute(
@@ -333,6 +401,8 @@ async def _grant_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(f"{defaults} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {app}")
     await conn.execute(f"{defaults} GRANT USAGE, SELECT ON SEQUENCES TO {app}")
     await conn.execute(f"{defaults} GRANT EXECUTE ON FUNCTIONS TO {app}")
+    await conn.execute(f"{defaults} GRANT SELECT ON TABLES TO {backup}")
+    await conn.execute(f"{defaults} GRANT SELECT ON SEQUENCES TO {backup}")
     await conn.execute(f"REVOKE {migrator} FROM CURRENT_USER")
 
 
@@ -366,6 +436,7 @@ def main() -> int:
                 ssl_root_cert=Path(root)
                 if (root := os.environ.get("DATABASE_SSL_ROOT_CERT"))
                 else None,
+                backup_url=os.environ.get("BACKUP_DATABASE_URL") or None,
             )
         )
     except BootstrapError as exc:

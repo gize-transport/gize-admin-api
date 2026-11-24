@@ -23,6 +23,57 @@ async def test_bootstrap_is_idempotent(database: DatabaseUrls) -> None:
         await conn.close()
 
 
+async def test_the_backup_role_can_sign_in_with_its_url_s_password(
+    database: DatabaseUrls,
+) -> None:
+    """GZ-086: BACKUP_DATABASE_URL sets gize_backup's password, as the others do."""
+    await bootstrap(
+        database.admin,
+        database.app,
+        database.migrator,
+        create_supabase_roles=False,
+        backup_url=database.backup,
+    )
+    conn = await asyncpg.connect(database.backup, timeout=3)
+    try:
+        assert await conn.fetchval("SELECT current_user") == "gize_backup"
+    finally:
+        await conn.close()
+
+
+async def test_a_rerun_without_the_backup_url_leaves_its_sign_in_alone(
+    database: DatabaseUrls,
+) -> None:
+    """Staging has no backups and never sets BACKUP_DATABASE_URL; a production re-run that
+    forgets it must not lock the nightly backup out."""
+    await _bootstrap(database)
+    conn = await asyncpg.connect(database.backup, timeout=3)
+    try:
+        assert await conn.fetchval("SELECT 1") == 1
+    finally:
+        await conn.close()
+
+
+async def test_the_backup_url_must_name_the_backup_role(database: DatabaseUrls) -> None:
+    with pytest.raises(BootstrapError, match="BACKUP_DATABASE_URL must connect as gize_backup"):
+        await bootstrap(
+            database.admin,
+            database.app,
+            database.migrator,
+            create_supabase_roles=False,
+            backup_url="postgresql://gize_app:pw@db/gize",
+        )
+    with pytest.raises(BootstrapError, match="gize_backup password") as exc_info:
+        await bootstrap(
+            database.admin,
+            database.app,
+            database.migrator,
+            create_supabase_roles=False,
+            backup_url="postgresql://gize_backup@db/gize",
+        )
+    assert "pw" not in str(exc_info.value)
+
+
 @pytest.mark.parametrize(
     ("url", "role"),
     [
@@ -60,6 +111,19 @@ async def test_bootstrap_refuses_a_role_with_dangerous_attributes(database: Data
             )
     finally:
         await admin.execute('ALTER ROLE "gize_migrator" NOCREATEDB')
+        await admin.close()
+
+
+async def test_bootstrap_refuses_a_backup_role_that_bypasses_rls(database: DatabaseUrls) -> None:
+    admin = await asyncpg.connect(database.admin, timeout=3)
+    try:
+        await admin.execute('ALTER ROLE "gize_backup" BYPASSRLS')
+        with pytest.raises(BootstrapError, match="gize_backup must not have rolbypassrls"):
+            await bootstrap(
+                database.admin, database.app, database.migrator, create_supabase_roles=False
+            )
+    finally:
+        await admin.execute('ALTER ROLE "gize_backup" NOBYPASSRLS')
         await admin.close()
 
 
@@ -101,6 +165,12 @@ def test_cli(
 
     monkeypatch.setenv("MIGRATOR_DATABASE_URL", database.migrator)
     monkeypatch.setattr("sys.argv", ["bootstrap", "--create-supabase-roles"])
+    assert module.main() == 0
+
+    monkeypatch.setenv("BACKUP_DATABASE_URL", database.app)  # wrong role
+    assert module.main() == 1
+    assert "BACKUP_DATABASE_URL must connect as gize_backup" in capsys.readouterr().err
+    monkeypatch.setenv("BACKUP_DATABASE_URL", database.backup)
     assert module.main() == 0
 
 
@@ -184,6 +254,53 @@ async def _bootstrap(database: DatabaseUrls, admin_url: str | None = None) -> No
             " ALTER TABLE gize.owned_by_app OWNER TO gize_app",
             "DROP TABLE gize.owned_by_app",
             "gize_app must not own gize.owned_by_app",
+        ),
+        # GZ-086: the backup role reads, and nothing else.
+        (
+            "GRANT INSERT ON gize.alembic_version TO gize_backup",
+            "REVOKE INSERT ON gize.alembic_version FROM gize_backup",
+            "gize_backup must not have INSERT on gize.alembic_version",
+        ),
+        (
+            "GRANT DELETE ON gize.alembic_version TO gize_backup",
+            "REVOKE DELETE ON gize.alembic_version FROM gize_backup",
+            "gize_backup must not have DELETE on gize.alembic_version",
+        ),
+        (
+            "GRANT CREATE ON SCHEMA gize TO gize_backup",
+            "REVOKE CREATE ON SCHEMA gize FROM gize_backup",
+            "gize_backup must not have CREATE on schema gize",
+        ),
+        (
+            'GRANT CREATE ON DATABASE "{db}" TO gize_backup',
+            'REVOKE CREATE ON DATABASE "{db}" FROM gize_backup',
+            "gize_backup must not have CREATE on the database",
+        ),
+        (
+            "GRANT pg_write_all_data TO gize_backup",
+            "REVOKE pg_write_all_data FROM gize_backup",
+            "gize_backup must not be a member of pg_write_all_data",
+        ),
+        (
+            "GRANT gize_backup TO anon",
+            "REVOKE gize_backup FROM anon",
+            "anon must not be a member of gize_backup",
+        ),
+        (
+            "GRANT UPDATE (version_num) ON gize.alembic_version TO gize_backup",
+            "REVOKE UPDATE (version_num) ON gize.alembic_version FROM gize_backup",
+            "gize_backup must not have UPDATE on a column of gize.alembic_version",
+        ),
+        (
+            "CREATE SEQUENCE gize.drift_seq; GRANT USAGE ON gize.drift_seq TO gize_backup",
+            "DROP SEQUENCE gize.drift_seq",
+            "gize_backup must not have USAGE on gize.drift_seq",
+        ),
+        (
+            "CREATE TABLE gize.owned_by_backup (id int);"
+            " ALTER TABLE gize.owned_by_backup OWNER TO gize_backup",
+            "DROP TABLE gize.owned_by_backup",
+            "gize_backup must not own gize.owned_by_backup",
         ),
     ],
 )
@@ -273,7 +390,7 @@ async def supabase_like_admin(database: DatabaseUrls) -> AsyncIterator[DatabaseU
             "CREATE ROLE gize_test_admin LOGIN CREATEROLE NOSUPERUSER PASSWORD 'supa-test'"
         )
         await admin.execute(
-            "GRANT gize_app, gize_migrator TO gize_test_admin"
+            "GRANT gize_app, gize_migrator, gize_backup TO gize_test_admin"
             " WITH ADMIN TRUE, INHERIT FALSE, SET FALSE"
         )
         await admin.execute(f'CREATE DATABASE "{name}" OWNER gize_test_admin')

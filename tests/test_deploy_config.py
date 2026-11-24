@@ -316,7 +316,10 @@ def test_the_template_urls_are_ones_the_settings_accept(environment: str) -> Non
     template = (ROOT / f".env.{environment}.example").read_text()
     assert f"\nAPP_ENV={environment}\n" in template
     urls = dict(re.findall(r"^([A-Z_]+_URL)=(postgresql://\S+)$", template, re.MULTILINE))
-    assert set(urls) == {"BOOTSTRAP_ADMIN_DATABASE_URL", "DATABASE_URL", "MIGRATOR_DATABASE_URL"}
+    expected = {"BOOTSTRAP_ADMIN_DATABASE_URL", "DATABASE_URL", "MIGRATOR_DATABASE_URL"}
+    if environment == "production":
+        expected.add("BACKUP_DATABASE_URL")  # GZ-086: only production is backed up
+    assert set(urls) == expected
     for name, url in urls.items():
         filled = re.sub(r"<[a-z-]+>", "Placeholder1", url)
         assert is_database_url(filled), name

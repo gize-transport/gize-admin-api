@@ -640,12 +640,31 @@ Status: done (the owner's setup steps follow, RUNBOOK "First production setup") 
   - Owner steps: untick the environment's admin bypass; connect GitHub in the new workspace if asked; where the secret key and the service address are; the staging CORS clean-up is a developer PR.
 
 ### GZ-086 · Free nightly backups
-Status: planned · Depends on: GZ-085
-- Production has no automatic backups on Supabase's free plan. Proposed (option A, 2026-11-04): a nightly GitHub Actions `pg_dump` as `gize_migrator`, encrypted with a key the owner keeps offline, kept as a workflow artifact for 30 to 90 days; a restore drill. No real riders in production before this.
+Status: done (the owner's setup steps follow, RUNBOOK "Backup setup (once)") · Depends on: GZ-085
+- Production has no backups on Supabase's free plan. Owner decisions (2026-11-24): copies kept as GitHub Actions artifacts of this (public) repository, encrypted with `age` to a key the owner keeps offline (a new tool, approved); a read-only role for the unattended job, at the cost of re-running the bootstrap on staging and production before the merge.
+- Built:
+  - `gize_backup` (bootstrap): `SELECT` on every table and sequence the migrator creates (default privileges), read-only transactions by default, lock 5 s, statement 15 min, `NOINHERIT`; never superuser, a member of anything, or owner of anything, and every table privilege but `SELECT` is drift the bootstrap refuses. `BACKUP_DATABASE_URL` gives it a password; without it the role exists without sign-in, and a re-run leaves its sign-in alone.
+  - RLS: each table gets `gize_backup_read` (`FOR SELECT TO gize_backup USING (true)`) from the helper; migration 0024 (expand) grants `SELECT` on existing tables and sequences and adds the policy where missing, refusing with a clear message if the bootstrap hasn't made the role.
+  - `ops/backup/dump.sh` (pg_dump 17 in the pinned Postgres image, schema `gize`, `--enable-row-security`; it first refuses unless the role reads every row of every table, since through RLS a table without its policy would dump empty), `verify.sh` (restore into a throwaway database, one transaction, every table and the migration version), `restore.sh` (as `gize_migrator`: every object in `gize` replaced in one transaction, the schema kept). URLs reach the containers through the environment only.
+  - `.github/workflows/backup-production.yml`: nightly at 02:00 Addis and on demand, `production-backup` environment (no approval, `main` only), `contents: read`; age pinned by version and SHA-256; dump, restore check, encrypt, plain copy removed, artifact kept 90 days.
+  - CI's migrations job dumps as `gize_backup`, verifies, restores over the database as `gize_migrator` and runs `alembic check` again, on every change.
+  - Tests: the role reads every row of every table and holds `SELECT` alone, can't change anything even with read-only switched off, sees new tables; bootstrap drift cases; the workflow's order, secrets, pins and cleanup; the scripts' options.
+  - RUNBOOK "Backups and restoring": setup, restoring step by step, practising, staging copies by hand. README roles and settings, architecture.
+- Checked locally: a dump as `gize_backup` restores whole; a table without its policy stops the dump ("Nothing was dumped"); rows deleted after a dump come back with `restore.sh`, and the app and the backup role work after it.
+- Not in the backup: staff sign-ins (Supabase Auth), which only `postgres` can read.
+- CI rule: `actions/upload-artifact` is the one action CI itself doesn't use; `tests/test_ci_config.py` names it (not its SHA, which Dependabot bumps) with its one workflow, pinned to a SHA like every action.
+- From review:
+  - restoring an older copy over a newer schema would leave newer objects behind (or fail on their dependencies): `restore.sh` shows where it writes and both migration versions, refuses unless they match (or the database is empty), and asks for `restore` to be typed; the RUNBOOK suspends the API meanwhile;
+  - unlocked copies belong outside the repository: `.gitignore` covers `*.dump`, `*.dump.age` and the key file, and the RUNBOOK works in `~/gize-restore`; the key file is written with umask 077;
+  - Postgres's messages can quote rows and the repository's logs are public: the nightly check's server is started by the job (no service container, whose log GitHub prints) and logs nothing below FATAL, and the check's messages stay in a removed file;
+  - passwords never in a process's arguments: `ops/backup/lib.sh` passes the URL without it and `PGPASSWORD` apart, masks it in the workflow, requires `verify-full` off this machine, and gives every tool a 10-second connect timeout;
+  - the dump's check also refuses restrictive policies, and runs against real tables in `tests/db/test_backup_check.py`; the bootstrap's drift check covers column grants and sequences;
+  - the RUNBOOK's emails and 60-day pause are stated as GitHub does them; GZ-087 adds the missing-backup alert.
+- Note: a database bootstrapped before GZ-086 (local ones too) needs the bootstrap once before it migrates: the RLS helper's policy names `gize_backup`.
 
 ### GZ-087 · Free-plan alerts and a wake ping
 Status: planned · Depends on: GZ-085, GZ-066
-- Production alerts by email (Telegram paused); a scheduled ping so the free server is awake before the 6:30 a.m. rush. While SMS is paused, GizeApiMisconfigured (`sms_disabled`) and GizeApiSmsFailing would fire on purpose (GZ-079): decide how to quiet them.
+- Production alerts by email (Telegram paused); a scheduled ping so the free server is awake before the 6:30 a.m. rush; an alert when a night's backup (GZ-086) is missing or failed, since GitHub pauses scheduled workflows silently after 60 quiet days. While SMS is paused, GizeApiMisconfigured (`sms_disabled`) and GizeApiSmsFailing would fire on purpose (GZ-079): decide how to quiet them.
 
 ### GZ-088 · Production runbook
 Status: planned · Depends on: GZ-085, GZ-086, GZ-087

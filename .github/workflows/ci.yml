@@ -158,6 +158,7 @@ jobs:
       BOOTSTRAP_ADMIN_DATABASE_URL: postgresql://supa_admin:gize-ci-admin@127.0.0.1:5432/gize
       DATABASE_URL: postgresql://gize_app:gize-ci-app@127.0.0.1:5432/gize
       MIGRATOR_DATABASE_URL: postgresql://gize_migrator:gize-ci-migrator@127.0.0.1:5432/gize
+      BACKUP_DATABASE_URL: postgresql://gize_backup:gize-ci-backup@127.0.0.1:5432/gize
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -193,6 +194,23 @@ jobs:
       - name: Upgrade to head again
         run: uv run --locked alembic upgrade head
       - name: Models match migrations (no pending autogenerate changes)
+        run: uv run --locked alembic check
+      # GZ-086: the nightly backup's own scripts, as gize_backup: every table must dump
+      # through its read-only policy and restore whole.
+      - name: Back up as gize_backup (the nightly backup's dump)
+        env:
+          DUMP_URL: ${{ env.BACKUP_DATABASE_URL }}
+        run: ops/backup/dump.sh "${RUNNER_TEMP}/gize.dump"
+      - name: Restore the backup and check it
+        env:
+          SCRATCH_URL: postgresql://postgres:gize-ci-only@127.0.0.1:5432/postgres
+        run: ops/backup/verify.sh "${RUNNER_TEMP}/gize.dump"
+      - name: Put the backup back over the database (as gize_migrator)
+        env:
+          RESTORE_URL: ${{ env.MIGRATOR_DATABASE_URL }}
+          RESTORE_CONFIRM: restore
+        run: ops/backup/restore.sh "${RUNNER_TEMP}/gize.dump"
+      - name: The restored schema still matches the models
         run: uv run --locked alembic check
 
   docker:
